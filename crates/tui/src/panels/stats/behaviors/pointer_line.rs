@@ -48,7 +48,12 @@ impl BehaviorsTab {
                 return Vec::new();
             };
             if !self.draws_world() {
-                return look.pointed(action);
+                let mut rows = look.pointed(action);
+                // The mouse's hint is no help where the keys rested the pointer.
+                if self.resting {
+                    rows.truncate(1);
+                }
+                return rows;
             }
             return look
                 .dot_line(at)
@@ -187,15 +192,21 @@ impl BehaviorsTab {
 }
 
 /// `line` in two rows of `room`, the second set in under the words after its first part, such
-/// as `Lit:`, and cut where even two can't hold it.
+/// as `Lit:`, and cut where even two can't hold it. As the world's other lines do, it breaks at
+/// its last ` · ` that leaves both rows fitting, the ` · ` going with the break.
 fn two_rows(line: &[Span<'static>], room: usize) -> Vec<Vec<Span<'static>>> {
-    if crate::base::text::spans_width(line) <= room {
+    use crate::base::text::{spans_width, str_width};
+
+    if spans_width(line) <= room {
         return vec![line.to_vec()];
     }
-    let hang = line
-        .first()
-        .map_or(0, |first| crate::base::text::str_width(&first.content));
+    let hang = line.first().map_or(0, |first| str_width(&first.content));
     let rest = [Span::raw(" ".repeat(hang))];
+    if let Some((first, second)) = at_last_dot(line, room)
+        && hang + spans_width(&second) <= room
+    {
+        return vec![first, [&rest[..], &second].concat()];
+    }
     let mut rows: Vec<Vec<Span<'static>>> = crate::base::text::wrap_spans(line, room, &[], &rest)
         .into_iter()
         .map(|row| row.spans)
@@ -210,4 +221,34 @@ fn two_rows(line: &[Span<'static>], room: usize) -> Vec<Vec<Span<'static>>> {
         rows[1] = crate::base::text::cut_spans(&tail, room, crate::base::text::At::Word);
     }
     rows
+}
+
+/// `line` split at its last ` · ` with no more than `room` cells before it, the ` · ` left out.
+fn at_last_dot(
+    line: &[Span<'static>],
+    room: usize,
+) -> Option<(Vec<Span<'static>>, Vec<Span<'static>>)> {
+    use crate::base::text::str_width;
+
+    const DOT: &str = " · ";
+    let mut found = None;
+    let mut width = 0;
+    for (at, span) in line.iter().enumerate() {
+        for (offset, _) in span.content.match_indices(DOT) {
+            if width + str_width(&span.content[..offset]) <= room {
+                found = Some((at, offset));
+            }
+        }
+        width += str_width(&span.content);
+    }
+    let (at, offset) = found?;
+    let span = &line[at];
+    let mut first = line[..at].to_vec();
+    first.push(Span::styled(span.content[..offset].to_owned(), span.style));
+    let mut second = vec![Span::styled(
+        span.content[offset + DOT.len()..].to_owned(),
+        span.style,
+    )];
+    second.extend_from_slice(&line[at + 1..]);
+    Some((first, second))
 }

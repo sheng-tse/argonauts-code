@@ -194,6 +194,9 @@ fn rounded(x: f32, y: f32, (x0, x1, y0, y1): (f32, f32, f32, f32), radius: f32) 
     if x < x0 || x >= x1 || y < y0 || y >= y1 {
         return false;
     }
+    // A corner rounds by half the box's shorter side at most, as CSS's border-radius does, so a
+    // box narrower than its two corners draws as a pill.
+    let radius = radius.min((x1 - x0) / 2.0).min((y1 - y0) / 2.0);
     let cx = x.clamp(x0 + radius, x1 - radius);
     let cy = y.clamp(y0 + radius, y1 - radius);
     let (dx, dy) = (x - cx, y - cy);
@@ -313,6 +316,17 @@ mod tests {
         let large = draw(&[bubble(None)], (36, 84), Brightness::Dark).expect("a picture");
         assert_eq!(large.size.0, small.size.0 * 2);
         assert_eq!(large.size.1, small.size.1 * 2);
+    }
+
+    #[test]
+    fn a_box_narrower_than_its_corners_rounds_as_a_pill() {
+        let tall = (0.0, 10.0, 0.0, 20.0);
+        assert!(rounded(5.0, 10.0, tall, 10.0));
+        assert!(rounded(5.0, 0.5, tall, 10.0));
+        assert!(!rounded(0.2, 0.2, tall, 10.0));
+        let wide = (0.0, 20.0, 0.0, 10.0);
+        assert!(rounded(10.0, 5.0, wide, 10.0));
+        assert!(!rounded(19.8, 9.8, wide, 10.0));
     }
 
     #[test]

@@ -25,7 +25,11 @@ pub(super) fn render(
     ctx: &RenderCtx<'_>,
     state: ComposerState<'_>,
 ) -> ComposerView {
-    let ComposerState { focused, .. } = state;
+    let ComposerState {
+        focused,
+        keys_below,
+        ..
+    } = state;
     let theme = ctx.theme;
     let width = usize::from(ctx.width);
     let dim = theme.style(Role::Dim);
@@ -33,7 +37,7 @@ pub(super) fn render(
     // The mark keeps the text's colour while a turn works, since a message still goes in.
     let prompt_style = if shell {
         theme.style(Role::Shell)
-    } else if focused {
+    } else if focused || keys_below {
         theme.style(Role::Text)
     } else {
         dim

@@ -49,6 +49,15 @@ fn source(agent: &str, since: Date, sessions: u32) -> CliSource {
     }
 }
 
+/// A CLI counted only from what ran through the app, as agy and OpenCode are: their records
+/// can't be imported.
+fn ran_here(agent: &str, since: Date, sessions: u32) -> CliSource {
+    CliSource {
+        imported: false,
+        ..source(agent, since, sessions)
+    }
+}
+
 /// The Overview picture's numbers.
 pub fn overview() -> OverviewData {
     let today = today();
@@ -57,7 +66,7 @@ pub fn overview() -> OverviewData {
     data.sources = vec![
         source("claude-code", date!(2025 - 10 - 09), 812),
         source("codex", date!(2026 - 02 - 03), 221),
-        source("antigravity-cli", date!(2026 - 06 - 02), 53),
+        ran_here("antigravity-cli", date!(2026 - 06 - 02), 53),
     ];
     data.models = vec![
         model(
@@ -135,9 +144,9 @@ pub fn overview() -> OverviewData {
     data
 }
 
-/// The numbers picture's example under the Overview picture's year of days: Claude Code's own
-/// count of 60.6b beside the 69.1b counted here, 147 days of history, and tokens that are
-/// nearly all read from cache, most of them Claude Code's.
+/// The numbers picture's example under the Overview picture's year of days: all four CLIs,
+/// Claude Code's 60.8b counted here beside the 60.6b its /stats says, 147 days of history, and
+/// tokens that are nearly all read from cache, most of them Claude Code's.
 pub fn numbers() -> OverviewData {
     let mut data = overview();
     let ran = |agent: &str, model: &str, tokens: u64| OverviewModel {
@@ -155,11 +164,12 @@ pub fn numbers() -> OverviewData {
         ran("claude-code", "claude-sonnet-5-5", 18_657_000_000),
         ran("codex", "gpt-5.6", 8_015_600_000),
         ran("antigravity-cli", "gemini-3.6-pro", 276_400_000),
+        ran("opencode", "qwen3-coder", 100_000_000),
     ];
     data.total = Tokens {
         input: 69_100_000,
         output: 207_300_000,
-        cache_read: 67_165_200_000,
+        cache_read: 67_265_200_000,
         cache_write: 1_658_400_000,
     };
     data.claude_stats = Some(OwnCount {
@@ -171,7 +181,9 @@ pub fn numbers() -> OverviewData {
     data.span_days = 147;
     data.streak = 20;
     data.longest_streak = 41;
-    for (source, sessions) in data.sources.iter_mut().zip([300, 70, 14]) {
+    data.sources
+        .push(ran_here("opencode", date!(2026 - 09 - 08), 0));
+    for (source, sessions) in data.sources.iter_mut().zip([296, 70, 14, 4]) {
         source.sessions = sessions;
     }
     data.subagent_tokens = data.total.total() * 64 / 100;

@@ -1068,9 +1068,9 @@ mod tests {
     /// they hold.
     fn ollama() -> LocalServer {
         let tags = [
-            "gemma3:12b-32k",
+            "sample-gemma:12b-32k",
             "qwen3-coder:30b",
-            "qwen3-coder:30b-64k",
+            "sample-coder:30b-64k",
             "gemma3:12b",
             "gemma2:9b",
             "gemma4:e2b",
@@ -1082,8 +1082,8 @@ mod tests {
             base_url: "http://localhost:11434/v1".to_owned(),
             models: tags.iter().map(|tag| (*tag).to_owned()).collect(),
             windows: [
-                ("gemma3:12b-32k".to_owned(), 32_768),
-                ("qwen3-coder:30b-64k".to_owned(), 65_536),
+                ("sample-gemma:12b-32k".to_owned(), 32_768),
+                ("sample-coder:30b-64k".to_owned(), 65_536),
                 ("qwen3:8b-8k".to_owned(), 8_192),
             ]
             .into(),
@@ -1109,9 +1109,9 @@ mod tests {
         assert_eq!(
             shown,
             [
-                ("Qwen3 Coder 30B 64K", true),
+                ("Sample Coder 30B 64K", true),
                 ("Not now", false),
-                ("Gemma3 12B 32K", false),
+                ("Sample Gemma 12B 32K", false),
             ]
         );
         assert_eq!(
@@ -1155,11 +1155,12 @@ mod tests {
     fn a_rerun_recommends_the_local_reviewer_you_have() {
         let mut view = view(Vec::new());
         view.current =
-            toml::from_str("[roles.reviewer]\nmodels = [\"ollama/gemma3:12b-32k\"]\n").unwrap();
+            toml::from_str("[roles.reviewer]\nmodels = [\"ollama/sample-gemma:12b-32k\"]\n")
+                .unwrap();
         let question = server_question(&ollama(), &view).unwrap();
         assert_eq!(
             values(&question),
-            ["gemma3:12b-32k", NOT_NOW, "qwen3-coder:30b-64k"]
+            ["sample-gemma:12b-32k", NOT_NOW, "sample-coder:30b-64k"]
         );
         assert!(question.options[0].recommended);
     }

@@ -186,10 +186,12 @@ impl BottomState {
         self.picker.is_some() && self.history_search.is_none() && self.focused_question().is_none()
     }
 
-    /// A question that waits without focus leaves the keys with the composer.
+    /// A question that waits without focus leaves the keys with the composer. A row picked
+    /// under the input takes them, as Claude Code moves the cursor out of its input.
     pub fn composer_has_focus(&self) -> bool {
         self.focused_question().is_none()
             && !self.agents.has_focus()
+            && !self.workflows.has_focus()
             && !self.pick_selected()
             && !self.notice.has_focus()
             && !self.band.has_focus()
@@ -256,6 +258,13 @@ impl BottomState {
         self.question
             .as_ref()
             .filter(|question| question.focused && !question.dismissed)
+    }
+
+    /// A question that holds the keys and stands in for the input. One drawn above the input
+    /// holds them with the input still drawn under it.
+    fn question_in_input_place(&self) -> bool {
+        self.focused_question()
+            .is_some_and(|question| !question.above_input)
     }
 
     pub fn waiting_question(&self) -> Option<&QuestionPrompt> {
@@ -521,9 +530,6 @@ impl BottomState {
             self.question
                 .as_ref()
                 .and_then(|question| question.next_change(clock.now)),
-            self.picker
-                .as_ref()
-                .and_then(|picker| picker.next_change(clock, ctx.theme)),
         ]
         .into_iter()
         .flatten()
@@ -648,23 +654,28 @@ impl BottomState {
         let focused = self.composer_has_focus();
         let busy = self.at_work();
         let waiting = self.waiting_question().is_some();
+        let asks_above = self
+            .waiting_question()
+            .is_some_and(|question| question.above_input);
         // With an agent selected in the list, the input is a message to it, as in Claude Code.
         let messaging = self.messaging();
         let message_to = messaging.and_then(AgentRow::placeholder);
         let placeholder = message_to
             .as_deref()
-            .or(waiting.then_some(if busy || self.run_takes_text {
-                QUESTION_PLACEHOLDER_RUN
-            } else {
-                QUESTION_PLACEHOLDER
-            }))
+            .or(
+                (waiting && !asks_above).then_some(if busy || self.run_takes_text {
+                    QUESTION_PLACEHOLDER_RUN
+                } else {
+                    QUESTION_PLACEHOLDER
+                }),
+            )
             .or(self.council.sits.then_some(crate::council::PLACEHOLDER));
         // An example prompt is a way to start, so it waits while work runs or a question is up.
         let offer_example = !busy && self.expanded_question().is_none();
         // A question that holds the keys stands in for the input, as Claude Code's permission
         // prompts do, so nothing on screen looks typeable while typing goes nowhere. A picker
         // or the prompt search it took the keys from waits under it.
-        let question_holds_keys = self.focused_question().is_some();
+        let question_holds_keys = self.question_in_input_place();
         let search = self
             .history_search
             .as_ref()
@@ -684,6 +695,7 @@ impl BottomState {
                     ctx,
                     ComposerState {
                         focused: focused || messaging.is_some(),
+                        keys_below: self.workflows.has_focus(),
                         busy: self.working.is_some(),
                         offer_example,
                         placeholder,
@@ -736,15 +748,15 @@ impl BottomState {
             .filter(|_| focused && search.is_none() && !question_holds_keys && picker.is_none())
             .filter(|_| !noticed);
         let panel_focused = self.agents.has_focus() || self.workflows.selected.is_some();
-        // A run's row says what Enter does on it after the mode. An agent's row takes Claude
-        // Code's own list keys.
-        let row_enter = self
+        // A run's row shows its own keys alone. An agent's row takes Claude Code's own list
+        // keys.
+        let row_keys = self
             .picked_run_row()
             .filter(|_| panel_focused)
-            .map(WorkflowRow::enter_does);
+            .map(WorkflowRow::keys);
         let list_keys = panel_focused
             .then_some(LIST_KEYS)
-            .filter(|_| row_enter.is_none());
+            .filter(|_| row_keys.is_none());
         let mode = self.mode.line(
             ctx,
             ModeState {
@@ -761,8 +773,8 @@ impl BottomState {
                 panel: panel_has_rows(&self.workflows, &self.agents),
                 panel_focused,
                 picked_keys: self.council.picking.as_deref(),
-                row_enter,
-                question_focused: self.focused_question().is_some(),
+                row_keys: row_keys.as_deref(),
+                question_focused: self.question_in_input_place(),
                 shell: self.composer.is_shell(),
                 // A command runs when Enter is pressed, whatever works above it.
                 enter_sends: self

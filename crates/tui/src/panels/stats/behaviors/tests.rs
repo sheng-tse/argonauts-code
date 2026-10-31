@@ -358,9 +358,9 @@ fn the_mouse_rings_the_nearest_dot_and_a_click_opens_its_card() {
     // the hint under it.
     let lines = shown(&tab, 40, true);
     assert!(
-        lines
-            .iter()
-            .any(|l| l.starts_with(" ◌ Read git history · ◧◨ 6 Luna · 5 of its 7 · everyone 5 · ")),
+        lines.iter().any(|l| l.starts_with(
+            " ◌ Read git history · ◧◨ 6 Luna · 5 of its 7 actions · 5 by every model · "
+        )),
         "{lines:#?}"
     );
     let braille = shown(&tab, 40, false);
@@ -408,8 +408,8 @@ fn without_pictures_the_map_is_braille_with_its_legend_beside_it() {
     assert!(beside(0).starts_with("Comparing GPT 6 Luna"), "{lines:#?}");
     assert!(beside(0).ends_with("Actions"));
     assert_eq!(beside(1), "With the other models");
-    assert_eq!(beside(2), "   Behind the dots: GPT 6 Luna does this more");
-    assert_eq!(beside(3), "   Behind the dots: GPT 6 Luna does this less");
+    assert_eq!(beside(2), "red: GPT 6 Luna does this more");
+    assert_eq!(beside(3), "blue: GPT 6 Luna does this less");
     assert!(beside(6).starts_with("● GPT 6 Luna") && beside(6).ends_with(" 7"));
     // Too narrow for the legend beside the map's share of the width.
     let narrow = shown_at(&tab, 56, 40, false);
@@ -419,7 +419,7 @@ fn without_pictures_the_map_is_braille_with_its_legend_beside_it() {
         .unwrap_or_else(|| panic!("{narrow:#?}"));
     assert!(narrow[legend].starts_with(" ⣿ Haiku 5.5  ⣿ GPT 6 Luna  ⣿ Gemini 3.8 Flash"));
     assert!(
-        narrow[legend + 1].starts_with(" Red behind the dots:"),
+        narrow[legend + 1].starts_with(" red: GPT 6 Luna does this more · blue: GPT 6 Luna"),
         "{narrow:#?}"
     );
 }
@@ -514,16 +514,24 @@ fn the_headline_and_d_follow_the_map_on_screen() {
         "{lines:#?}"
     );
     map.placing = Placing::Summaries {
-        by: "Qwen3 Coder 30B (64k)".to_owned(),
+        by: "Qwen3 Coder 30B".to_owned(),
     };
     map.unsummarized = 5;
     tab.accept(&map);
-    assert!(tab.own_keys().contains(&"d labels or update".to_owned()));
+    let keys = tab.own_keys();
+    let d = keys
+        .iter()
+        .position(|key| key == "d labels")
+        .expect("d labels");
+    assert_eq!(
+        keys.get(d + 1).map(String::as_str),
+        Some("u update"),
+        "{keys:?}"
+    );
     let lines = shown(&tab, 40, true);
     assert!(
         lines.contains(
-            &" Summaries · 28 of 33 summarized by Qwen3 Coder 30B (64k) · 5 newer not yet"
-                .to_owned()
+            &" Summaries · 28 of 33 summarized by Qwen3 Coder 30B · 5 newer not yet".to_owned()
         ),
         "{lines:#?}"
     );
@@ -531,9 +539,21 @@ fn the_headline_and_d_follow_the_map_on_screen() {
     map.unsummarized = 0;
     tab.accept(&map);
     assert!(tab.own_keys().contains(&"d labels".to_owned()));
+    assert!(!tab.own_keys().contains(&"u update".to_owned()));
     let lines = shown(&tab, 40, true);
     assert!(
-        lines.contains(&" Summaries · 28 summarized by Qwen3 Coder 30B (64k)".to_owned()),
+        lines.contains(&" Summaries · 28 summarized by Qwen3 Coder 30B".to_owned()),
+        "{lines:#?}"
+    );
+    // Summaries with no dots yet keep `d`, and never say nothing was recorded.
+    map.actions.clear();
+    map.unsummarized = 33;
+    tab.accept(&map);
+    assert!(tab.own_keys().contains(&"d labels".to_owned()));
+    assert!(tab.claims(KeyCode::Char('d'), true));
+    let lines = shown(&tab, 40, true);
+    assert!(
+        lines.contains(&" Summaries · none of 33 summarized yet".to_owned()),
         "{lines:#?}"
     );
 }
@@ -566,7 +586,7 @@ fn summaries_list_each_summary_alone_cut_to_the_row() {
 
     let mut map = sample().map;
     map.placing = Placing::Summaries {
-        by: "Qwen3 Coder 30B (64k)".to_owned(),
+        by: "Qwen3 Coder 30B".to_owned(),
     };
     let long =
         "Reading every file under the project to learn how the spend card measures its columns";
@@ -603,6 +623,9 @@ fn x_stops_an_update_the_app_reports() {
             total: 37,
             seconds_left: None,
             summarizer: "Qwen3 Coder 30B on Ollama".to_owned(),
+            short: "Qwen3 Coder 30B".to_owned(),
+            redo: false,
+            downloading: false,
         }),
         ..Default::default()
     };
@@ -808,7 +831,7 @@ fn a_group_named_for_its_cli_keeps_its_whole_name_and_the_compared_one_always_sh
     assert!(
         lines
             .iter()
-            .any(|line| line.contains("Behind the dots: Claude Code does this more")),
+            .any(|line| line.contains("red: Claude Code does this more")),
         "{lines:#?}"
     );
     assert!(
@@ -1945,7 +1968,8 @@ fn each_level_lists_its_own_keys() {
 
 /// Every line the world writes starts with a capital: legends, hover lines, the summary and
 /// notices, on every level, drawn as pictures or in braille. A line may start with a count, a
-/// mark or the braille map itself before its words.
+/// mark or the braille map itself before its words, and the braille map's colour keys keep the
+/// map picture's own words, `red:` and `blue:`.
 #[test]
 fn every_line_the_world_writes_starts_with_a_capital() {
     let first_word = |line: &str| {
@@ -1958,6 +1982,9 @@ fn every_line_the_world_writes_starts_with_a_capital() {
             let Some(word) = first_word(&line) else {
                 continue;
             };
+            if word == "red:" || word == "blue:" {
+                continue;
+            }
             let first = word.chars().find(|c| c.is_alphanumeric()).unwrap();
             assert!(
                 first.is_ascii_digit() || first.is_uppercase(),
@@ -2013,4 +2040,78 @@ fn the_planets_turn_holds_while_the_pointer_rests_on_it() {
     hold.rest(false, after(3));
     hold.rest(false, after(5));
     assert_eq!(hold.held(after(9)), Duration::from_secs(3));
+}
+
+/// ↓ from the groupings puts the keys in the map, and the map shows it: the pointer rests on
+/// its busiest place and the line under it says what is there, as it does for the mouse. A key
+/// that moves anything on the map, ↑ back to the groupings, or the mouse takes it off.
+#[test]
+fn going_into_the_map_rests_the_pointer_on_its_busiest_place() {
+    let mut tab = opened();
+    tab.arrive_from_above();
+    assert_eq!(tab.hovered(), None, "the groupings have the keys");
+    press(&mut tab, &[KeyCode::Down]);
+    let map = tab.map().unwrap().clone();
+    let rested = tab.hovered().expect("the pointer rests on the map");
+    assert_eq!(Some(rested), super::resting::busiest(&map, tab.fit(), None));
+    let behavior = map.actions[rested].behavior.to_lowercase();
+    for pictures in [true, false] {
+        let lines = shown(&tab, 40, pictures);
+        assert!(
+            lines.iter().any(|l| l.to_lowercase().contains(&behavior)),
+            "the line under the map names {behavior}: {lines:#?}"
+        );
+    }
+    assert!(
+        !tab.claims(KeyCode::Esc, true),
+        "Esc closes the panel: the keys' pointer is no step to undo"
+    );
+
+    press(&mut tab, &[KeyCode::Char('2')]);
+    assert_eq!(
+        tab.hovered(),
+        None,
+        "the planet starts with nothing pointed at"
+    );
+    press(&mut tab, &[KeyCode::Char('1')]);
+    assert_eq!(
+        tab.hovered(),
+        Some(rested),
+        "back on the map, the pointer rests again"
+    );
+
+    press(&mut tab, &[KeyCode::Up]);
+    assert_eq!(tab.hovered(), None, "back on the groupings");
+    press(&mut tab, &[KeyCode::Char('2'), KeyCode::Char('1')]);
+    assert_eq!(tab.hovered(), None, "the groupings keep the keys");
+    press(&mut tab, &[KeyCode::Enter]);
+    assert_eq!(tab.hovered(), Some(rested));
+    press(&mut tab, &[KeyCode::Right]);
+    assert_eq!(tab.hovered(), None, "comparing moves the map");
+
+    press(&mut tab, &[KeyCode::Left, KeyCode::Up, KeyCode::Down]);
+    tab.point_at(Some((0.2, 0.7)));
+    let moused = tab.hovered();
+    assert!(moused.is_some(), "the mouse still moves the pointer");
+    press(&mut tab, &[KeyCode::Up]);
+    assert_eq!(tab.hovered(), moused, "the mouse's place stays");
+}
+
+/// The busiest place is the cell with the most actions in it and round it, not the first
+/// action met or the one cell a few actions share.
+#[test]
+fn the_busiest_place_is_where_the_actions_crowd() {
+    let mut map = sample().map;
+    let fit = super::layout::Fit::DRAWN;
+    for (at, action) in map.actions.iter_mut().enumerate() {
+        (action.x, action.y) = match at % 10 {
+            0..=5 => (0.8 + (at % 3) as f32 * 0.012, 0.3),
+            6 | 7 => (0.1, 0.9),
+            _ => ((at as f32 * 0.37).fract(), (at as f32 * 0.61).fract()),
+        };
+    }
+    let at = super::resting::busiest(&map, fit, None).unwrap();
+    assert!(map.actions[at].x >= 0.8, "{:?}", map.actions[at]);
+    let haiku = super::resting::busiest(&map, fit, Some(0)).unwrap();
+    assert_eq!(map.actions[haiku].group, 0, "the compared group's own");
 }

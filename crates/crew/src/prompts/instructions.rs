@@ -33,11 +33,11 @@ pub struct Agent<'a> {
     pub task: Option<&'a TaskId>,
 }
 
-/// What the orchestrator wrote for one agent, and which model wrote it.
+/// What the orchestrator wrote for one agent, and the name of the model that wrote it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Written {
     pub text: String,
-    pub by: ModelRef,
+    pub by: String,
 }
 
 /// Who wrote the words a workflow's `agent()` call carries.
@@ -73,7 +73,7 @@ pub fn from_orchestrator(host: &Host, agent: &Agent<'_>) -> Option<Written> {
     }?;
     Some(Written {
         text,
-        by: orchestrator(host.settings()),
+        by: host.names().short(&orchestrator(host.settings())),
     })
 }
 
@@ -87,8 +87,7 @@ pub fn of_task(host: &Host, agent: &Agent<'_>) -> Option<InputPart> {
     if host.read(crate::council::seats::council_sat) {
         return Some(from_the_council(written.text));
     }
-    let model = roles::short_name(&written.by);
-    Some(parts::from_orchestrator(written.text, Some(model)))
+    Some(parts::from_orchestrator(written.text, Some(written.by)))
 }
 
 /// A council's task brief, which names no seat or model: the council agreed it.
@@ -167,14 +166,13 @@ fn brief_from_workflow(host: &Host, task: &TaskId) -> Option<String> {
 /// here, and the session's start puts the role's frame before them and your own words after
 /// ([`super::assemble`]), as for every agent.
 pub fn of_call(host: &Host, words: &str, author: CallAuthor<'_>) -> InputPart {
-    call_part(words, author, &orchestrator(host.settings()))
+    let by = host.names().short(&orchestrator(host.settings()));
+    call_part(words, author, by)
 }
 
-fn call_part(words: &str, author: CallAuthor<'_>, orchestrator: &ModelRef) -> InputPart {
+fn call_part(words: &str, author: CallAuthor<'_>, orchestrator: String) -> InputPart {
     match author {
-        CallAuthor::Orchestrator => {
-            parts::from_orchestrator(words, Some(roles::short_name(orchestrator)))
-        }
+        CallAuthor::Orchestrator => parts::from_orchestrator(words, Some(orchestrator)),
         CallAuthor::Workflow { name, step } => parts::from_workflow(words, step_shown(name, step)),
     }
 }
@@ -245,6 +243,7 @@ pub fn orchestrator(settings: &Settings) -> ModelRef {
 
 #[cfg(test)]
 mod tests {
+    use argonauts_core::look::display_names::DisplayNames;
     use argonauts_core::prompts::prompt_files::PromptDirs;
     use argonauts_core::prompts::prompt_parts::heading;
     use argonauts_core::runs::events::session::InputPartKind;
@@ -292,9 +291,10 @@ mod tests {
     #[test]
     fn a_calls_words_are_read_under_the_name_of_who_wrote_them() {
         let orchestrator: ModelRef = "claude-code/claude-opus-5-5".parse().unwrap();
+        let name = DisplayNames::default().short(&orchestrator);
         let words = "Review the due-date change against docs/due.md.";
 
-        let written = call_part(words, CallAuthor::Orchestrator, &orchestrator);
+        let written = call_part(words, CallAuthor::Orchestrator, name.clone());
         assert_eq!(written.kind, InputPartKind::Instructions);
         assert_eq!(written.text, words);
         assert!(parts::written_for_the_agent(&written));
@@ -302,10 +302,7 @@ mod tests {
             assembled(written),
             [
                 "Frame · built in".to_owned(),
-                format!(
-                    "From the orchestrator · {}",
-                    roles::short_name(&orchestrator)
-                ),
+                format!("From the orchestrator · {name}"),
                 "From your request".to_owned(),
             ]
         );
@@ -315,7 +312,7 @@ mod tests {
             step: Some("review"),
         };
         assert_eq!(
-            assembled(call_part(words, as_written, &orchestrator)),
+            assembled(call_part(words, as_written, name.clone())),
             [
                 "Frame · built in",
                 "From the workflow · spec-first, step review",
@@ -326,7 +323,7 @@ mod tests {
             name: "nightly",
             step: None,
         };
-        let part = call_part(words, a_script, &orchestrator);
+        let part = call_part(words, a_script, name);
         assert_eq!(part.source.as_deref(), Some("nightly"));
     }
 }

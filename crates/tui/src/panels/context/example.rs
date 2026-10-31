@@ -194,18 +194,18 @@ fn claude_code_usage() -> ContextUsage {
         category("System tools", 19_380, "inactive", ContextKind::Used),
         category(
             "MCP tools",
-            705,
+            MCP_TOOLS.iter().map(|(_, tokens)| tokens).sum(),
             "cyan_FOR_SUBAGENTS_ONLY",
             ContextKind::Used,
         ),
         category(
             "MCP server instructions",
-            960,
+            MCP_NOTE,
             "green_FOR_SUBAGENTS_ONLY",
             ContextKind::Used,
         ),
         category("Memory files", 503, "claude", ContextKind::Used),
-        category("Skills", 6_360, "warning", ContextKind::Used),
+        category("Skills", skills().tokens, "warning", ContextKind::Used),
         category(
             "Messages",
             10,
@@ -226,23 +226,6 @@ fn claude_code_usage() -> ContextUsage {
         "promptBorder",
         ContextKind::Free,
     ));
-    // 237 tools, of which those loaded hold 705 tokens.
-    let mcp_tools = (0..237)
-        .map(|at| McpTool {
-            name: format!("mcp__crm__tool_{at}"),
-            server: "crm".to_owned(),
-            tokens: if at < 5 { 141 } else { 120 },
-            loaded: at < 5,
-        })
-        .collect();
-    let skill = |tokens| ContextSkill {
-        name: "skill".to_owned(),
-        source: "built-in".to_owned(),
-        plugin: None,
-        tokens,
-    };
-    let mut items = vec![skill(6_360 - 32 * 190)];
-    items.extend((0..32).map(|_| skill(190)));
     ContextUsage {
         categories,
         total_tokens: total,
@@ -258,13 +241,8 @@ fn claude_code_usage() -> ContextUsage {
             scope: "Project".to_owned(),
             tokens: 503,
         }],
-        mcp_tools,
-        skills: Some(ContextSkills {
-            total: 33,
-            included: 33,
-            tokens: 6_360,
-            items,
-        }),
+        mcp_tools: mcp_tools(),
+        skills: Some(skills()),
         ..ContextUsage::default()
     }
 }
@@ -293,7 +271,7 @@ pub fn straight_to_a_run() -> Example {
     // The local reviewer it was meant to have never started.
     add(
         "review:cap-bucket-refills",
-        "opencode/ollama/qwen3-coder:30b-64k",
+        "opencode/ollama/qwen3-coder:30b",
         0,
         0,
         (12, 30),
@@ -414,8 +392,9 @@ fn model(worker: &str) -> ModelRef {
     worker.parse().expect("a model")
 }
 
-/// A sample main session in Claude Code 2.1.304's form: 182.5k of a 1m window on Opus 5.5,
-/// with 237 MCP tools that load when used and 32 skills.
+/// A sample main session in Claude Code 2.1.304's form: 182.5k of a 1m window on Opus 5.5, in the
+/// made-up setup the other samples share, with Argonauts Code's own 5 tools beside its 9, all
+/// loading when used.
 fn main_usage() -> ContextUsage {
     let category = |name: &str, tokens: u64, color: &str, kind| ContextCategory {
         name: name.to_owned(),
@@ -428,14 +407,14 @@ fn main_usage() -> ContextUsage {
         category("System tools", 19_700, "inactive", ContextKind::Used),
         category(
             "MCP server instructions",
-            960,
+            MCP_NOTE,
             "green_FOR_SUBAGENTS_ONLY",
             ContextKind::Used,
         ),
-        category("Skills", 6_000, "warning", ContextKind::Used),
+        category("Skills", skills().tokens, "warning", ContextKind::Used),
         category(
             "Messages",
-            151_400,
+            155_938,
             "purple_FOR_SUBAGENTS_ONLY",
             ContextKind::Used,
         ),
@@ -457,26 +436,6 @@ fn main_usage() -> ContextUsage {
     let mut categories = used.to_vec();
     categories.push(buffer);
     categories.push(free);
-    let mut mcp_tools = Vec::new();
-    for (server, n) in [("crm", 193), ("weather-forecast", 35), ("argonauts", 9)] {
-        for at in 0..n {
-            mcp_tools.push(McpTool {
-                name: format!("mcp__{server}__tool_{at}"),
-                server: server.to_owned(),
-                tokens: 120,
-                loaded: false,
-            });
-        }
-    }
-    let skill = |source: &str, tokens| ContextSkill {
-        name: "skill".to_owned(),
-        source: source.to_owned(),
-        plugin: None,
-        tokens,
-    };
-    let mut items = vec![skill("userSettings", 110)];
-    items.extend((0..11).map(|at| skill("syncedSkills", if at == 0 { 230 } else { 297 })));
-    items.extend((0..20).map(|_| skill("built-in", 135)));
     ContextUsage {
         categories,
         total_tokens: total,
@@ -488,14 +447,85 @@ fn main_usage() -> ContextUsage {
         auto_compact: true,
         auto_compact_threshold: Some(967_000),
         auto_compact_source: "model-default".to_owned(),
-        mcp_tools,
-        skills: Some(ContextSkills {
-            total: 32,
-            included: 32,
-            tokens: 6_000,
-            items,
-        }),
+        mcp_tools: MCP_TOOLS
+            .iter()
+            .map(|&(name, _)| name.to_owned())
+            .chain((0..5).map(|at| format!("mcp__argonauts__tool_{at}")))
+            .map(|name| McpTool {
+                server: server_of(&name),
+                name,
+                tokens: 120,
+                loaded: false,
+            })
+            .collect(),
+        skills: Some(skills()),
         ..ContextUsage::default()
+    }
+}
+
+/// The made-up setup every sample count shares: 2 MCP servers with 9 tools, all loaded, and 4
+/// skills of its own beside Claude Code's 14.
+const MCP_TOOLS: [(&str, u64); 9] = [
+    ("mcp__tickets__open_ticket", 212),
+    ("mcp__tickets__find_tickets", 245),
+    ("mcp__tickets__comment", 198),
+    ("mcp__tickets__close_ticket", 306),
+    ("mcp__tickets__assign", 187),
+    ("mcp__warehouse__stock_level", 264),
+    ("mcp__warehouse__reserve", 229),
+    ("mcp__warehouse__release", 281),
+    ("mcp__warehouse__list_bins", 193),
+];
+const MCP_NOTE: u64 = 318;
+const OWN_SKILLS: [(&str, u64); 4] = [
+    ("release-notes", 96),
+    ("db-migrate", 121),
+    ("lint-fix", 88),
+    ("changelog", 143),
+];
+/// Claude Code 2.1.289's 14 built-in skills, as its count before the first answer gives them.
+const BUILT_IN_SKILLS: u64 = 1_656;
+
+fn mcp_tools() -> Vec<McpTool> {
+    MCP_TOOLS
+        .iter()
+        .map(|&(name, tokens)| McpTool {
+            name: name.to_owned(),
+            server: server_of(name),
+            tokens,
+            loaded: true,
+        })
+        .collect()
+}
+
+/// The server in a tool's name, `mcp__<server>__<tool>`.
+fn server_of(tool: &str) -> String {
+    tool.split("__").nth(1).unwrap_or(tool).to_owned()
+}
+
+fn skills() -> ContextSkills {
+    let skill = |name: String, source: &str, tokens| ContextSkill {
+        name,
+        source: source.to_owned(),
+        plugin: None,
+        tokens,
+    };
+    let mut items: Vec<ContextSkill> = (0..14u64)
+        .map(|at| {
+            let tokens = BUILT_IN_SKILLS / 14 + u64::from(at < BUILT_IN_SKILLS % 14);
+            skill(format!("built-in-{at}"), "bundled", tokens)
+        })
+        .collect();
+    items.extend(
+        OWN_SKILLS
+            .iter()
+            .map(|&(name, tokens)| skill(name.to_owned(), "userSettings", tokens)),
+    );
+    ContextSkills {
+        total: items.len() as u32,
+        included: items.len() as u32,
+        tokens: items.iter().map(|item| item.tokens).sum(),
+        items,
     }
 }
 

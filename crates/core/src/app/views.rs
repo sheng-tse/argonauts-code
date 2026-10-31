@@ -1203,8 +1203,7 @@ pub struct WindowFigures {
     pub cli: Option<u64>,
 }
 
-/// A server's cap on a model's window, such as the 65,536 Ollama's `qwen3-coder:30b-64k` tag
-/// sets.
+/// A server's cap on a model's window, such as the one an Ollama tag made with `num_ctx` sets.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerCap {
     /// The server by name, such as `Ollama`.

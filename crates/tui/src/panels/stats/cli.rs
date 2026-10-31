@@ -2,7 +2,7 @@
 //! models as bars, and who did what in each role.
 
 use argonauts_core::behaviors::crew_stats::StatsRole;
-use argonauts_core::look::logos::logo_for;
+use argonauts_core::look::logos::{logo_for, model_logo};
 use argonauts_core::models::limits::{PlanUsageReading, PlanUsageStatus};
 use argonauts_core::runs::api::{UsagePeriod, UsageSummary};
 use argonauts_core::settings::stats::StatsMeasure;
@@ -13,7 +13,7 @@ use super::draw::{self, Fared, Fill, Legend, Lit};
 pub(super) use super::fills::{model_fill, model_style};
 use super::grid::{self, Body};
 use crate::base::format;
-use crate::base::kit::legend::BEFORE_NUMBERS;
+use crate::base::kit::legend::{BEFORE_NUMBERS, BETWEEN_WORDS};
 use crate::base::kit::logo::{ModelLabel, NoPicture};
 use crate::base::kit::{Drawn, Frame, Header, Kit, Level, fit, spread};
 use crate::base::text::{spans_width, str_width, truncate_spans};
@@ -28,10 +28,6 @@ const CHART_GAP: usize = 2;
 const CHART_ROWS: usize = 8;
 /// From this inner width the all-together card draws its days chart.
 const CHART_FROM: usize = 64;
-/// The fewest cells a card's column of model names takes, and the most, a swatch and the
-/// longest name with one blank before its bar: a longer name is cut with `…`.
-const LEAST_NAME: usize = 16;
-const MOST_NAME: usize = draw::MODEL_NAME + 3;
 /// The narrowest a model's bar is drawn with the units of its count beside it, and without.
 const LEAST_MODEL_BAR: usize = 8;
 const LEAST_BARE_BAR: usize = 4;
@@ -47,8 +43,8 @@ const ROOMY_CARD: usize = OUTCOME_LABEL + SQUARES + " 100% first pass".len();
 /// beside their bars and the gap between them: `5h `, `week ` and a share after each.
 const MOST_PLAN_BAR: usize = 12;
 const PLAN_WORDS: usize = 18;
-/// The who-did-what card's column of role names.
-const ROLE_COLUMN: usize = 16;
+/// Before the name of the role the keys are on, in who did what.
+const PICKED: &str = "❯ ";
 /// Squares before they stand for more than one task each.
 pub(super) const SQUARES: usize = 10;
 
@@ -597,36 +593,40 @@ impl Stats<'_> {
     }
 
     /// How every card lays out its models' rows, alike so their bars line up: the names'
-    /// column, the bars' width, and whether a count says what it counts.
+    /// column, the bars' width, and whether a count says what it counts. Counts that say what
+    /// they count come first, then names with a column's room before their bars; short of
+    /// room, a name keeps one blank before its bar, which joins the two.
     fn model_layout(&self, inner: usize) -> ModelLayout {
         let models = || self.crew.clis.iter().flat_map(|cli| cli.models.iter());
-        let names = models()
-            .map(|model| str_width(&model.name) + 2)
-            .max()
-            .unwrap_or(0);
-        let names = (names + 1).clamp(LEAST_NAME, MOST_NAME);
+        let names = |gap| draw::names_column(models().map(|model| model.name.as_str()), gap);
         let widest = |units: bool| {
             models()
                 .map(|model| str_width(&self.model_amount(model, units)))
                 .max()
                 .unwrap_or(0)
         };
-        let with_units = inner.saturating_sub(names + widest(true) + SPARE);
-        if with_units >= LEAST_MODEL_BAR {
-            return ModelLayout {
-                names,
-                bar: with_units,
-                units: true,
-                labels: outcome_label(inner),
-            };
+        let labels = outcome_label(inner);
+        for (units, spare, least) in [(true, SPARE, LEAST_MODEL_BAR), (false, 0, LEAST_BARE_BAR)] {
+            for gap in [BEFORE_NUMBERS, 1] {
+                let names = names(gap);
+                let bar = inner.saturating_sub(names + widest(units) + spare);
+                if bar >= least {
+                    return ModelLayout {
+                        names,
+                        gap,
+                        bar,
+                        units,
+                        labels,
+                    };
+                }
+            }
         }
         ModelLayout {
-            names,
-            bar: inner
-                .saturating_sub(names + widest(false))
-                .max(LEAST_BARE_BAR),
+            names: names(1),
+            gap: 1,
+            bar: LEAST_BARE_BAR,
             units: false,
-            labels: outcome_label(inner),
+            labels,
         }
     }
 
@@ -714,11 +714,9 @@ impl Stats<'_> {
             .iter()
             .map(|model| {
                 let style = model_style(kit, cli, model);
-                let mut row = draw::swatch(kit, model_fill(kit, cli, model));
-                row.push(Span::raw(model.name.clone()));
-                // A name cut to its column keeps a blank before the bar.
-                let row = truncate_spans(&row, layout.names - 1);
-                let mut row = fit(row, layout.names);
+                let fill = model_fill(kit, cli, model);
+                let names = (layout.names, layout.gap);
+                let mut row = draw::swatch_and_name(kit, fill, &model.name, names);
                 row.extend(draw::thin(
                     kit,
                     model.measured(self.measure),
@@ -868,21 +866,22 @@ impl Stats<'_> {
         let note = vec![kit.dim("every model that filled the role · enter opens a role")];
         let room = inner.saturating_sub(spans_width(&left) + 2);
         drawn.push(spread(left, truncate_spans(&note, room), inner));
-        let bar_cells = inner.saturating_sub(ROLE_COLUMN);
         let roles = self.crew.roles();
+        let labels = self.role_labels(&roles);
+        let bar_cells = inner.saturating_sub(labels);
         let tables: Vec<Vec<Legend>> = roles.iter().map(|role| self.did(kit, *role)).collect();
         let columns = draw::table_columns(tables.iter().flatten(), bar_cells, false);
         for (role, table) in roles.iter().zip(&tables) {
             drawn.push(Vec::new());
             let label = if picked == Some(*role) {
                 vec![Span::styled(
-                    format!("❯ {}", role.plural()),
+                    format!("{PICKED}{}", role.plural()),
                     kit.bold(Role::Question),
                 )]
             } else {
                 vec![Span::raw(role.plural())]
             };
-            let mut row = fit(label, ROLE_COLUMN);
+            let mut row = fit(label, labels);
             let parts: Vec<(u64, Fill)> = (table.iter())
                 .map(|row| (row.part.value, row.part.fill))
                 .collect();
@@ -899,19 +898,35 @@ impl Stats<'_> {
                 } else {
                     Span::raw("")
                 };
-                let mut row = fit(vec![left], ROLE_COLUMN);
+                let mut row = fit(vec![left], labels);
                 row.extend(line);
                 drawn.push(row);
             }
             if table.is_empty() {
                 let none = format!("no {}s recorded", role.unit());
-                drawn.push(vec![Span::raw(" ".repeat(ROLE_COLUMN)), kit.dim(none)]);
+                drawn.push(vec![Span::raw(" ".repeat(labels)), kit.dim(none)]);
             }
         }
         if roles.is_empty() {
             drawn.push(vec![kit.dim("No work recorded in this period yet.")]);
         }
         frame.draw(kit, drawn)
+    }
+
+    /// Cells of who did what's labels: each role's name, [`PICKED`] before it while the keys
+    /// are on it, over what the role did, such as `main` over `26 conversations`. The column
+    /// is as wide as the longest of them, both lines counted, and the blanks between two
+    /// columns of words, so the column stays put as the keys move.
+    fn role_labels(&self, roles: &[StatsRole]) -> usize {
+        let longest = (roles.iter())
+            .map(|role| {
+                let name = str_width(PICKED) + str_width(role.plural());
+                let whole = str_width(&count(self.crew.did(*role), role.unit()));
+                name.max(whole)
+            })
+            .max()
+            .unwrap_or(0);
+        longest + BETWEEN_WORDS
     }
 
     /// The models that did `role`'s work, as the rows of who did what: the logo of whoever
@@ -922,7 +937,7 @@ impl Stats<'_> {
             .map(|(cli, model)| {
                 let did = u64::from(model.did(role));
                 let fill = model_fill(kit, cli, model);
-                let logo = logo_for(&cli.agent, model.model.as_deref());
+                let logo = model_logo(&cli.agent, model.model.as_deref());
                 let label = ModelLabel::named(&logo, &model.name, kit.theme, NoPicture::Dot);
                 let name = draw::model_name(&label.name);
                 Legend {
@@ -1071,6 +1086,8 @@ pub(super) fn window_bar(
 struct ModelLayout {
     /// Cells of the swatch and the name.
     names: usize,
+    /// Blanks the names keep before their bars.
+    gap: usize,
     bar: usize,
     /// Each count says what it counts.
     units: bool,

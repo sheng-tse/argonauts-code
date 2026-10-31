@@ -1,0 +1,331 @@
+# Council takes the rate limiter request: the main agent hands it to the crew, every seat writes
+# its first answer, the note keeper lists two points, every seat agrees, the keeper writes the
+# plan, and once you approve it each builder works until it is stopped, so the screen holds still. The note keeper is drawn
+# for each run, so every seat can keep the notes. These rules come before the default fake
+# agents' rules, which play every other request.
+
+# The main agent, with its tools off, hands the request to the crew.
+[[rule]]
+argv0 = "claude"
+prompt_contains = '"answer_markdown"'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-conversation-claude","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-conversation-claude","message":{"id":"msg-sess-conversation-claude","content":[{"type":"text","text":"A rate limiter for the public API, built and checked by the crew."}]}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-conversation-claude","result":"A rate limiter for the public API, built and checked by the crew.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"kind":"change","answer_markdown":"A rate limiter for the public API, built and checked by the crew.","estimate":{"task_type":"api-feature","summary":"Rate limit the API","files_likely":["src/middleware/rate_limit.ts","src/server.ts","test/rate_limit.test.ts"],"file_count":9,"risk_labels":["security"],"tests_exist":true,"unknowns":[]}}}'
+[[rule.step]]
+exit = 0
+
+# Each builder works until it is stopped.
+[[rule]]
+argv0 = "claude"
+prompt_contains = 'end with a report that matches the schema'
+stdin_prompt = "line"
+[[rule.step]]
+emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"sess-seat-claude\",\"cwd\":\".\",\"tools\":[\"Read\",\"Grep\",\"Glob\"],\"model\":\"claude-opus-5-5\"}"
+[[rule.step]]
+hang = true
+
+[[rule]]
+argv0 = "codex"
+args_contain = ["exec"]
+prompt_contains = 'end with a report that matches the schema'
+stdin_prompt = "all"
+[[rule.step]]
+emit = "{\"type\":\"thread.started\",\"thread_id\":\"thread-seat-codex\"}"
+[[rule.step]]
+emit = "{\"type\":\"turn.started\"}"
+[[rule.step]]
+hang = true
+
+[[rule]]
+argv0 = "agy"
+args_contain = ["--output-format"]
+prompt_contains = 'end with a report that matches the schema'
+stdin_prompt = "line"
+[[rule.step]]
+emit = "{\"event\":\"init\",\"conversation_id\":\"conv-seat-agy\",\"init\":{\"model\":\"gemini-3.8-flash-low\",\"cwd\":\".\",\"tools\":[]}}"
+[[rule.step]]
+hang = true
+
+[[rule]]
+argv0 = "opencode"
+args_contain = ["run"]
+prompt_contains = 'end with a report that matches the schema'
+stdin_prompt = "all"
+[[rule.step]]
+emit = "{\"type\":\"step_start\",\"timestamp\":1790000000000,\"sessionID\":\"ses_seat_opencode\",\"part\":{\"id\":\"prt_seat_1\",\"sessionID\":\"ses_seat_opencode\",\"messageID\":\"msg_seat_1\",\"type\":\"step-start\"}}"
+[[rule.step]]
+hang = true
+
+# The agreed plan splits into its four pieces.
+[[rule]]
+argv0 = "claude"
+prompt_contains = 'You turn an approved plan into tasks'
+stdin_prompt = "line"
+[[rule.step]]
+emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"sess-seat-claude\",\"cwd\":\".\",\"tools\":[\"Read\",\"Grep\",\"Glob\"],\"model\":\"claude-opus-5-5\"}"
+[[rule.step]]
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"sess-seat-claude\",\"result\":\"\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":1200,\"output_tokens\":240},\"structured_output\":{\"tasks\":[{\"key\":\"redis-bucket\",\"title\":\"Redis bucket\",\"task\":\"Build the limiter: a token bucket per API key in Redis, in src/middleware/rate_limit.ts.\",\"kind\":\"build\",\"owned_paths\":[\"src/middleware/rate_limit.ts\"],\"read_only_paths\":[],\"depends_on\":[],\"criteria\":[]},{\"key\":\"plan-limits\",\"title\":\"Plan limits\",\"task\":\"Build the plan limits in src/limits/plans.ts.\",\"kind\":\"build\",\"owned_paths\":[\"src/limits/plans.ts\"],\"read_only_paths\":[],\"depends_on\":[],\"criteria\":[]},{\"key\":\"memory-store\",\"title\":\"Memory store\",\"task\":\"Build the memory store in src/limits/memory.ts.\",\"kind\":\"build\",\"owned_paths\":[\"src/limits/memory.ts\"],\"read_only_paths\":[],\"depends_on\":[],\"criteria\":[]},{\"key\":\"route-tests\",\"title\":\"Route tests\",\"task\":\"Build the route tests in test/routes/orders.test.ts.\",\"kind\":\"build\",\"owned_paths\":[\"test/routes/orders.test.ts\",\"test/routes/users.test.ts\",\"test/routes/import.test.ts\"],\"read_only_paths\":[],\"depends_on\":[\"redis-bucket\"],\"criteria\":[]}]}}"
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "codex"
+args_contain = ["exec"]
+prompt_contains = 'You turn an approved plan into tasks'
+stdin_prompt = "all"
+[[rule.step]]
+emit = "{\"type\":\"thread.started\",\"thread_id\":\"thread-seat-codex\"}"
+[[rule.step]]
+emit = "{\"type\":\"turn.started\"}"
+[[rule.step]]
+emit = "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"{\\\"tasks\\\": [{\\\"key\\\": \\\"redis-bucket\\\", \\\"title\\\": \\\"Redis bucket\\\", \\\"task\\\": \\\"Build the limiter: a token bucket per API key in Redis, in src/middleware/rate_limit.ts.\\\", \\\"kind\\\": \\\"build\\\", \\\"owned_paths\\\": [\\\"src/middleware/rate_limit.ts\\\"], \\\"read_only_paths\\\": [], \\\"depends_on\\\": [], \\\"criteria\\\": []}, {\\\"key\\\": \\\"plan-limits\\\", \\\"title\\\": \\\"Plan limits\\\", \\\"task\\\": \\\"Build the plan limits in src/limits/plans.ts.\\\", \\\"kind\\\": \\\"build\\\", \\\"owned_paths\\\": [\\\"src/limits/plans.ts\\\"], \\\"read_only_paths\\\": [], \\\"depends_on\\\": [], \\\"criteria\\\": []}, {\\\"key\\\": \\\"memory-store\\\", \\\"title\\\": \\\"Memory store\\\", \\\"task\\\": \\\"Build the memory store in src/limits/memory.ts.\\\", \\\"kind\\\": \\\"build\\\", \\\"owned_paths\\\": [\\\"src/limits/memory.ts\\\"], \\\"read_only_paths\\\": [], \\\"depends_on\\\": [], \\\"criteria\\\": []}, {\\\"key\\\": \\\"route-tests\\\", \\\"title\\\": \\\"Route tests\\\", \\\"task\\\": \\\"Build the route tests in test/routes/orders.test.ts.\\\", \\\"kind\\\": \\\"build\\\", \\\"owned_paths\\\": [\\\"test/routes/orders.test.ts\\\", \\\"test/routes/users.test.ts\\\", \\\"test/routes/import.test.ts\\\"], \\\"read_only_paths\\\": [], \\\"depends_on\\\": [\\\"redis-bucket\\\"], \\\"criteria\\\": []}]}\"}}"
+[[rule.step]]
+emit = "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1200,\"cached_input_tokens\":0,\"cache_write_input_tokens\":0,\"output_tokens\":240,\"reasoning_output_tokens\":0}}"
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "agy"
+args_contain = ["--output-format"]
+prompt_contains = 'You turn an approved plan into tasks'
+stdin_prompt = "line"
+[[rule.step]]
+emit = "{\"event\":\"init\",\"conversation_id\":\"conv-seat-agy\",\"init\":{\"model\":\"gemini-3.8-flash-low\",\"cwd\":\".\",\"tools\":[]}}"
+[[rule.step]]
+emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"conv-seat-agy\",\"status\":\"SUCCESS\",\"response\":\"{\\\"tasks\\\": [{\\\"key\\\": \\\"redis-bucket\\\", \\\"title\\\": \\\"Redis bucket\\\", \\\"task\\\": \\\"Build the limiter: a token bucket per API key in Redis, in src/middleware/rate_limit.ts.\\\", \\\"kind\\\": \\\"build\\\", \\\"owned_paths\\\": [\\\"src/middleware/rate_limit.ts\\\"], \\\"read_only_paths\\\": [], \\\"depends_on\\\": [], \\\"criteria\\\": []}, {\\\"key\\\": \\\"plan-limits\\\", \\\"title\\\": \\\"Plan limits\\\", \\\"task\\\": \\\"Build the plan limits in src/limits/plans.ts.\\\", \\\"kind\\\": \\\"build\\\", \\\"owned_paths\\\": [\\\"src/limits/plans.ts\\\"], \\\"read_only_paths\\\": [], \\\"depends_on\\\": [], \\\"criteria\\\": []}, {\\\"key\\\": \\\"memory-store\\\", \\\"title\\\": \\\"Memory store\\\", \\\"task\\\": \\\"Build the memory store in src/limits/memory.ts.\\\", \\\"kind\\\": \\\"build\\\", \\\"owned_paths\\\": [\\\"src/limits/memory.ts\\\"], \\\"read_only_paths\\\": [], \\\"depends_on\\\": [], \\\"criteria\\\": []}, {\\\"key\\\": \\\"route-tests\\\", \\\"title\\\": \\\"Route tests\\\", \\\"task\\\": \\\"Build the route tests in test/routes/orders.test.ts.\\\", \\\"kind\\\": \\\"build\\\", \\\"owned_paths\\\": [\\\"test/routes/orders.test.ts\\\", \\\"test/routes/users.test.ts\\\", \\\"test/routes/import.test.ts\\\"], \\\"read_only_paths\\\": [], \\\"depends_on\\\": [\\\"redis-bucket\\\"], \\\"criteria\\\": []}]}\",\"duration_seconds\":1.0,\"num_turns\":1,\"usage\":{\"input_tokens\":1200,\"output_tokens\":240,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":1440}}}"
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "opencode"
+args_contain = ["run"]
+prompt_contains = 'You turn an approved plan into tasks'
+stdin_prompt = "all"
+[[rule.step]]
+emit = "{\"type\":\"step_start\",\"timestamp\":1790000000000,\"sessionID\":\"ses_seat_opencode\",\"part\":{\"id\":\"prt_seat_1\",\"sessionID\":\"ses_seat_opencode\",\"messageID\":\"msg_seat_1\",\"type\":\"step-start\"}}"
+[[rule.step]]
+emit = "{\"type\":\"text\",\"timestamp\":1790000001000,\"sessionID\":\"ses_seat_opencode\",\"part\":{\"id\":\"prt_seat_2\",\"sessionID\":\"ses_seat_opencode\",\"messageID\":\"msg_seat_1\",\"type\":\"text\",\"text\":\"{\\\"tasks\\\": [{\\\"key\\\": \\\"redis-bucket\\\", \\\"title\\\": \\\"Redis bucket\\\", \\\"task\\\": \\\"Build the limiter: a token bucket per API key in Redis, in src/middleware/rate_limit.ts.\\\", \\\"kind\\\": \\\"build\\\", \\\"owned_paths\\\": [\\\"src/middleware/rate_limit.ts\\\"], \\\"read_only_paths\\\": [], \\\"depends_on\\\": [], \\\"criteria\\\": []}, {\\\"key\\\": \\\"plan-limits\\\", \\\"title\\\": \\\"Plan limits\\\", \\\"task\\\": \\\"Build the plan limits in src/limits/plans.ts.\\\", \\\"kind\\\": \\\"build\\\", \\\"owned_paths\\\": [\\\"src/limits/plans.ts\\\"], \\\"read_only_paths\\\": [], \\\"depends_on\\\": [], \\\"criteria\\\": []}, {\\\"key\\\": \\\"memory-store\\\", \\\"title\\\": \\\"Memory store\\\", \\\"task\\\": \\\"Build the memory store in src/limits/memory.ts.\\\", \\\"kind\\\": \\\"build\\\", \\\"owned_paths\\\": [\\\"src/limits/memory.ts\\\"], \\\"read_only_paths\\\": [], \\\"depends_on\\\": [], \\\"criteria\\\": []}, {\\\"key\\\": \\\"route-tests\\\", \\\"title\\\": \\\"Route tests\\\", \\\"task\\\": \\\"Build the route tests in test/routes/orders.test.ts.\\\", \\\"kind\\\": \\\"build\\\", \\\"owned_paths\\\": [\\\"test/routes/orders.test.ts\\\", \\\"test/routes/users.test.ts\\\", \\\"test/routes/import.test.ts\\\"], \\\"read_only_paths\\\": [], \\\"depends_on\\\": [\\\"redis-bucket\\\"], \\\"criteria\\\": []}]}\",\"time\":{\"start\":1790000000500,\"end\":1790000001000}}}"
+[[rule.step]]
+emit = "{\"type\":\"step_finish\",\"timestamp\":1790000001100,\"sessionID\":\"ses_seat_opencode\",\"part\":{\"id\":\"prt_seat_3\",\"sessionID\":\"ses_seat_opencode\",\"messageID\":\"msg_seat_1\",\"type\":\"step-finish\",\"reason\":\"stop\",\"cost\":0,\"tokens\":{\"input\":1200,\"output\":240,\"reasoning\":0,\"cache\":{\"read\":0,\"write\":0}}}}"
+[[rule.step]]
+exit = 0
+
+# The note keeper writes the plan once every seat agrees.
+[[rule]]
+argv0 = "claude"
+prompt_contains = 'Every point is settled'
+stdin_prompt = "line"
+[[rule.step]]
+emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"sess-seat-claude\",\"cwd\":\".\",\"tools\":[\"Read\",\"Grep\",\"Glob\"],\"model\":\"claude-opus-5-5\"}"
+[[rule.step]]
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"sess-seat-claude\",\"result\":\"The Redis bucket, the plan limits, the memory store and the route tests, one task each.\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":1200,\"output_tokens\":240},\"structured_output\":{\"message\":\"The Redis bucket, the plan limits, the memory store and the route tests, one task each.\",\"reply_to\":null,\"quote\":null,\"stances\":[],\"new_points\":[],\"reword\":[],\"points\":[],\"plan\":{\"summary\":\"A token bucket per API key in Redis, with limits from each key's plan.\",\"approach\":\"Check and take a token in one Lua script; answer 429 with Retry-After.\",\"pieces\":[{\"name\":\"Redis bucket\",\"description\":\"Redis bucket\",\"paths\":[\"src/middleware/rate_limit.ts\"],\"interfaces\":[],\"depends_on\":[]},{\"name\":\"Plan limits\",\"description\":\"Plan limits\",\"paths\":[\"src/limits/plans.ts\"],\"interfaces\":[],\"depends_on\":[]},{\"name\":\"Memory store\",\"description\":\"Memory store\",\"paths\":[\"src/limits/memory.ts\"],\"interfaces\":[],\"depends_on\":[]},{\"name\":\"Route tests\",\"description\":\"Route tests\",\"paths\":[\"test/rate_limit.test.ts\"],\"interfaces\":[],\"depends_on\":[\"Redis bucket\"]}],\"choices\":[],\"risks\":[\"Redis down: fail open for 30 seconds\"],\"test_strategy\":\"Route tests for 429 and Retry-After\",\"new_dependencies\":[]}}}"
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "codex"
+args_contain = ["exec"]
+prompt_contains = 'Every point is settled'
+stdin_prompt = "all"
+[[rule.step]]
+emit = "{\"type\":\"thread.started\",\"thread_id\":\"thread-seat-codex\"}"
+[[rule.step]]
+emit = "{\"type\":\"turn.started\"}"
+[[rule.step]]
+emit = "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"{\\\"message\\\": \\\"The Redis bucket, the plan limits, the memory store and the route tests, one task each.\\\", \\\"reply_to\\\": null, \\\"quote\\\": null, \\\"stances\\\": [], \\\"new_points\\\": [], \\\"reword\\\": [], \\\"points\\\": [], \\\"plan\\\": {\\\"summary\\\": \\\"A token bucket per API key in Redis, with limits from each key's plan.\\\", \\\"approach\\\": \\\"Check and take a token in one Lua script; answer 429 with Retry-After.\\\", \\\"pieces\\\": [{\\\"name\\\": \\\"Redis bucket\\\", \\\"description\\\": \\\"Redis bucket\\\", \\\"paths\\\": [\\\"src/middleware/rate_limit.ts\\\"], \\\"interfaces\\\": [], \\\"depends_on\\\": []}, {\\\"name\\\": \\\"Plan limits\\\", \\\"description\\\": \\\"Plan limits\\\", \\\"paths\\\": [\\\"src/limits/plans.ts\\\"], \\\"interfaces\\\": [], \\\"depends_on\\\": []}, {\\\"name\\\": \\\"Memory store\\\", \\\"description\\\": \\\"Memory store\\\", \\\"paths\\\": [\\\"src/limits/memory.ts\\\"], \\\"interfaces\\\": [], \\\"depends_on\\\": []}, {\\\"name\\\": \\\"Route tests\\\", \\\"description\\\": \\\"Route tests\\\", \\\"paths\\\": [\\\"test/rate_limit.test.ts\\\"], \\\"interfaces\\\": [], \\\"depends_on\\\": [\\\"Redis bucket\\\"]}], \\\"choices\\\": [], \\\"risks\\\": [\\\"Redis down: fail open for 30 seconds\\\"], \\\"test_strategy\\\": \\\"Route tests for 429 and Retry-After\\\", \\\"new_dependencies\\\": []}}\"}}"
+[[rule.step]]
+emit = "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1200,\"cached_input_tokens\":0,\"cache_write_input_tokens\":0,\"output_tokens\":240,\"reasoning_output_tokens\":0}}"
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "agy"
+args_contain = ["--output-format"]
+prompt_contains = 'Every point is settled'
+stdin_prompt = "line"
+[[rule.step]]
+emit = "{\"event\":\"init\",\"conversation_id\":\"conv-seat-agy\",\"init\":{\"model\":\"gemini-3.8-flash-low\",\"cwd\":\".\",\"tools\":[]}}"
+[[rule.step]]
+emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"conv-seat-agy\",\"status\":\"SUCCESS\",\"response\":\"{\\\"message\\\": \\\"The Redis bucket, the plan limits, the memory store and the route tests, one task each.\\\", \\\"reply_to\\\": null, \\\"quote\\\": null, \\\"stances\\\": [], \\\"new_points\\\": [], \\\"reword\\\": [], \\\"points\\\": [], \\\"plan\\\": {\\\"summary\\\": \\\"A token bucket per API key in Redis, with limits from each key's plan.\\\", \\\"approach\\\": \\\"Check and take a token in one Lua script; answer 429 with Retry-After.\\\", \\\"pieces\\\": [{\\\"name\\\": \\\"Redis bucket\\\", \\\"description\\\": \\\"Redis bucket\\\", \\\"paths\\\": [\\\"src/middleware/rate_limit.ts\\\"], \\\"interfaces\\\": [], \\\"depends_on\\\": []}, {\\\"name\\\": \\\"Plan limits\\\", \\\"description\\\": \\\"Plan limits\\\", \\\"paths\\\": [\\\"src/limits/plans.ts\\\"], \\\"interfaces\\\": [], \\\"depends_on\\\": []}, {\\\"name\\\": \\\"Memory store\\\", \\\"description\\\": \\\"Memory store\\\", \\\"paths\\\": [\\\"src/limits/memory.ts\\\"], \\\"interfaces\\\": [], \\\"depends_on\\\": []}, {\\\"name\\\": \\\"Route tests\\\", \\\"description\\\": \\\"Route tests\\\", \\\"paths\\\": [\\\"test/rate_limit.test.ts\\\"], \\\"interfaces\\\": [], \\\"depends_on\\\": [\\\"Redis bucket\\\"]}], \\\"choices\\\": [], \\\"risks\\\": [\\\"Redis down: fail open for 30 seconds\\\"], \\\"test_strategy\\\": \\\"Route tests for 429 and Retry-After\\\", \\\"new_dependencies\\\": []}}\",\"duration_seconds\":1.0,\"num_turns\":1,\"usage\":{\"input_tokens\":1200,\"output_tokens\":240,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":1440}}}"
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "opencode"
+args_contain = ["run"]
+prompt_contains = 'Every point is settled'
+stdin_prompt = "all"
+[[rule.step]]
+emit = "{\"type\":\"step_start\",\"timestamp\":1790000000000,\"sessionID\":\"ses_seat_opencode\",\"part\":{\"id\":\"prt_seat_1\",\"sessionID\":\"ses_seat_opencode\",\"messageID\":\"msg_seat_1\",\"type\":\"step-start\"}}"
+[[rule.step]]
+emit = "{\"type\":\"text\",\"timestamp\":1790000001000,\"sessionID\":\"ses_seat_opencode\",\"part\":{\"id\":\"prt_seat_2\",\"sessionID\":\"ses_seat_opencode\",\"messageID\":\"msg_seat_1\",\"type\":\"text\",\"text\":\"{\\\"message\\\": \\\"The Redis bucket, the plan limits, the memory store and the route tests, one task each.\\\", \\\"reply_to\\\": null, \\\"quote\\\": null, \\\"stances\\\": [], \\\"new_points\\\": [], \\\"reword\\\": [], \\\"points\\\": [], \\\"plan\\\": {\\\"summary\\\": \\\"A token bucket per API key in Redis, with limits from each key's plan.\\\", \\\"approach\\\": \\\"Check and take a token in one Lua script; answer 429 with Retry-After.\\\", \\\"pieces\\\": [{\\\"name\\\": \\\"Redis bucket\\\", \\\"description\\\": \\\"Redis bucket\\\", \\\"paths\\\": [\\\"src/middleware/rate_limit.ts\\\"], \\\"interfaces\\\": [], \\\"depends_on\\\": []}, {\\\"name\\\": \\\"Plan limits\\\", \\\"description\\\": \\\"Plan limits\\\", \\\"paths\\\": [\\\"src/limits/plans.ts\\\"], \\\"interfaces\\\": [], \\\"depends_on\\\": []}, {\\\"name\\\": \\\"Memory store\\\", \\\"description\\\": \\\"Memory store\\\", \\\"paths\\\": [\\\"src/limits/memory.ts\\\"], \\\"interfaces\\\": [], \\\"depends_on\\\": []}, {\\\"name\\\": \\\"Route tests\\\", \\\"description\\\": \\\"Route tests\\\", \\\"paths\\\": [\\\"test/rate_limit.test.ts\\\"], \\\"interfaces\\\": [], \\\"depends_on\\\": [\\\"Redis bucket\\\"]}], \\\"choices\\\": [], \\\"risks\\\": [\\\"Redis down: fail open for 30 seconds\\\"], \\\"test_strategy\\\": \\\"Route tests for 429 and Retry-After\\\", \\\"new_dependencies\\\": []}}\",\"time\":{\"start\":1790000000500,\"end\":1790000001000}}}"
+[[rule.step]]
+emit = "{\"type\":\"step_finish\",\"timestamp\":1790000001100,\"sessionID\":\"ses_seat_opencode\",\"part\":{\"id\":\"prt_seat_3\",\"sessionID\":\"ses_seat_opencode\",\"messageID\":\"msg_seat_1\",\"type\":\"step-finish\",\"reason\":\"stop\",\"cost\":0,\"tokens\":{\"input\":1200,\"output\":240,\"reasoning\":0,\"cache\":{\"read\":0,\"write\":0}}}}"
+[[rule.step]]
+exit = 0
+
+# The note keeper lists two points.
+[[rule]]
+argv0 = "claude"
+prompt_contains = 'You keep the council'
+stdin_prompt = "line"
+[[rule.step]]
+emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"sess-seat-claude\",\"cwd\":\".\",\"tools\":[\"Read\",\"Grep\",\"Glob\"],\"model\":\"claude-opus-5-5\"}"
+[[rule.step]]
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"sess-seat-claude\",\"result\":\"Two points, and every answer but one keeps the counters in Redis.\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":1200,\"output_tokens\":240},\"structured_output\":{\"message\":\"Two points, and every answer but one keeps the counters in Redis.\",\"reply_to\":null,\"quote\":null,\"stances\":[],\"new_points\":[],\"reword\":[],\"points\":[{\"words\":\"Keep the counters in a token bucket per API key, in Redis\",\"sides\":[]},{\"words\":\"Calls with no key share one small bucket, so /health keeps working\",\"sides\":[]}],\"plan\":null}}"
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "codex"
+args_contain = ["exec"]
+prompt_contains = 'You keep the council'
+stdin_prompt = "all"
+[[rule.step]]
+emit = "{\"type\":\"thread.started\",\"thread_id\":\"thread-seat-codex\"}"
+[[rule.step]]
+emit = "{\"type\":\"turn.started\"}"
+[[rule.step]]
+emit = "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"{\\\"message\\\": \\\"Two points, and every answer but one keeps the counters in Redis.\\\", \\\"reply_to\\\": null, \\\"quote\\\": null, \\\"stances\\\": [], \\\"new_points\\\": [], \\\"reword\\\": [], \\\"points\\\": [{\\\"words\\\": \\\"Keep the counters in a token bucket per API key, in Redis\\\", \\\"sides\\\": []}, {\\\"words\\\": \\\"Calls with no key share one small bucket, so /health keeps working\\\", \\\"sides\\\": []}], \\\"plan\\\": null}\"}}"
+[[rule.step]]
+emit = "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1200,\"cached_input_tokens\":0,\"cache_write_input_tokens\":0,\"output_tokens\":240,\"reasoning_output_tokens\":0}}"
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "agy"
+args_contain = ["--output-format"]
+prompt_contains = 'You keep the council'
+stdin_prompt = "line"
+[[rule.step]]
+emit = "{\"event\":\"init\",\"conversation_id\":\"conv-seat-agy\",\"init\":{\"model\":\"gemini-3.8-flash-low\",\"cwd\":\".\",\"tools\":[]}}"
+[[rule.step]]
+emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"conv-seat-agy\",\"status\":\"SUCCESS\",\"response\":\"{\\\"message\\\": \\\"Two points, and every answer but one keeps the counters in Redis.\\\", \\\"reply_to\\\": null, \\\"quote\\\": null, \\\"stances\\\": [], \\\"new_points\\\": [], \\\"reword\\\": [], \\\"points\\\": [{\\\"words\\\": \\\"Keep the counters in a token bucket per API key, in Redis\\\", \\\"sides\\\": []}, {\\\"words\\\": \\\"Calls with no key share one small bucket, so /health keeps working\\\", \\\"sides\\\": []}], \\\"plan\\\": null}\",\"duration_seconds\":1.0,\"num_turns\":1,\"usage\":{\"input_tokens\":1200,\"output_tokens\":240,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":1440}}}"
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "opencode"
+args_contain = ["run"]
+prompt_contains = 'You keep the council'
+stdin_prompt = "all"
+[[rule.step]]
+emit = "{\"type\":\"step_start\",\"timestamp\":1790000000000,\"sessionID\":\"ses_seat_opencode\",\"part\":{\"id\":\"prt_seat_1\",\"sessionID\":\"ses_seat_opencode\",\"messageID\":\"msg_seat_1\",\"type\":\"step-start\"}}"
+[[rule.step]]
+emit = "{\"type\":\"text\",\"timestamp\":1790000001000,\"sessionID\":\"ses_seat_opencode\",\"part\":{\"id\":\"prt_seat_2\",\"sessionID\":\"ses_seat_opencode\",\"messageID\":\"msg_seat_1\",\"type\":\"text\",\"text\":\"{\\\"message\\\": \\\"Two points, and every answer but one keeps the counters in Redis.\\\", \\\"reply_to\\\": null, \\\"quote\\\": null, \\\"stances\\\": [], \\\"new_points\\\": [], \\\"reword\\\": [], \\\"points\\\": [{\\\"words\\\": \\\"Keep the counters in a token bucket per API key, in Redis\\\", \\\"sides\\\": []}, {\\\"words\\\": \\\"Calls with no key share one small bucket, so /health keeps working\\\", \\\"sides\\\": []}], \\\"plan\\\": null}\",\"time\":{\"start\":1790000000500,\"end\":1790000001000}}}"
+[[rule.step]]
+emit = "{\"type\":\"step_finish\",\"timestamp\":1790000001100,\"sessionID\":\"ses_seat_opencode\",\"part\":{\"id\":\"prt_seat_3\",\"sessionID\":\"ses_seat_opencode\",\"messageID\":\"msg_seat_1\",\"type\":\"step-finish\",\"reason\":\"stop\",\"cost\":0,\"tokens\":{\"input\":1200,\"output\":240,\"reasoning\":0,\"cache\":{\"read\":0,\"write\":0}}}}"
+[[rule.step]]
+exit = 0
+
+# Every seat backs the keeper's two points, and 3.8 Flash objects to a way you asked for.
+[[rule]]
+argv0 = "claude"
+prompt_contains = 'A point changed. React'
+stdin_prompt = "line"
+[[rule.step]]
+emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"sess-seat-claude\",\"cwd\":\".\",\"tools\":[\"Read\",\"Grep\",\"Glob\"],\"model\":\"claude-opus-5-5\"}"
+[[rule.step]]
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"sess-seat-claude\",\"result\":\"\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":1200,\"output_tokens\":240},\"structured_output\":{\"message\":\"\",\"reply_to\":null,\"quote\":null,\"stances\":[{\"point\":1,\"stance\":\"agree\",\"because\":null,\"message\":null,\"quote\":null},{\"point\":2,\"stance\":\"agree\",\"because\":null,\"message\":null,\"quote\":null},{\"point\":3,\"stance\":\"agree\",\"because\":null,\"message\":null,\"quote\":null},{\"point\":4,\"stance\":\"agree\",\"because\":null,\"message\":null,\"quote\":null},{\"point\":5,\"stance\":\"agree\",\"because\":null,\"message\":null,\"quote\":null}],\"new_points\":[],\"reword\":[],\"points\":[],\"plan\":null}}"
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "codex"
+args_contain = ["exec"]
+prompt_contains = 'A point changed. React'
+stdin_prompt = "all"
+[[rule.step]]
+emit = "{\"type\":\"thread.started\",\"thread_id\":\"thread-seat-codex\"}"
+[[rule.step]]
+emit = "{\"type\":\"turn.started\"}"
+[[rule.step]]
+emit = "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"{\\\"message\\\": \\\"\\\", \\\"reply_to\\\": null, \\\"quote\\\": null, \\\"stances\\\": [{\\\"point\\\": 1, \\\"stance\\\": \\\"agree\\\", \\\"because\\\": null, \\\"message\\\": null, \\\"quote\\\": null}, {\\\"point\\\": 2, \\\"stance\\\": \\\"agree\\\", \\\"because\\\": null, \\\"message\\\": null, \\\"quote\\\": null}, {\\\"point\\\": 3, \\\"stance\\\": \\\"agree\\\", \\\"because\\\": null, \\\"message\\\": null, \\\"quote\\\": null}, {\\\"point\\\": 4, \\\"stance\\\": \\\"agree\\\", \\\"because\\\": null, \\\"message\\\": null, \\\"quote\\\": null}, {\\\"point\\\": 5, \\\"stance\\\": \\\"agree\\\", \\\"because\\\": null, \\\"message\\\": null, \\\"quote\\\": null}], \\\"new_points\\\": [], \\\"reword\\\": [], \\\"points\\\": [], \\\"plan\\\": null}\"}}"
+[[rule.step]]
+emit = "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1200,\"cached_input_tokens\":0,\"cache_write_input_tokens\":0,\"output_tokens\":240,\"reasoning_output_tokens\":0}}"
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "agy"
+args_contain = ["--output-format"]
+prompt_contains = 'A point changed. React'
+stdin_prompt = "line"
+[[rule.step]]
+emit = "{\"event\":\"init\",\"conversation_id\":\"conv-seat-agy\",\"init\":{\"model\":\"gemini-3.8-flash-low\",\"cwd\":\".\",\"tools\":[]}}"
+[[rule.step]]
+emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"conv-seat-agy\",\"status\":\"SUCCESS\",\"response\":\"{\\\"message\\\": \\\"\\\", \\\"reply_to\\\": null, \\\"quote\\\": null, \\\"stances\\\": [{\\\"point\\\": 1, \\\"stance\\\": \\\"agree\\\", \\\"because\\\": null, \\\"message\\\": null, \\\"quote\\\": null}, {\\\"point\\\": 2, \\\"stance\\\": \\\"agree\\\", \\\"because\\\": null, \\\"message\\\": null, \\\"quote\\\": null}, {\\\"point\\\": 3, \\\"stance\\\": \\\"object\\\", \\\"because\\\": \\\"every request reads this table, so Maker-checker\\\", \\\"message\\\": null, \\\"quote\\\": null}, {\\\"point\\\": 4, \\\"stance\\\": \\\"agree\\\", \\\"because\\\": null, \\\"message\\\": null, \\\"quote\\\": null}, {\\\"point\\\": 5, \\\"stance\\\": \\\"agree\\\", \\\"because\\\": null, \\\"message\\\": null, \\\"quote\\\": null}], \\\"new_points\\\": [], \\\"reword\\\": [], \\\"points\\\": [], \\\"plan\\\": null}\",\"duration_seconds\":1.0,\"num_turns\":1,\"usage\":{\"input_tokens\":1200,\"output_tokens\":240,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":1440}}}"
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "opencode"
+args_contain = ["run"]
+prompt_contains = 'A point changed. React'
+stdin_prompt = "all"
+[[rule.step]]
+emit = "{\"type\":\"step_start\",\"timestamp\":1790000000000,\"sessionID\":\"ses_seat_opencode\",\"part\":{\"id\":\"prt_seat_1\",\"sessionID\":\"ses_seat_opencode\",\"messageID\":\"msg_seat_1\",\"type\":\"step-start\"}}"
+[[rule.step]]
+emit = "{\"type\":\"text\",\"timestamp\":1790000001000,\"sessionID\":\"ses_seat_opencode\",\"part\":{\"id\":\"prt_seat_2\",\"sessionID\":\"ses_seat_opencode\",\"messageID\":\"msg_seat_1\",\"type\":\"text\",\"text\":\"{\\\"message\\\": \\\"\\\", \\\"reply_to\\\": null, \\\"quote\\\": null, \\\"stances\\\": [{\\\"point\\\": 1, \\\"stance\\\": \\\"agree\\\", \\\"because\\\": null, \\\"message\\\": null, \\\"quote\\\": null}, {\\\"point\\\": 2, \\\"stance\\\": \\\"agree\\\", \\\"because\\\": null, \\\"message\\\": null, \\\"quote\\\": null}, {\\\"point\\\": 3, \\\"stance\\\": \\\"agree\\\", \\\"because\\\": null, \\\"message\\\": null, \\\"quote\\\": null}, {\\\"point\\\": 4, \\\"stance\\\": \\\"agree\\\", \\\"because\\\": null, \\\"message\\\": null, \\\"quote\\\": null}, {\\\"point\\\": 5, \\\"stance\\\": \\\"agree\\\", \\\"because\\\": null, \\\"message\\\": null, \\\"quote\\\": null}], \\\"new_points\\\": [], \\\"reword\\\": [], \\\"points\\\": [], \\\"plan\\\": null}\",\"time\":{\"start\":1790000000500,\"end\":1790000001000}}}"
+[[rule.step]]
+emit = "{\"type\":\"step_finish\",\"timestamp\":1790000001100,\"sessionID\":\"ses_seat_opencode\",\"part\":{\"id\":\"prt_seat_3\",\"sessionID\":\"ses_seat_opencode\",\"messageID\":\"msg_seat_1\",\"type\":\"step-finish\",\"reason\":\"stop\",\"cost\":0,\"tokens\":{\"input\":1200,\"output\":240,\"reasoning\":0,\"cache\":{\"read\":0,\"write\":0}}}}"
+[[rule.step]]
+exit = 0
+
+# Each seat's first answer, as the drawing shows its opening.
+[[rule]]
+argv0 = "claude"
+prompt_contains = 'Write your first answer'
+stdin_prompt = "line"
+[[rule.step]]
+emit = "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"sess-seat-claude\",\"cwd\":\".\",\"tools\":[\"Read\",\"Grep\",\"Glob\"],\"model\":\"claude-opus-5-5\"}"
+[[rule.step]]
+emit = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"sess-seat-claude\",\"result\":\"A token bucket per API key, in Redis: we run 3 API nodes, so a per-node limit lets a client in 3 times over.\\n- 100 at once, refilled at 10 a second; an empty bucket answers 429 with Retry-After\\n- Calls with no key share one small bucket, so /health and the status page keep working\\n- More of the answer, row 1\\n- More of the answer, row 2\\n- More of the answer, row 3\\n- More of the answer, row 4\\n- More of the answer, row 5\\n- More of the answer, row 6\\n- More of the answer, row 7\\n- More of the answer, row 8\\n- More of the answer, row 9\",\"total_cost_usd\":0.01,\"usage\":{\"input_tokens\":1200,\"output_tokens\":240},\"structured_output\":{\"message\":\"A token bucket per API key, in Redis: we run 3 API nodes, so a per-node limit lets a client in 3 times over.\\n- 100 at once, refilled at 10 a second; an empty bucket answers 429 with Retry-After\\n- Calls with no key share one small bucket, so /health and the status page keep working\\n- More of the answer, row 1\\n- More of the answer, row 2\\n- More of the answer, row 3\\n- More of the answer, row 4\\n- More of the answer, row 5\\n- More of the answer, row 6\\n- More of the answer, row 7\\n- More of the answer, row 8\\n- More of the answer, row 9\",\"reply_to\":null,\"quote\":null,\"stances\":[],\"new_points\":[],\"reword\":[],\"points\":[],\"plan\":null}}"
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "codex"
+args_contain = ["exec"]
+prompt_contains = 'Write your first answer'
+stdin_prompt = "all"
+[[rule.step]]
+emit = "{\"type\":\"thread.started\",\"thread_id\":\"thread-seat-codex\"}"
+[[rule.step]]
+emit = "{\"type\":\"turn.started\"}"
+[[rule.step]]
+emit = "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"{\\\"message\\\": \\\"A sliding window counter per key in Redis: INCR and EXPIRE, one call, nothing to tune.\\\\n- Limits from the key's plan in the keys table: free 60 a minute, pro 600\\\\n- Calls with no key get 401; the docs already say every call needs one\\\\n- More of the answer, row 1\\\\n- More of the answer, row 2\\\\n- More of the answer, row 3\\\\n- More of the answer, row 4\\\\n- More of the answer, row 5\\\\n- More of the answer, row 6\\\\n- More of the answer, row 7\\\", \\\"reply_to\\\": null, \\\"quote\\\": null, \\\"stances\\\": [], \\\"new_points\\\": [], \\\"reword\\\": [], \\\"points\\\": [], \\\"plan\\\": null}\"}}"
+[[rule.step]]
+emit = "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1200,\"cached_input_tokens\":0,\"cache_write_input_tokens\":0,\"output_tokens\":240,\"reasoning_output_tokens\":0}}"
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "agy"
+args_contain = ["--output-format"]
+prompt_contains = 'Write your first answer'
+stdin_prompt = "line"
+[[rule.step]]
+emit = "{\"event\":\"init\",\"conversation_id\":\"conv-seat-agy\",\"init\":{\"model\":\"gemini-3.8-flash-low\",\"cwd\":\".\",\"tools\":[]}}"
+[[rule.step]]
+emit = "{\"event\":\"result\",\"result\":{\"conversation_id\":\"conv-seat-agy\",\"status\":\"SUCCESS\",\"response\":\"{\\\"message\\\": \\\"A token bucket per key in Redis, checked and taken in one Lua script, so two nodes can't both take the last token.\\\\n- The importer key sends about 2,000 a minute at night (logs/importer.log)\\\\n- Send X-RateLimit-Remaining on every answer, so clients slow down before a 429\\\\n- More of the answer, row 1\\\\n- More of the answer, row 2\\\\n- More of the answer, row 3\\\\n- More of the answer, row 4\\\\n- More of the answer, row 5\\\", \\\"reply_to\\\": null, \\\"quote\\\": null, \\\"stances\\\": [], \\\"new_points\\\": [], \\\"reword\\\": [], \\\"points\\\": [], \\\"plan\\\": null}\",\"duration_seconds\":1.0,\"num_turns\":1,\"usage\":{\"input_tokens\":1200,\"output_tokens\":240,\"thinking_tokens\":0,\"cache_read_tokens\":0,\"total_tokens\":1440}}}"
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "opencode"
+args_contain = ["run"]
+prompt_contains = 'Write your first answer'
+stdin_prompt = "all"
+[[rule.step]]
+emit = "{\"type\":\"step_start\",\"timestamp\":1790000000000,\"sessionID\":\"ses_seat_opencode\",\"part\":{\"id\":\"prt_seat_1\",\"sessionID\":\"ses_seat_opencode\",\"messageID\":\"msg_seat_1\",\"type\":\"step-start\"}}"
+[[rule.step]]
+emit = "{\"type\":\"text\",\"timestamp\":1790000001000,\"sessionID\":\"ses_seat_opencode\",\"part\":{\"id\":\"prt_seat_2\",\"sessionID\":\"ses_seat_opencode\",\"messageID\":\"msg_seat_1\",\"type\":\"text\",\"text\":\"{\\\"message\\\": \\\"An in-memory bucket on each node, behind a RateStore interface; Redis can come later.\\\\n- No new dependency, and the tests need no Redis\\\\n- Give each node a third of the limit, since there are 3 nodes\\\\n- More of the answer, row 1\\\\n- More of the answer, row 2\\\\n- More of the answer, row 3\\\\n- More of the answer, row 4\\\", \\\"reply_to\\\": null, \\\"quote\\\": null, \\\"stances\\\": [], \\\"new_points\\\": [], \\\"reword\\\": [], \\\"points\\\": [], \\\"plan\\\": null}\",\"time\":{\"start\":1790000000500,\"end\":1790000001000}}}"
+[[rule.step]]
+emit = "{\"type\":\"step_finish\",\"timestamp\":1790000001100,\"sessionID\":\"ses_seat_opencode\",\"part\":{\"id\":\"prt_seat_3\",\"sessionID\":\"ses_seat_opencode\",\"messageID\":\"msg_seat_1\",\"type\":\"step-finish\",\"reason\":\"stop\",\"cost\":0,\"tokens\":{\"input\":1200,\"output\":240,\"reasoning\":0,\"cache\":{\"read\":0,\"write\":0}}}}"
+[[rule.step]]
+exit = 0

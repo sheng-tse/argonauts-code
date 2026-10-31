@@ -366,6 +366,7 @@ fn written_by(driver: &TestDriver, number: u32, worker: &str, cli_session: &str)
         uncommitted: Vec::new(),
         settings_sha256: None,
         continues: false,
+        opens_a_talk: false,
     })
     .unwrap();
     old.append(&ConversationEvent::TurnFinished {
@@ -570,6 +571,7 @@ async fn continue_opens_the_newest_conversation() {
                         uncommitted: Vec::new(),
                         settings_sha256: None,
                         continues: false,
+                        opens_a_talk: false,
                     })
                     .unwrap();
                 std::thread::sleep(std::time::Duration::from_millis(20));

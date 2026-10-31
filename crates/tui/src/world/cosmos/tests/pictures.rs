@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use super::crews::{self, Crew};
+use crate::world::cosmos::glow::{BREATH_LEVELS, GLINT_LEVELS, TWINKLES};
 use crate::world::cosmos::{Cosmos, Level, StarKind, Times, View, home_radius};
 use crate::world::{Depth, Image, PartId, Picture, Pointed, Scene, Shape};
 
@@ -175,6 +176,125 @@ fn every_galaxy_carries_its_makers_badge_and_the_pointer_finds_it() {
 }
 
 #[test]
+fn each_makers_galaxy_lies_along_its_logo_and_one_without_keeps_the_spiral() {
+    use crate::world::cosmos::shapes::LOGO_REACH;
+    with('R', |_, cosmos| {
+        for (maker, shape) in cosmos.universe.makers.iter().zip(&cosmos.shapes.galaxies) {
+            let Some(logo) = shape.logo else {
+                assert_eq!(maker.logo.mark, None, "{} has a logo", maker.key);
+                continue;
+            };
+            assert!(
+                shape.tilt > 0.8 && shape.turn.abs() < 0.2,
+                "{} keeps reading",
+                maker.key
+            );
+            for point in &shape.points {
+                let (u, v) = (point.th.cos() * point.rad, point.th.sin() * point.rad);
+                let glow = logo.glow_at(u / LOGO_REACH, v / LOGO_REACH);
+                assert!(glow > 0.15, "{} has a point off its logo", maker.key);
+            }
+            // The newest nearest the core.
+            let mut by_day: Vec<(u32, f64)> = shape
+                .points
+                .iter()
+                .map(|p| (cosmos.universe.actions[p.action].day, p.rad))
+                .collect();
+            by_day.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+            assert!(by_day.windows(2).all(|w| w[0].1 <= w[1].1), "{}", maker.key);
+        }
+        let zhipu = cosmos.universe.makers.iter().position(|m| m.key == "zhipu");
+        assert!(zhipu.is_some_and(|at| cosmos.shapes.galaxies[at].logo.is_none()));
+    });
+}
+
+#[test]
+fn claudes_galaxy_is_in_its_terracotta_lighter_at_the_core_and_deeper_at_the_tips() {
+    with('R', |_, cosmos| {
+        let anthropic = cosmos
+            .universe
+            .makers
+            .iter()
+            .position(|m| m.key == "anthropic");
+        let anthropic = anthropic.expect("crew R uses Claude");
+        assert_eq!(cosmos.universe.makers[anthropic].rgb, [0xd9, 0x77, 0x57]);
+        let scene = cosmos.scene(&still(Level::Universe), 0.0);
+        let image = scene.flatten();
+        let frame = cosmos.layout(WIDTH as f64, HEIGHT as f64)[anthropic];
+        let shape = &cosmos.shapes.galaxies[anthropic];
+        let mut outer: Vec<_> = shape.points.iter().collect();
+        outer.sort_by(|a, b| b.rad.total_cmp(&a.rad));
+        let [r, g, b] = outer.iter().take(40).fold([0u32; 3], |sum, point| {
+            let (x, y) = frame.point(shape.tilt, point.rad, point.th);
+            let [r, g, b] = pixel(&image, x as usize, y as usize);
+            [
+                sum[0] + u32::from(r),
+                sum[1] + u32::from(g),
+                sum[2] + u32::from(b),
+            ]
+        });
+        assert!(
+            r > g + 400 && g > b + 200,
+            "the rays' tips are terracotta: {r} {g} {b}"
+        );
+        let [r, g, b] = pixel(&image, frame.x as usize, frame.y as usize);
+        let lighter = r >= 0xd9 && g > 0x77 + 40 && b > 0x57 + 40;
+        assert!(
+            lighter,
+            "the core is lighter than the terracotta: {r} {g} {b}"
+        );
+    });
+}
+
+#[test]
+fn every_badge_sits_below_its_galaxy_clear_of_its_shape_and_the_pointer_finds_the_shape() {
+    with('R', |_, cosmos| {
+        let (width, height) = FULL;
+        let view = View {
+            still: true,
+            ..View::new(Level::Universe, width, height)
+        };
+        let scene = cosmos.scene(&view, 0.0);
+        let frames = cosmos.layout(width as f64, height as f64);
+        let badges: Vec<(f64, f64)> = marked(&scene, |p| matches!(p, Pointed::Galaxy(_)))
+            .into_iter()
+            .filter(|(pointed, at)| {
+                find(&scene, at.0, at.1) == Some(*pointed)
+                    && scene.hits.marks().iter().any(|m| {
+                        m.tier == 2
+                            && matches!(m.shape, Shape::Disc { x, y, .. }
+                                if (f64::from(x) - at.0).abs() < 0.5
+                                    && (f64::from(y) - at.1).abs() < 0.5)
+                    })
+            })
+            .map(|(_, at)| at)
+            .collect();
+        assert_eq!(badges.len(), frames.len());
+        for (maker, ((bx, by), frame)) in badges.iter().zip(frames.iter()).enumerate() {
+            let shape = &cosmos.shapes.galaxies[maker];
+            let key = &cosmos.universe.makers[maker].key;
+            if shape.logo.is_none() {
+                continue;
+            }
+            assert!(*by > frame.y, "{key}'s badge is below it");
+            for point in &shape.points {
+                let (x, y) = frame.point(shape.tilt, point.rad, point.th);
+                assert!(
+                    (x - bx).hypot(y - by) > 16.0,
+                    "{key}'s badge covers its shape"
+                );
+            }
+            // Off its points but on its shape's reach, the pointer finds the galaxy.
+            let found = shape.points.iter().filter(|p| p.rad > 0.4).any(|p| {
+                let (x, y) = frame.point(shape.tilt, p.rad, p.th);
+                find(&scene, x + 6.0, y) == Some(Pointed::Galaxy(maker as u32))
+            });
+            assert!(found, "{key} is found by its shape");
+        }
+    });
+}
+
+#[test]
 fn your_planet_sits_in_the_middle_and_the_pointer_finds_it() {
     with('R', |_, cosmos| {
         let view = View {
@@ -234,7 +354,7 @@ fn each_star_shines_where_the_pointer_finds_it() {
 }
 
 #[test]
-fn the_universe_moves_only_where_its_facts_say_and_holds_still_when_asked() {
+fn the_universe_always_moves_and_holds_still_when_asked() {
     // R's stars breathe and a binary goes round: two steps draw two other pictures.
     with('R', |_, cosmos| {
         let first = cosmos.scene(&view(Level::Universe), 0.0).flatten();
@@ -244,11 +364,84 @@ fn the_universe_moves_only_where_its_facts_say_and_holds_still_when_asked() {
         let still_later = cosmos.scene(&still(Level::Universe), 1.25).flatten();
         assert_eq!(still_first.pixels(), still_later.pixels());
     });
-    // T has been quiet for nine days: nothing in its universe moves.
+    // T has been quiet for nine days: none of its stars breathe and nothing flies, yet its
+    // galaxies' glow breathes and their stars twinkle, light laid over the still picture.
     with('T', |_, cosmos| {
-        let scene = cosmos.scene(&view(Level::Universe), 3.0);
-        assert!(!scene.moves);
-        assert!(scene.sprites().is_empty());
+        assert!(cosmos.universe().stars.iter().all(|s| s.pulse.is_none()));
+        assert!(cosmos.universe().comets.is_empty() && cosmos.universe().meteors.is_empty());
+        let mut pictures = Vec::new();
+        for step in 0..8 {
+            let scene = cosmos.scene(&view(Level::Universe), f64::from(step) * 1.25);
+            assert!(scene.moves);
+            assert_eq!(scene.layers().len(), 1);
+            pictures.push(scene.flatten());
+        }
+        assert!(
+            pictures
+                .windows(2)
+                .all(|two| two[0].pixels() != two[1].pixels()),
+            "every 1.25 s shows the universe a little changed"
+        );
+        let held = cosmos.scene(&still(Level::Universe), 3.0);
+        assert!(!held.moves);
+        assert!(held.sprites().is_empty());
+    });
+}
+
+/// Over a cycle each galaxy's glow takes one picture for each strength of its breath and each
+/// twinkle one for each brightness, so a quiet universe sends a few dozen pictures once, within
+/// a quarter of what the world keeps, and from then on only moves them; a cycle later every step
+/// shows what it showed before.
+#[test]
+fn a_quiet_universe_moves_on_a_few_pictures_that_come_round_each_cycle() {
+    with('T', |_, cosmos| {
+        let galaxies = cosmos.universe().makers.len();
+        let glow_ids: Vec<PartId> = (0..galaxies as u32)
+            .map(|maker| PartId::new("cosmos-glow", maker))
+            .collect();
+        let twinkle_ids: Vec<PartId> = (0..galaxies as u32 * TWINKLES)
+            .map(|slot| PartId::new("cosmos-twinkle", slot))
+            .collect();
+        let parts = |scene: &Scene| -> Vec<(bool, (i32, i32), u64, usize)> {
+            scene
+                .sprites()
+                .iter()
+                .filter(|s| glow_ids.contains(&s.id) || twinkle_ids.contains(&s.id))
+                .map(|s| {
+                    let bytes = s.picture.image.width() * s.picture.image.height() * 4;
+                    (glow_ids.contains(&s.id), s.at, s.picture.key, bytes)
+                })
+                .collect()
+        };
+        let mut glows = HashMap::new();
+        let mut glints = HashMap::new();
+        let mut twinkled = 0;
+        for step in 0..12 * 30 {
+            let t = f64::from(step) / 12.0;
+            let shown = parts(&cosmos.scene(&view(Level::Universe), t));
+            assert_eq!(
+                shown,
+                parts(&cosmos.scene(&view(Level::Universe), t + 30.0))
+            );
+            for (glow, _, key, bytes) in shown {
+                if glow {
+                    glows.insert(key, bytes);
+                } else {
+                    glints.insert(key, bytes);
+                    twinkled += 1;
+                }
+            }
+        }
+        assert_eq!(glows.len(), galaxies * BREATH_LEVELS as usize);
+        assert!(glints.len() <= galaxies * GLINT_LEVELS as usize);
+        assert!(twinkled > 0, "its stars twinkle");
+        // A quarter of the terminal's pixels here, so a sixteenth of what the world keeps is
+        // a quarter of it there.
+        let bytes: usize = glows.values().chain(glints.values()).sum();
+        assert!(
+            bytes < crate::world::deliver::kept_bytes(1.0) / 16,
+            "{bytes} bytes of pictures"
+        );
     });
 }
 

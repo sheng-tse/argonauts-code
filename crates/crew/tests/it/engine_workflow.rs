@@ -1009,7 +1009,7 @@ async fn a_workflow_without_phases_starts_from_the_fixed_phases() -> anyhow::Res
 async fn abandoned_inside_a_loop_stays_abandoned() -> anyhow::Result<()> {
     let mut crew = support::Crew::new()?;
     crew.answering_worker("claude-code/opus", "anthropic");
-    crew.settings.workflow = "council".to_owned();
+    crew.settings.workflow = "orchestrator".to_owned();
     crew.settings.workflows.adapt_at_phase_ends = false;
     crew.settings.evolution.propose_every = 0;
     let waiting = crew.start(RunMode::Crew, "add a --verbose flag").await?;

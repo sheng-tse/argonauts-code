@@ -65,6 +65,18 @@ pub struct Workflow {
     pub phases: Vec<Phase>,
 }
 
+impl Workflow {
+    /// Whether it seats a council, which talks from your request with no reading first.
+    pub fn talks(&self) -> bool {
+        fn any(steps: &[Step]) -> bool {
+            steps
+                .iter()
+                .any(|step| step.kind == StepKind::Talk || any(&step.steps))
+        }
+        self.phases.iter().any(|phase| any(&phase.steps))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Phase {

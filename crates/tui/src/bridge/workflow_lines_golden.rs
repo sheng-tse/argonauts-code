@@ -101,7 +101,6 @@ fn a_ready_workflows_command_says_where_it_switched_under_itself() {
         PICTURE,
         0..2,
         &theme,
-        &[],
     );
 
     // Where the team's file sets the workflow, the switch saves for you alone and says why.
@@ -117,7 +116,6 @@ fn a_ready_workflows_command_says_where_it_switched_under_itself() {
         PICTURE,
         3..5,
         &theme,
-        &[],
     );
 
     // Typed while an answer runs, the switch waits for the next request and says so.
@@ -136,7 +134,7 @@ fn a_ready_workflows_command_says_where_it_switched_under_itself() {
          Captain · applies at the next request",
         "one echo over the line, as any command typed mid-answer gets"
     );
-    assert_rows_match("workflow_switch_lines", &lines, PICTURE, 6..8, &theme, &[]);
+    assert_rows_match("workflow_switch_lines", &lines, PICTURE, 6..8, &theme);
 
     // A flag saves it where it says, here for this session only, which goes when you quit.
     screen.send(AppEvent::Mode {
@@ -154,7 +152,6 @@ fn a_ready_workflows_command_says_where_it_switched_under_itself() {
         PICTURE,
         9..11,
         &theme,
-        &[],
     );
 }
 
@@ -179,7 +176,6 @@ fn the_workflow_in_use_says_who_does_what_under_its_command() {
         PICTURE,
         12..14,
         &theme,
-        &[],
     );
 }
 

@@ -564,7 +564,7 @@ mod tests {
         assert!(read_back.get("step").is_none(), "{council}");
         assert_eq!(
             read_back["phases"].as_array().unwrap().len(),
-            4,
+            3,
             "{council}"
         );
         // Its settings sit before its phases, as in the built-in's file.

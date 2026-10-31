@@ -5,7 +5,7 @@
  This conversation · $0.42
 
  ╭───────────────────────────────────────────╮ ╭───────────────────────────────────────────╮ ╭───────────────────────────────────────────╮
- │ ◧◨ Claude Code               Max · in use │ │ ◧◨ Codex                             Plus │ │ ◧◨ agy                                Pro │
+ │ ◧◨ Claude Code               Pro · in use │ │ ◧◨ Codex                              Pro │ │ ◧◨ agy                              Ultra │
  │                                           │ │                                           │ │                                           │
  │ session     ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄ 14%   │ │ 5-hour      ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄ 0%    │ │ Gemini 5h   ▖▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄ 2%    │
  │             resets in 2h 28m              │ │             resets in 4h 3m · Fri 12:15am │ │             resets in 1h 28m              │

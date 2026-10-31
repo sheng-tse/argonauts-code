@@ -164,14 +164,19 @@ impl WorkflowRow {
         }
     }
 
-    /// What Enter does on the row, in the words the key line says it with.
-    pub fn enter_does(&self) -> &'static str {
-        if self.answers.is_some() {
+    /// The row's keys, as the line under the input says them while the row is picked: what
+    /// Enter does, and `x` where it stops the run or the session.
+    pub fn keys(&self) -> String {
+        let enter = if self.answers.is_some() {
             "enter to answer"
-        } else if self.session.is_some() {
-            "enter to open its session"
         } else {
-            "enter to open its workflow"
+            "enter to view"
+        };
+        let stops = self.kind == RunRowKind::Request || self.session.is_some();
+        if stops {
+            format!("{enter} · x to stop")
+        } else {
+            enter.to_owned()
         }
     }
 

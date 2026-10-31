@@ -1,7 +1,7 @@
 //! What people read for each CLI and model: "Claude Code" and "Opus 5.5" rather than the ids
 //! `claude-code` and `claude-opus-5-5`. Ids stay in settings files, logs, and the detail views.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -9,6 +9,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::base::names::ModelRef;
 use crate::look::logos::{Logo, LogoMark};
 use crate::models::model_catalog::{ModelCatalog, display_name_from_id, shown_name};
+use crate::models::registry::ModelRegistry;
+use crate::settings::Settings;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -30,6 +32,28 @@ pub struct DisplayNames {
 }
 
 impl DisplayNames {
+    /// The names `clis` go by, as their adapters give them, with the registry's model names, the
+    /// model your settings give each CLI, and the model each of `clis` runs when nothing names
+    /// one, so a session that names none reads as that model from its start, as the header does.
+    pub fn gathered(
+        clis: BTreeMap<String, String>,
+        registry: &dyn ModelRegistry,
+        settings: &Settings,
+    ) -> Self {
+        let configured = settings
+            .agents
+            .iter()
+            .filter_map(|(id, agent)| Some((id.clone(), agent.model.clone()?)))
+            .collect();
+        let defaults = cli_defaults(registry, clis.keys().map(String::as_str));
+        Self {
+            clis,
+            catalog: registry.catalog(),
+            configured,
+            defaults,
+        }
+    }
+
     /// `Claude Code` for `claude-code`. An id nothing names stays as it is.
     pub fn cli(&self, id: &str) -> String {
         let id = id.trim();
@@ -73,7 +97,14 @@ impl DisplayNames {
             .and_then(|entry| entry.name.as_deref())
             .map(|name| shown_name(cli, name));
         let resolved = entry.and_then(|entry| entry.id.model.as_deref());
-        Some(named.unwrap_or_else(|| display_name_from_id(resolved.unwrap_or(model))))
+        let from_id = display_name_from_id(resolved.unwrap_or(model));
+        // Claude Code can list an alias by its line alone, `Opus`, while the model it runs
+        // carries the version, so a session reads `Opus 5.5` wherever it's named.
+        let versioned = |name: &str| name.chars().any(|c| c.is_ascii_digit());
+        let named = named.filter(|name| {
+            versioned(name) || !versioned(&from_id) || !from_id.starts_with(name.as_str())
+        });
+        Some(named.unwrap_or(from_id))
     }
 
     /// `Opus 5.5 on Claude Code`, or the CLI alone when no model is named. The name reads as
@@ -93,6 +124,14 @@ impl DisplayNames {
         self.agent(&worker.agent, worker.model.as_deref())
     }
 
+    /// [`Self::worker`] for each of `workers`, in their order.
+    pub fn workers<'a>(&self, workers: impl IntoIterator<Item = &'a ModelRef>) -> Vec<String> {
+        workers
+            .into_iter()
+            .map(|worker| self.worker(worker))
+            .collect()
+    }
+
     /// The model alone where it runs on its own provider's CLI (Claude models on Claude Code,
     /// GPT on Codex, Gemini on agy), else `<model> on <cli>`. The workflow view's
     /// rows name agents this way, since the pane is narrow and the agent view gives the rest.
@@ -106,11 +145,7 @@ impl DisplayNames {
         let at_home = home_cli(&model)
             .and_then(builtin_cli_name)
             .is_some_and(|home| home == cli);
-        if at_home {
-            model
-        } else {
-            format!("{model} on {cli}")
-        }
+        if at_home { model } else { on_cli(&model, &cli) }
     }
 
     /// What follows `logo` on a row that names a session of `worker`: the model it runs alone,
@@ -167,6 +202,27 @@ impl DisplayNames {
         let name = self.model(agent, running.model.as_deref());
         (agent.to_owned(), name.unwrap_or_default())
     }
+}
+
+/// The model each CLI in `clis` runs when nothing names one: the one its model list marks, else
+/// the one the catalog's "Default (recommended)" runs. A CLI with neither is left out.
+pub fn cli_defaults<'a>(
+    registry: &dyn ModelRegistry,
+    clis: impl IntoIterator<Item = &'a str>,
+) -> BTreeMap<String, String> {
+    let catalog = registry.catalog();
+    let listed = registry.list();
+    clis.into_iter()
+        .filter_map(|cli| {
+            let marked = listed
+                .iter()
+                .find(|entry| entry.cli_default && entry.id.agent == cli)
+                .and_then(|entry| entry.id.model.clone());
+            let id = ModelRef::new(cli, None);
+            let model = marked.or_else(|| catalog.entry(&id)?.runs.clone())?;
+            Some((cli.to_owned(), model))
+        })
+        .collect()
 }
 
 /// One spelling for each model however the records spell it, so a screen that sums by model
@@ -265,7 +321,7 @@ const MAKERS: &[Maker] = &[
         id: "anthropic",
         word: Some("Claude"),
         cli: Some("claude-code"),
-        logo: None,
+        logo: Some(LogoMark::Claude),
         lines: &["claude", "opus", "sonnet", "haiku", "fable", "mythos"],
     },
     Maker {
@@ -279,7 +335,7 @@ const MAKERS: &[Maker] = &[
         id: "google",
         word: Some("Gemini"),
         cli: Some("antigravity-cli"),
-        logo: None,
+        logo: Some(LogoMark::Gemini),
         lines: &["gemini", "gemma", "codegemma"],
     },
     Maker {
@@ -340,9 +396,9 @@ pub fn maker_of(model: &str) -> Option<&'static Maker> {
 }
 
 /// A model's name as drawn right after `logo`, on its row or under a heading that shows it.
-/// After the logo of the maker's own CLI the name drops the maker's word: "GPT 5.6 Luna" reads
-/// "5.6 Luna" after Codex's, "Gemini 3.8 Flash" "3.8 Flash" after agy's, and a bare "GPT 5.6"
-/// reads "5.6". A host runs other makers' models, so a model it serves keeps its whole name
+/// After the maker's own logo or its CLI's the name drops the maker's word: "GPT 5.6 Luna" reads
+/// "5.6 Luna" after OpenAI's or Codex's, "Gemini 3.8 Flash" "3.8 Flash" after Gemini's or agy's,
+/// and a bare "GPT 5.6" reads "5.6". A host runs other makers' models, so a model it serves keeps its whole name
 /// whichever logo its row shows, and so does a name with nothing after the maker's word.
 ///
 /// Only for a logo whose picture is drawn: a colour dot, a sentence, a log or a screen
@@ -351,7 +407,7 @@ pub fn after_logo(logo: &Logo, name: &str) -> String {
     let name = name.trim();
     let word = logo
         .mark
-        .and_then(maker_of_cli_logo)
+        .and_then(maker_of_logo)
         .and_then(|maker| maker.word);
     let rest = word.and_then(|word| {
         let (first, rest) = name.split_once(|c: char| c.is_whitespace() || c == '-')?;
@@ -361,6 +417,25 @@ pub fn after_logo(logo: &Logo, name: &str) -> String {
         Some(rest) if !rest.is_empty() => rest.to_owned(),
         _ => name.to_owned(),
     }
+}
+
+/// The model names in `rows`, each a model's CLI and name, that more than one CLI runs. A list
+/// that draws each model after its line's logo would show those rows alike, so it writes the
+/// CLI after each of them, as [`on_cli`] does.
+pub fn run_by_several<'a>(rows: impl IntoIterator<Item = (&'a str, &'a str)>) -> BTreeSet<&'a str> {
+    let mut clis: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for (cli, name) in rows {
+        clis.entry(name).or_default().insert(cli);
+    }
+    (clis.into_iter())
+        .filter(|(_, clis)| clis.len() > 1)
+        .map(|(name, _)| name)
+        .collect()
+}
+
+/// `name` with the CLI that runs it after, as "Sonnet 4.6 on agy".
+pub fn on_cli(name: &str, cli: &str) -> String {
+    format!("{name} on {cli}")
 }
 
 /// Two capitals for a CLI or endpoint where its name would vanish for lack of room, as in `● CC`
@@ -392,11 +467,12 @@ pub fn letters(id: &str, name: &str) -> String {
     pair.to_uppercase()
 }
 
-/// The maker whose own CLI `mark` is the logo of: Claude Code's, Codex's or agy's.
-fn maker_of_cli_logo(mark: LogoMark) -> Option<&'static Maker> {
-    MAKERS
-        .iter()
-        .find(|maker| maker.cli.and_then(LogoMark::of_agent) == Some(mark))
+/// The maker `mark` is the logo of, or the logo of its own CLI: Claude's or Claude Code's,
+/// OpenAI's or Codex's, Gemini's or agy's.
+fn maker_of_logo(mark: LogoMark) -> Option<&'static Maker> {
+    MAKERS.iter().find(|maker| {
+        maker.logo == Some(mark) || maker.cli.and_then(LogoMark::of_agent) == Some(mark)
+    })
 }
 
 /// `name` in at most `cells` cells, cut at a word when it's longer: the whole words that fit,
@@ -480,6 +556,85 @@ mod tests {
         assert_eq!(from_its_id, from_the_cli);
         let label = names.catalog.label(&id("codex/gpt-5.6-luna"));
         assert_eq!(label.name, "GPT 5.6 Luna");
+    }
+
+    /// A CLI that lists an alias by its line alone still has its sessions named with the
+    /// version of the model the alias runs.
+    #[test]
+    fn an_alias_listed_without_its_version_reads_with_it() {
+        let mut names = names();
+        let mut listed = CatalogEntry::new(id("claude-code/claude-opus-5-5"));
+        listed.name = Some("Opus".to_owned());
+        listed.aliases = Some(vec!["opus".to_owned()]);
+        names.catalog.models.insert(0, listed);
+        assert_eq!(
+            names.worker(&id("claude-code/opus")),
+            "Opus 5.5 on Claude Code"
+        );
+        assert_eq!(names.short(&id("claude-code/claude-opus-5-5")), "Opus 5.5");
+        // A name that isn't the model's line with its version stays as listed.
+        let mut pickle = CatalogEntry::new(id("opencode/big-pickle"));
+        pickle.name = Some("Big Pickle".to_owned());
+        names.catalog.models.push(pickle);
+        assert_eq!(
+            names.model("opencode", Some("big-pickle")).as_deref(),
+            Some("Big Pickle")
+        );
+    }
+
+    /// What a run writes and what the screen draws come from one builder, so a CLI set to its
+    /// alias reads as the model with its version, and a CLI named alone as its default.
+    #[test]
+    fn gathered_names_read_the_catalog_your_settings_and_each_clis_default() {
+        struct Registry(ModelCatalog);
+        impl ModelRegistry for Registry {
+            fn get(&self, _: &ModelRef) -> Option<crate::models::registry::ModelEntry> {
+                None
+            }
+            fn provider(&self, _: &ModelRef) -> String {
+                String::new()
+            }
+            fn list(&self) -> Vec<crate::models::registry::ModelEntry> {
+                Vec::new()
+            }
+            fn estimate(
+                &self,
+                _: &ModelRef,
+                _: u64,
+                _: u64,
+            ) -> crate::models::limits::CostEstimate {
+                crate::models::limits::CostEstimate::Unknown
+            }
+            fn discover(
+                &self,
+            ) -> crate::base::future::BoxFuture<'_, Vec<crate::models::registry::ModelEntry>>
+            {
+                Box::pin(async { Vec::new() })
+            }
+            fn catalog(&self) -> ModelCatalog {
+                self.0.clone()
+            }
+        }
+        let mut catalog = names().catalog;
+        let mut codex_default = CatalogEntry::new(id("codex"));
+        codex_default.runs = Some("gpt-6.1-sol".to_owned());
+        catalog.models.push(codex_default);
+        let mut settings = Settings::default();
+        settings
+            .agents
+            .entry("claude-code".to_owned())
+            .or_default()
+            .model = Some("opus".to_owned());
+        let clis = [("claude-code", "Claude Code"), ("codex", "Codex")]
+            .map(|(id, name)| (id.to_owned(), name.to_owned()))
+            .into();
+        let names = DisplayNames::gathered(clis, &Registry(catalog), &settings);
+        assert_eq!(names.worker(&id("claude-code")), "Opus 5.5 on Claude Code");
+        assert_eq!(
+            names.worker(&id("claude-code/opus")),
+            "Opus 5.5 on Claude Code"
+        );
+        assert_eq!(names.worker(&id("codex")), "GPT 6.1 Sol on Codex");
     }
 
     fn names() -> DisplayNames {
@@ -643,7 +798,7 @@ mod tests {
         for (logo, name, drawn) in [
             (&codex, "GPT 5.6 Luna", "5.6 Luna"),
             (&claude, "Sonnet 5.5", "Sonnet 5.5"),
-            (&local, "Qwen3 Coder 30B (64k)", "Qwen3 Coder 30B (64k)"),
+            (&local, "Qwen3 Coder 30B", "Qwen3 Coder 30B"),
             (
                 &zen,
                 "Nemotron 3.5 Super VL Free",
@@ -667,23 +822,42 @@ mod tests {
         }
     }
 
-    /// A host's row names a model whole, whether it shows the host's logo or the maker's, and
-    /// a colour dot changes nothing.
+    /// A host's row names a model whole after the host's logo, and a colour dot changes
+    /// nothing. After the maker's own logo the logo says who made it, wherever it runs.
     #[test]
     fn a_name_after_a_hosts_logo_or_a_dot_stays_whole() {
         let maker_on_a_host = Logo {
             agent: crate::base::names::AgentId("opencode".to_owned()),
             mark: Some(LogoMark::OpenAi),
         };
+        assert_eq!(after_logo(&maker_on_a_host, "GPT 5.6"), "5.6");
+        let gemini = Logo {
+            agent: crate::base::names::AgentId("antigravity-cli".to_owned()),
+            mark: Some(LogoMark::Gemini),
+        };
+        assert_eq!(after_logo(&gemini, "Gemini 3.8 Flash"), "3.8 Flash");
         let openrouter = logo_for("openrouter", Some("openai/gpt-5.6"));
         for logo in [
-            &maker_on_a_host,
             &openrouter,
             &logo_for("opencode", None),
             &Logo::dot("codex"),
         ] {
             assert_eq!(after_logo(logo, "GPT 5.6"), "GPT 5.6", "{logo:?}");
         }
+    }
+
+    /// Only a name two CLIs run is written with its CLI.
+    #[test]
+    fn a_name_two_clis_run_is_marked() {
+        let rows = [
+            ("claude-code", "Sonnet 4.6"),
+            ("antigravity-cli", "Sonnet 4.6"),
+            ("claude-code", "Opus 5.5"),
+            ("claude-code", "Opus 5.5"),
+            ("antigravity-cli", "Gemini 3.8 Flash"),
+        ];
+        assert_eq!(run_by_several(rows), BTreeSet::from(["Sonnet 4.6"]));
+        assert_eq!(on_cli("Sonnet 4.6", "agy"), "Sonnet 4.6 on agy");
     }
 
     /// After a logo nothing says which CLI runs the model, since the logo already does.
@@ -714,7 +888,7 @@ mod tests {
             ("Gemini 3.8 Flash High", 16, "Gemini 3.8…"),
             ("Nemotron 3.5 Super VL Free", 14, "Nemotron 3.5…"),
             ("GLM-5.3-Flash Free", 12, "GLM-5.3…"),
-            ("Qwen3 Coder 30B (64k)", 20, "Qwen3 Coder 30B…"),
+            ("Sample Coder 30B (64k)", 20, "Sample Coder 30B…"),
             ("Supercalifragilistic", 8, "Superca…"),
             ("Opus 5.5", 1, "…"),
             ("Opus 5.5", 0, ""),

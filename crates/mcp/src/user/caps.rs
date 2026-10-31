@@ -5,6 +5,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use argonauts_core::base::clock;
 use argonauts_core::settings::SAFETY_KEYS;
 use argonauts_core::settings::agents::StartRuns;
 use argonauts_policy::limits::daily::DailyLedger;
@@ -141,7 +142,7 @@ impl OutsideAgentRuns for DailyLedger {
     }
 
     fn give_back(&self, taken: OffsetDateTime) -> Result<(), String> {
-        self.release_outside_agent_run(taken, OffsetDateTime::now_utc())
+        self.release_outside_agent_run(taken, clock::now_utc())
             .map_err(|err| err.to_string())
     }
 }

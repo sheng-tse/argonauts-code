@@ -569,6 +569,7 @@ impl DrawKey {
 /// run's names to hide.
 pub fn relay_for(host: &Host, council: &Council) -> EngineResult<Relay> {
     seated_relay(
+        host.names(),
         council,
         &DrawKey::of(host, council)?.draw(),
         lexicon::of_run(host),
@@ -576,19 +577,19 @@ pub fn relay_for(host: &Host, council: &Council) -> EngineResult<Relay> {
 }
 
 /// The relay for `council`'s seats, with their letters drawn from `draw`.
-pub fn seated_relay(council: &Council, draw: &Draw<'_>, lexicon: Lexicon) -> EngineResult<Relay> {
+pub fn seated_relay(
+    names: &DisplayNames,
+    council: &Council,
+    draw: &Draw<'_>,
+    lexicon: Lexicon,
+) -> EngineResult<Relay> {
     let seating = council
         .seating
         .clone()
         .ok_or_else(|| EngineError::Refused("the council hasn't sat down yet".to_owned()))?;
     let seats: Vec<SeatId> = seating.seats.iter().map(|seat| seat.id.clone()).collect();
     let letters = letters::draw(draw, &seats);
-    Ok(Relay::new(
-        seating,
-        letters,
-        lexicon,
-        DisplayNames::default(),
-    ))
+    Ok(Relay::new(seating, letters, lexicon, names.clone()))
 }
 
 /// "Seat T" as `reader` knows `seat`, or "you" for the reader itself.
@@ -612,12 +613,12 @@ pub fn seat_by_letter(relay: &Relay, reader: &SeatId, letter: char) -> Option<Se
 
 /// What you wrote when a name in it fits more than one seat.
 fn ambiguous(relay: &Relay, ambiguous: &Ambiguous) -> String {
-    let names = DisplayNames::default();
+    let names = &relay.names;
     let seats: Vec<String> = ambiguous
         .seats
         .iter()
         .filter_map(|seat| seats::find(relay.seating(), seat))
-        .map(|seat| seats::name(seat, &names))
+        .map(|seat| seats::name(seat, names))
         .collect();
     format!(
         "\"{}\" could be {}. Name the seat with its number.",
@@ -666,7 +667,13 @@ mod tests {
     }
 
     fn relay_of(council: &Council) -> Relay {
-        seated_relay(council, &key().draw(), Lexicon::built_in()).expect("a seated council")
+        seated_relay(
+            &DisplayNames::default(),
+            council,
+            &key().draw(),
+            Lexicon::built_in(),
+        )
+        .expect("a seated council")
     }
 
     /// "Seat T", as `reader` knows `seat`, the reader itself included.

@@ -310,3 +310,30 @@ fn weather_is_drawn_water_first_and_hurricanes_last() {
     assert_eq!(Motion::HURRICANE.picture_at(15.0 / 24.0 * 5.0 + 0.01), 5);
     assert_eq!(Motion::LIGHTNING.moment(33), Motion::LIGHTNING.moment(1));
 }
+
+#[test]
+fn a_loop_of_eight_pictures_a_second_shows_a_new_one_each_step_at_the_worlds_rate() {
+    use crate::world::deliver::clock::Rate;
+    assert_eq!(Motion::HURRICANE.at(Rate::QUICK).frames, 48);
+    assert_eq!(Motion::HURRICANE.at(Rate::STEADY).frames, 36);
+    for motion in [
+        Motion::RIVER,
+        Motion::TORNADO,
+        Motion::SMOKE,
+        Motion::LIGHTNING,
+        Motion::QUAKE,
+    ] {
+        for rate in [Rate::QUICK, Rate::STEADY] {
+            let at = motion.at(rate);
+            assert_eq!(at.seconds, motion.seconds);
+            let steps = rate.steps_in(std::time::Duration::from_secs_f64(motion.seconds));
+            assert_eq!(u64::from(at.frames), steps, "{motion:?} at {rate:?}");
+            let shown: Vec<u32> = (0..steps).map(|k| at.picture_at(rate.seconds(k))).collect();
+            assert_eq!(
+                shown,
+                (0..at.frames).collect::<Vec<_>>(),
+                "{motion:?} at {rate:?}"
+            );
+        }
+    }
+}

@@ -12,6 +12,7 @@ use time::OffsetDateTime;
 
 use argonauts_core::RunId;
 use argonauts_core::app::views::LearningCommand;
+use argonauts_core::base::clock;
 use argonauts_core::base::layout::run_files;
 use argonauts_core::runs::events::shared::RunReviewEvent;
 use argonauts_core::runs::events::{RunEvent, RunEventKind};
@@ -120,7 +121,7 @@ pub async fn learning(
         LearningShell::Records { as_of, rebuild } => {
             let as_of = match as_of {
                 Some(text) => moment(&text)?,
-                None => OffsetDateTime::now_utc(),
+                None => clock::now_utc(),
             };
             records(&store, &settings, as_of, rebuild)
         }

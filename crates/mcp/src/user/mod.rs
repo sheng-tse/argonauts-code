@@ -9,6 +9,7 @@ pub mod tools;
 use std::sync::Arc;
 
 use anyhow::Context as _;
+use argonauts_core::base::clock;
 use argonauts_core::base::paths::argonauts_home;
 use argonauts_core::runs::api::ConductorApi;
 use argonauts_core::settings::Span;
@@ -76,7 +77,7 @@ impl UserServer {
     /// file, so this runs off the async threads.
     pub async fn take_outside_agent_run(&self, cap: u32) -> Result<TakenRun, String> {
         let runs = Arc::clone(&self.runs);
-        let taken = OffsetDateTime::now_utc();
+        let taken = clock::now_utc();
         let today = tokio::task::spawn_blocking(move || runs.take(cap, taken))
             .await
             .map_err(|err| format!("counting today's runs failed: {err}"))??;

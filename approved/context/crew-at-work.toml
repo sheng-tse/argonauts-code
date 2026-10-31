@@ -1,0 +1,99 @@
+# A run at work, as context/with-crew and context/crew-list draw it. The plan, on Haiku 5.5,
+# ended at 13.3k; the builder on Codex's GPT-6 Luna ends its first turn at 30.5k and the one on
+# Haiku 5.5 reads 21k, and both keep working. Before the run the main agent answers one question
+# and counts 28.8k, as context/claude-code does. These rules come before the default fake agents'.
+
+[[rule]]
+argv0 = "claude"
+prompt_contains = 'Plan the parts of this change'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-crew-plan","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-5-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-crew-plan","message":{"id":"msg-crew-plan","content":[{"type":"text","text":"Two parts: a bucket per key, and a cap on refills."}],"usage":{"input_tokens":13300,"output_tokens":0}}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-crew-plan","result":"Two parts: a bucket per key, and a cap on refills.","total_cost_usd":0.001,"usage":{"input_tokens":13300,"output_tokens":0},"modelUsage":{"claude-haiku-5-5":{"contextWindow":1000000}},"structured_output":{"status":"done","summary":"Two parts: a bucket per key, and a cap on refills.","files_changed":[],"tests_run":[],"concerns":[],"questions":[],"change_requests":[],"memory_proposals":[]}}'
+[[rule.step]]
+exit = 0
+
+# Codex lists its models, so the registry knows GPT-6 Luna's window.
+[[rule]]
+argv0 = "codex"
+args_contain = ["debug", "models"]
+[[rule.step]]
+emit = '{"models":[{"slug":"gpt-6-luna","display_name":"GPT-6 Luna","description":"Fast and cheap","priority":1,"visibility":"list","max_context_window":872000,"default_reasoning_level":"low","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"}]}]}'
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "codex"
+args_contain = ["exec"]
+prompt_contains = 'its own token bucket'
+stdin_prompt = "all"
+[[rule.step]]
+emit = '{"type":"thread.started","thread_id":"thread-crew-per-key"}'
+[[rule.step]]
+emit = '{"type":"turn.started"}'
+[[rule.step]]
+emit = '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Adding a bucket per key."}}'
+[[rule.step]]
+emit = '{"type":"turn.completed","usage":{"input_tokens":120500,"cached_input_tokens":90500,"output_tokens":500,"reasoning_output_tokens":0}}'
+[[rule.step]]
+hang = true
+
+[[rule]]
+argv0 = "claude"
+args_contain = ["acceptEdits"]
+prompt_contains = 'Cap how fast a bucket refills'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-crew-refills","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-5-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-crew-refills","message":{"id":"msg-crew-refills","content":[{"type":"text","text":"Capping the refill rate."}],"usage":{"input_tokens":21000,"output_tokens":0}}}'
+[[rule.step]]
+hang = true
+
+[[rule]]
+argv0 = "claude"
+prompt_contains = 'What does this repo hold'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-context-claude","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-opus-5-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-context-claude","message":{"id":"msg-context","content":[{"type":"text","text":"It holds a README and a CLAUDE.md."}]}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-context-claude","result":"It holds a README and a CLAUDE.md.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"kind":"answer","answer_markdown":"It holds a README and a CLAUDE.md.","estimate":null}}'
+[[rule.step]]
+expect_stdin_contains = 'get_context_usage'
+[[rule.step]]
+emit_file = 'claude-code-count.jsonl'
+[[rule.step]]
+expect_stdin_contains = 'get_context_usage'
+[[rule.step]]
+emit_file = 'claude-code-count.jsonl'
+[[rule.step]]
+expect_stdin_contains = 'get_context_usage'
+[[rule.step]]
+emit_file = 'claude-code-count.jsonl'
+[[rule.step]]
+expect_stdin_contains = 'get_context_usage'
+[[rule.step]]
+emit_file = 'claude-code-count.jsonl'
+[[rule.step]]
+expect_stdin_contains = 'get_context_usage'
+[[rule.step]]
+emit_file = 'claude-code-count.jsonl'
+[[rule.step]]
+expect_stdin_contains = 'get_context_usage'
+[[rule.step]]
+emit_file = 'claude-code-count.jsonl'
+[[rule.step]]
+expect_stdin_contains = 'get_context_usage'
+[[rule.step]]
+emit_file = 'claude-code-count.jsonl'
+[[rule.step]]
+expect_stdin_contains = 'get_context_usage'
+[[rule.step]]
+emit_file = 'claude-code-count.jsonl'
+[[rule.step]]
+hang = true

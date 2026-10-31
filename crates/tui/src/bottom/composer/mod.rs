@@ -168,6 +168,8 @@ impl ComposerEvent {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ComposerState<'a> {
     pub focused: bool,
+    /// A row under the input has the keys: the input keeps its look but draws no block.
+    pub keys_below: bool,
     pub busy: bool,
     pub offer_example: bool,
     /// Wins over the composer's own placeholder and example.
@@ -592,6 +594,7 @@ impl Composer {
                 busy,
                 offer_example: !busy,
                 placeholder: None,
+                ..ComposerState::default()
             },
         )
     }

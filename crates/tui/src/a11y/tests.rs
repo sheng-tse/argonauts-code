@@ -800,6 +800,7 @@ fn a_refused_start_is_said_at_the_turns_end_unless_a_retry_worked() {
                 uncommitted: Vec::new(),
                 settings_sha256: None,
                 continues: false,
+                opens_a_talk: false,
             },
         )
     };
@@ -857,4 +858,35 @@ fn the_crew_for_a_request_is_read_a_role_a_line() {
             "crew for this request: reviewers, GPT 5.6 Luna on Codex, as you asked",
         ]
     );
+}
+
+/// A start sends the header before the CLI checks and again with what they found, so the
+/// second says only what the first didn't.
+#[test]
+fn a_later_header_says_only_what_is_new() {
+    let welcome = |agents: Vec<argonauts_core::app::AgentReady>| AppEvent::Welcome {
+        version: "0.2.1".into(),
+        repo: "~/code/tasks-api".into(),
+        workflow: "council".into(),
+        agents,
+        runs_going: 0,
+        runs_need_you: 0,
+        example_prompt: None,
+        main_agent: None,
+        effort: None,
+    };
+    let mut reader = Reader::new(&UiOptions::default());
+    let first = reader.event(&welcome(Vec::new())).lines;
+    assert_eq!(
+        first.first().map(String::as_str),
+        Some("Argonauts Code 0.2.1, ~/code/tasks-api, workflow council")
+    );
+    let codex = argonauts_core::app::AgentReady {
+        id: "codex".into(),
+        version: None,
+        ready: false,
+        note: Some("not installed".into()),
+    };
+    let second = reader.event(&welcome(vec![codex])).lines;
+    assert_eq!(second, ["agent: Codex, not ready, not installed"]);
 }

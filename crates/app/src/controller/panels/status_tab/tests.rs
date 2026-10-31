@@ -254,7 +254,7 @@ fn every_cli_doctor_checked_is_listed_the_main_sessions_first() {
         "claude-code".to_owned(),
         super::SignIn {
             account: Some("you@example.com".to_owned()),
-            plan: Some("Max".to_owned()),
+            plan: Some("Pro".to_owned()),
             ..super::SignIn::default()
         },
     );
@@ -274,7 +274,7 @@ fn every_cli_doctor_checked_is_listed_the_main_sessions_first() {
         time::OffsetDateTime::now_utc(),
     );
     live.account = Some("me@work.example".to_owned());
-    live.plan = Some("Plus".to_owned());
+    live.plan = Some("Pro".to_owned());
     argonauts_core::models::limits::PlanUsageBoard::observe_live(&plan_usage, live);
     use argonauts_core::app::status_tab::{CliVersionCheck, VersionStanding};
     let checks = std::collections::BTreeMap::from([(
@@ -304,7 +304,7 @@ fn every_cli_doctor_checked_is_listed_the_main_sessions_first() {
     assert!(clis[0].main);
     assert_eq!(clis[0].account.as_deref(), Some("you@example.com"));
     assert_eq!(clis[1].account.as_deref(), Some("me@work.example"));
-    assert_eq!(clis[1].plan.as_deref(), Some("Plus"));
+    assert_eq!(clis[1].plan.as_deref(), Some("Pro"));
     assert_eq!(clis[0].check.state(), "newer than checked · works");
     assert_eq!(clis[1].check.state(), "unknown version");
     assert!(!clis[2].installed);
@@ -442,10 +442,10 @@ fn each_thing_agys_screen_says_is_kept_apart() {
 
     let signed_in = super::sign_in_shown(Some(BannerAccount::SignedIn {
         account: "you@example.com".to_owned(),
-        plan: Some("Google AI Pro".to_owned()),
+        plan: Some("Google AI Ultra".to_owned()),
     }));
     assert_eq!(signed_in.account.as_deref(), Some("you@example.com"));
-    assert_eq!(signed_in.plan.as_deref(), Some("Google AI Pro"));
+    assert_eq!(signed_in.plan.as_deref(), Some("Google AI Ultra"));
     assert!(super::sign_in_shown(Some(BannerAccount::SignedOut)).signed_out);
     let untrusted = super::sign_in_shown(Some(BannerAccount::UntrustedFolder));
     assert!(untrusted.untrusted_folder && !untrusted.signed_out);

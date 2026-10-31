@@ -193,7 +193,7 @@ fn view_from(
     if top {
         append_later_phases(&mut view, events);
         // A slug stays the run's id, and is drawn as its words.
-        view.name = argonauts_core::base::text::title_words(&view.name);
+        view.name = argonauts_core::base::text::title_words_as(&view.name, &view.description);
         if let Some(own) = own::as_the_runs(&mut view, log, run) {
             // The mode and the workflow that really runs, then what your words asked of it:
             // `Captain · Claude Code's workflow fix-money-rounding · Codex reviews, as you asked`.
@@ -505,7 +505,7 @@ pub(super) fn epoch_ms(at: OffsetDateTime) -> Option<u64> {
 /// How long until `at` by the clock on the wall, since a wait goes on while the run says
 /// nothing.
 fn ms_until(at: OffsetDateTime) -> u64 {
-    u64::try_from((at - OffsetDateTime::now_utc()).whole_milliseconds()).unwrap_or(0)
+    u64::try_from((at - argonauts_core::base::clock::now_utc()).whole_milliseconds()).unwrap_or(0)
 }
 
 /// An open approval, as the view's status line speaks of it. The question itself draws under
@@ -2907,7 +2907,7 @@ mod tests {
         asked.packet = ApprovalPacket::AgentDown(AgentDownPacket {
             agent_id: AgentId("claude-code".into()),
             evidence: "overloaded".to_owned(),
-            test_at: Some(OffsetDateTime::now_utc() + time::Duration::minutes(10)),
+            test_at: Some(argonauts_core::base::clock::now_utc() + time::Duration::minutes(10)),
             paused: vec![paused("task-001"), paused("task-002")],
             fits_all: None,
             kept_by: None,

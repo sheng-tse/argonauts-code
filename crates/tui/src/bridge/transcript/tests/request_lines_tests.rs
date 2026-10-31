@@ -61,7 +61,6 @@ fn the_crew_your_words_set_shows_with_where_each_role_came_from() {
         include_str!("../../../../tests/golden/transcript/crew_for_request.txt"),
         include_str!("../../../../tests/golden/transcript/crew_for_request.html"),
         &Screen::theme(),
-        &[],
     );
 }
 
@@ -142,7 +141,6 @@ fn a_runs_start_line_says_as_you_asked_once() {
         include_str!("../../../../tests/golden/transcript/start_as_you_asked.txt"),
         include_str!("../../../../tests/golden/transcript/start_as_you_asked.html"),
         &Screen::theme(),
-        &[],
     );
 }
 
@@ -179,6 +177,5 @@ fn a_command_that_wrote_outside_leaves_its_line_under_the_call() {
         include_str!("../../../../tests/golden/transcript/wrote_outside.txt"),
         include_str!("../../../../tests/golden/transcript/wrote_outside.html"),
         &Screen::theme(),
-        &[],
     );
 }

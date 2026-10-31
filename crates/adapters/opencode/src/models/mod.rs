@@ -287,12 +287,12 @@ mod tests {
        "variants":[{"id":"low"},{"id":"high"},{"id":"max"}],"time":{"released":1788998400000},
        "cost":[{"input":0,"output":0,"cache":{"read":0,"write":0}}],"status":"active","enabled":true,
        "limit":{"context":200000,"output":32000}},
-      {"id":"gemma3:12b-32k","modelID":"gemma3:12b-32k","providerID":"ollama","name":"gemma3:12b-32k",
+      {"id":"gemma3:12b","modelID":"gemma3:12b","providerID":"ollama","name":"gemma3:12b",
        "capabilities":{"tools":false,"input":["text"],"output":["text"]},"variants":[],
        "time":{"released":0},"cost":[],"status":"active","enabled":true,
        "limit":{"context":131072,"output":32000}},
-      {"id":"qwen3-coder:30b-64k","modelID":"qwen3-coder:30b-64k","providerID":"ollama",
-       "name":"Qwen3 Coder 30B (64k)","capabilities":{"tools":true,"input":["text"],"output":["text"]},
+      {"id":"qwen3-coder:30b","modelID":"qwen3-coder:30b","providerID":"ollama",
+       "name":"Qwen3 Coder 30B","capabilities":{"tools":true,"input":["text"],"output":["text"]},
        "variants":[],"time":{"released":0},"cost":[],"status":"active","enabled":true,
        "limit":{"context":65536,"output":32000}}
     ]}"#;
@@ -317,7 +317,7 @@ mod tests {
         );
         assert!(!found.tools && found.local() && !found.free);
         assert!(found.variants.is_empty());
-        assert_eq!(models[2].own_name(), Some("Qwen3 Coder 30B (64k)"));
+        assert_eq!(models[2].own_name(), Some("Qwen3 Coder 30B"));
     }
 
     #[test]

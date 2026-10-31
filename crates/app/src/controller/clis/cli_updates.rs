@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use argonauts_conductor::{AgentCheck, AgentStatus, DoctorReport};
 use argonauts_core::Adapter;
+use argonauts_core::base::clock;
 use argonauts_core::base::log::NoteLevel;
-use time::OffsetDateTime;
 
 use crate::controller::Ctx;
 
@@ -80,7 +80,7 @@ pub(crate) fn ask_newest(ctx: &Ctx, report: &DoctorReport) {
     };
     let path = ctx.env.paths.cli_versions();
     let seen = CliVersions::load(&path);
-    let now = OffsetDateTime::now_utc();
+    let now = clock::now_utc();
     let due: Vec<_> = report
         .agents
         .iter()
@@ -165,11 +165,7 @@ mod tests {
 
     fn newest_is(path: &Path, version: &str) {
         let mut seen = CliVersions::load(path);
-        seen.asked_newest(
-            "claude-code",
-            Some(version.to_owned()),
-            OffsetDateTime::now_utc(),
-        );
+        seen.asked_newest("claude-code", Some(version.to_owned()), clock::now_utc());
         seen.save(path).unwrap();
     }
 

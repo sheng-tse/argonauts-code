@@ -190,10 +190,7 @@ async fn with_one_maker_a_fresh_session_of_the_tasks_own_model_checks_it() -> an
             .iter()
             .any(|part| part.label == "The council's check")
     }));
-    let same_maker = format!(
-        "Same maker: {}",
-        argonauts_crew::roles::display_name(&worker)
-    );
+    let same_maker = format!("Same maker: {}", DisplayNames::default().worker(&worker));
     assert!(
         notes(&events)
             .iter()

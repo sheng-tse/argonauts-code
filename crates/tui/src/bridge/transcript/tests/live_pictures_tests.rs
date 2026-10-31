@@ -102,7 +102,6 @@ fn live_moment_the_edit_s_row_is_there_while_it_runs() {
         include_str!("../../../../tests/golden/transcript/live_moment.txt"),
         include_str!("../../../../tests/golden/transcript/live_moment.html"),
         &Screen::theme(),
-        &[],
     );
 }
 
@@ -151,7 +150,6 @@ fn live_done_the_edit_s_row_is_filled_in_place() {
         include_str!("../../../../tests/golden/transcript/live_done.txt"),
         include_str!("../../../../tests/golden/transcript/live_done.html"),
         &Screen::theme(),
-        &[],
     );
 }
 
@@ -238,6 +236,5 @@ fn sticky_after_the_prompt_being_answered_stays_at_the_top() {
         include_str!("../../../../tests/golden/transcript/sticky_after.txt"),
         include_str!("../../../../tests/golden/transcript/sticky_after.html"),
         &theme,
-        &[],
     );
 }

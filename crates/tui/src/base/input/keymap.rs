@@ -69,6 +69,9 @@ pub enum Action {
     AboveInputToggle,
     /// In a settings picker, picks as Enter does and keeps the pick for this session only.
     SaveForSession,
+    /// Gives the terminal back to the shell and stops the app until `fg`, as Claude Code's
+    /// Ctrl+Z does.
+    Suspend,
     /// Shows or hides one mod above the input.
     Mod(ModName),
 }
@@ -99,6 +102,7 @@ impl Action {
             Action::AboveInputFocus,
             Action::AboveInputToggle,
             Action::SaveForSession,
+            Action::Suspend,
         ]
         .into_iter()
         .chain(ModName::ALL.map(Action::Mod))
@@ -129,6 +133,7 @@ impl Action {
             Action::AboveInputFocus => "above_input_focus",
             Action::AboveInputToggle => "above_input_toggle",
             Action::SaveForSession => "save_for_session",
+            Action::Suspend => "suspend",
             Action::Mod(the_mod) => mod_action(the_mod),
         }
     }
@@ -163,6 +168,7 @@ impl Action {
             Action::AboveInputFocus => "move to the mods and the notice above the input",
             Action::AboveInputToggle => "hide or show everything above the input",
             Action::SaveForSession => "in a settings picker, keep the pick for this session only",
+            Action::Suspend => "suspend Argonauts Code; fg brings it back",
             Action::Mod(the_mod) => {
                 let words = the_mod.name().replace('-', " ");
                 return format!("show or hide {words} above the input");
@@ -199,6 +205,8 @@ impl Action {
             | Action::AboveInputToggle
             | Action::SaveForSession
             | Action::Mod(_) => None,
+            // The shell's own key, which the approved panel doesn't list.
+            Action::Suspend => None,
         }
     }
 
@@ -241,6 +249,7 @@ impl Action {
             Action::AboveInputFocus => &["ctrl+x tab"],
             Action::AboveInputToggle => &["ctrl+x ctrl+a"],
             Action::SaveForSession => &["ctrl+s"],
+            Action::Suspend => &["ctrl+z"],
             Action::Mod(ModName::Context) => &["ctrl+x c"],
             Action::Mod(ModName::PlanUsage) => &["ctrl+x q"],
             Action::Mod(ModName::RunLimits) => &["ctrl+x b"],

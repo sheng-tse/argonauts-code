@@ -45,6 +45,7 @@ impl OverviewView {
         }
         let along = self.tab_words(ctx);
         let has_sub_tabs = self.sub_tabs(ctx).is_some();
+        let has_rows = self.has_rows(ctx);
         let rows: Vec<String> = match self.level() {
             // Iosevka draws the side arrows two cells wide, so each has two blanks after it.
             Level::Tabs if self.tab == Tab::Context => vec![
@@ -79,7 +80,7 @@ impl OverviewView {
         } else if self.tab == Tab::Overview {
             self.home.keys()
         } else if self.tab == Tab::Stats {
-            owned(self.stats.keys())
+            owned(self.stats.keys(has_rows))
         } else {
             rows
         };
@@ -187,10 +188,12 @@ impl OverviewView {
                 ]));
             }
         }
-        // On the Context tab's tabs, ↓ already says it goes into the list.
+        // On the Context tab's tabs, ↓ already says it goes into the list. Where the keys have
+        // no rows to move through, ↓ never reaches what's below, and a page down does.
         let down_said = self.tab == Tab::Context && self.level() == Level::Tabs;
         if more && !down_said {
-            keys.insert(0, "↓  more".to_owned());
+            let more = if has_rows { "↓  more" } else { "pgdn more" };
+            keys.insert(0, more.to_owned());
         }
         fit_keys(with_hint(keys), close, width)
     }

@@ -4,7 +4,6 @@
 //! two, which is why it comes last, just before the run stops.
 
 use argonauts_core::base::names::ModelRef;
-use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::runs::events::approval::{
     AnswerAction, AnswerOption, ApprovalKind, ApprovalPacket, FreeText, SecondAgentPacket,
 };
@@ -15,7 +14,6 @@ use super::{Bridge, lock};
 use crate::approvals::{self, ApprovalRequest, autopilot};
 use crate::engine::error::{EngineError, Stall};
 use crate::engine::job_fallback;
-use crate::roles::display_name;
 
 const YES: &str = "yes";
 const NO: &str = "no";
@@ -40,14 +38,14 @@ impl Bridge<'_> {
         if !lock(&self.second_tried).insert(call.label.clone()) {
             return Err(stall);
         }
-        let cli = DisplayNames::default().cli(taker.agent.as_str());
+        let cli = self.host.names().cli(taker.agent.as_str());
         let second = if self.is_council() {
             format!("a second proposal from {cli}")
         } else {
             format!("a second agent from {cli} in this step")
         };
-        let taker_name =
-            job_fallback::model_name(self.host, &taker).unwrap_or_else(|| display_name(&taker));
+        let taker_name = job_fallback::model_name(self.host, &taker)
+            .unwrap_or_else(|| self.host.names().worker(&taker));
         let asks = stall.beside.as_ref().is_some_and(|beside| beside.ask)
             && !autopilot::applies_now(self.host, ApprovalKind::Question);
         if asks {

@@ -18,7 +18,7 @@ use tokio::net::TcpStream;
 
 use crate::client::test_support::session_started;
 use crate::controller::base::test_support::{
-    Call as ConductorCall, CliOptions, TestDriver, max_wait,
+    Call as ConductorCall, CliOptions, TestDriver, max_wait, on_the_default_workflow,
 };
 use crate::controller::runs::rig;
 use argonauts_core::RunId;
@@ -41,9 +41,11 @@ fn with_config(config: &'static str) -> CliOptions {
     }
 }
 
-/// Claude Code as the main agent: it takes Argonauts Code's tools when driven.
+/// Claude Code as the main agent: it takes Argonauts Code's tools when driven. Council is the
+/// built-in default, which nobody chose, since a workflow you chose reads the session's verdict
+/// in place of its tools.
 async fn claude_code(config: &'static str) -> TestDriver {
-    let driver = TestDriver::start_with(with_config(config)).await;
+    let driver = TestDriver::start_with(on_the_default_workflow(with_config(config))).await;
     driver.directory.taking_tools("claude-code");
     driver
 }
@@ -542,6 +544,7 @@ async fn a_run_that_fails_later_is_told_to_the_session() {
             AppEvent::Conversation {
                 event: ConversationEvent::TurnStarted {
                     continues: true,
+                    opens_a_talk: false,
                     read_only: true,
                     ..
                 }

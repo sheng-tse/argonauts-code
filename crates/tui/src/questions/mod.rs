@@ -358,7 +358,23 @@ impl Questions {
         // An approval opened again replaces its question, such as after the evidence changed.
         let target = approval_target(run, &opened.id);
         self.close_target(&target, cx);
-        if !cx.history_only() {
+        // A council's plan is the note keeper's table in the talk, and Approve with edits opens
+        // it as a sheet, so the crew's printed plan doesn't show.
+        let council_plan = cx
+            .model
+            .bottom
+            .council
+            .edits
+            .as_ref()
+            .filter(|edits| edits.approval == opened.id)
+            .map(|edits| edits.sheet.clone())
+            .zip(
+                opened
+                    .options
+                    .iter()
+                    .position(|option| option.action == AnswerAction::ApproveWithEdits),
+            );
+        if !cx.history_only() && council_plan.is_none() {
             let run_state = cx.state.runs.get(run);
             for cell in about_cells_local(opened, run_state, clock_offset(cx), &cx.state.names) {
                 cx.model.history.push(cell);
@@ -372,29 +388,21 @@ impl Questions {
             agent.color = cx.model.agent_colors.get(&agent.worker);
         }
         if let ApprovalPacket::AgentDown(down) = &opened.packet {
-            let wall = OffsetDateTime::now_utc();
+            let wall = argonauts_core::base::clock::now_utc();
             cli_down::count_down(&mut prompt, down, &opened.options, cx.now, wall);
         }
         // A council's plan sets its edits on a sheet in the question's place, not in a note.
-        let edits = &cx.model.bottom.council.edits;
-        if let Some(edits) = edits.as_ref().filter(|edits| edits.approval == opened.id)
-            && let Some(option) = opened
-                .options
-                .iter()
-                .position(|option| option.action == AnswerAction::ApproveWithEdits)
-        {
+        let in_council = council_plan.is_some();
+        if let Some((sheet, option)) = council_plan {
             prompt.sheet = Some(Box::new(InQuestion {
                 option,
                 open: false,
-                sheet: edits.sheet.clone(),
+                sheet,
                 faces: cx.model.bottom.council.faces.clone(),
             }));
-            // In the summary's place: the plan printed above says what the tasks are.
-            match prompt.detail.first_mut() {
-                Some(summary) => COUNCIL_PLAN.clone_into(summary),
-                None => prompt.detail.push(COUNCIL_PLAN.to_owned()),
-            }
+            council_plan_question(&mut prompt, opened);
         }
+        let carry_on = !in_council && approval::carries_on(opened);
         self.open.insert(
             id,
             OpenQuestion {
@@ -402,7 +410,7 @@ impl Questions {
                 options: opened.options.clone(),
                 evidence_sha256: Some(opened.evidence_sha256.clone()),
                 remember: false,
-                carry_on: approval::carries_on(opened).then(|| prompt.options.len() - 1),
+                carry_on: carry_on.then(|| prompt.options.len() - 1),
             },
         );
         self.held.insert(
@@ -689,7 +697,7 @@ impl Questions {
             && let Source::Approval(opened) = &held.source
             && !cx.replaying()
         {
-            let at = OffsetDateTime::now_utc();
+            let at = argonauts_core::base::clock::now_utc();
             let cell =
                 records::passed_on_cell(opened.kind, opened.when_declined, at, clock_offset(cx));
             cx.model.history.push(cell);
@@ -1098,6 +1106,22 @@ fn answered_pick(
     };
     let outcome = records::outcome(opened, &decided, Some(run), names, &records::by_id);
     Some(AnsweredPick::new(run.clone(), id.clone(), outcome))
+}
+
+/// A council's plan question as the council draws it: under the talk, whose plan says what the
+/// tasks are, above the council's input. Esc sets it aside, and the seats' plan never goes ahead
+/// without you.
+fn council_plan_question(prompt: &mut QuestionPrompt, opened: &ApprovalOpened) {
+    prompt.above_input = true;
+    if approval::carries_on(opened) {
+        prompt.options.pop();
+    }
+    match prompt.detail.first_mut() {
+        Some(summary) => COUNCIL_PLAN.clone_into(summary),
+        None => prompt.detail.push(COUNCIL_PLAN.to_owned()),
+    }
+    prompt.esc_hint = "Esc to set aside".to_owned();
+    prompt.offers_shift_tab = false;
 }
 
 fn approval_target(run: &RunId, id: &ApprovalId) -> QuestionTarget {

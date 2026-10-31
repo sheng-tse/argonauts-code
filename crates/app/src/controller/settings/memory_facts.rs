@@ -93,7 +93,7 @@ fn with_smaller_window(fit: Fit, at: impl Fn(u64) -> Option<u64>) -> Fit {
     }
 }
 
-/// The Ollama tag an OpenCode choice runs, such as `qwen3-coder:30b-64k`.
+/// The Ollama tag an OpenCode choice runs, such as `qwen3-coder:30b`.
 fn ollama_tag(choice: &ModelChoice) -> Option<String> {
     (choice.worker.agent == OPENCODE)
         .then(|| choice.worker.model.as_deref()?.strip_prefix(OLLAMA))

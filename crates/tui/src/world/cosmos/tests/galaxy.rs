@@ -5,8 +5,9 @@ use super::crews::{self, Crew};
 use super::pictures::{
     HEIGHT, brightest, brightness, cosmos, find, marked, pixel, still, view, with,
 };
+use crate::world::cosmos::glow::TWINKLES;
 use crate::world::cosmos::{Cosmos, Level, StarKind};
-use crate::world::{Depth, Pointed};
+use crate::world::{Depth, PartId, Pointed};
 
 /// The bodies of a galaxy as the scene marks them: each star's index and where it is.
 fn bodies(cosmos: &mut Cosmos, maker: usize) -> Vec<(usize, (f64, f64), f32)> {
@@ -120,12 +121,23 @@ fn a_galaxy_moves_where_its_bodies_breathe_or_go_round_and_holds_still_when_aske
         let b = cosmos.scene(&still(Level::Galaxy(1)), 2.0).flatten();
         assert_eq!(a.pixels(), b.pixels());
     });
-    // T has been quiet for nine days: its galaxies hold still and ask for no steps.
+    // T has been quiet for nine days: nothing of its galaxies breathes or goes round, yet
+    // their stars twinkle, a glint laid over the still picture.
     with('T', |_, cosmos| {
         for maker in 0..cosmos.universe().makers.len() {
-            let scene = cosmos.scene(&view(Level::Galaxy(maker)), 1.0);
-            assert!(!scene.moves);
-            assert!(scene.sprites().is_empty());
+            let glints: Vec<PartId> = (0..TWINKLES)
+                .map(|slot| PartId::new("cosmos-twinkle", maker as u32 * TWINKLES + slot))
+                .collect();
+            let lit = (0..12).any(|step| {
+                let scene = cosmos.scene(&view(Level::Galaxy(maker)), f64::from(step) * 0.25);
+                assert!(scene.moves);
+                assert!(scene.sprites().iter().all(|s| glints.contains(&s.id)));
+                !scene.sprites().is_empty()
+            });
+            assert!(lit, "a star of galaxy {maker} twinkles");
+            let held = cosmos.scene(&still(Level::Galaxy(maker)), 1.0);
+            assert!(!held.moves);
+            assert!(held.sprites().is_empty());
         }
     });
 }

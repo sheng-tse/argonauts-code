@@ -362,8 +362,9 @@ fn going_into_the_behaviors_list_keeps_its_rows_on_the_panel() {
     }
 }
 
-/// Each model's card and its entry in the chart's legend open with the logo of whoever serves
-/// it, then its swatch and its name as it reads after the logo, as Stats names its models.
+/// Each model's card opens with the logo of whoever serves it, then its swatch and its name as
+/// it reads after the logo, as Stats names its models. The chart's legend keys each line with
+/// a short line before the logo, entries six blanks apart.
 #[test]
 fn the_models_cards_and_legend_carry_the_serving_logo() {
     let state = state();
@@ -392,7 +393,7 @@ fn the_models_cards_and_legend_carry_the_serving_logo() {
         .collect();
     let has = |text: &str| rows.iter().any(|row| row.starts_with(text));
     assert!(
-        has("◧◨ █ Opus 5.5 · ◧◨ █ 5.6 · ◧◨ ▚ Sonnet 5.5"),
+        has("── ◧◨ Opus 5.5      ── ◧◨ 5.6      ── ◧◨ Sonnet 5.5"),
         "{rows:#?}"
     );
     assert!(has("◧◨ █ Opus 5.5 (46.0%)"), "{rows:#?}");
@@ -502,15 +503,15 @@ fn the_import_says_what_it_found_when_it_finishes() {
     );
 }
 
+/// A CLI whose records can't be imported is counted only from what ran here, and the source
+/// line names it so.
 #[test]
-fn what_ran_only_through_argonauts_says_so() {
+fn what_ran_only_here_says_so() {
     let state = state();
-    let mut data = sample::overview();
-    data.sources[2].imported = false;
-    let mut view = tab(data);
+    let mut view = tab(sample::numbers());
     assert!(has(
         &rows(&mut view, &state, 140),
-        "imported: Claude Code since Oct 2025, Codex since Feb · through Argonauts Code: agy since Jun"
+        "imported: Claude Code since Oct 2025, Codex since Feb · ran here: agy, OpenCode"
     ));
 }
 
@@ -560,7 +561,7 @@ fn a_narrow_panel_stacks_the_groups_and_the_bars_and_no_row_runs_past_it() {
         let at = |text: &str| shown.iter().position(|row| row.trim() == text);
         let (tokens, days) = (at("Tokens").expect("Tokens"), at("Days").expect("Days"));
         assert!(
-            shown[tokens + 1].contains("Argonauts Code   118.4b"),
+            shown[tokens + 4].contains("All CLIs      118.4b    the three added up"),
             "{shown:#?}"
         );
         assert!(
@@ -568,7 +569,7 @@ fn a_narrow_panel_stacks_the_groups_and_the_bars_and_no_row_runs_past_it() {
             "{shown:#?}"
         );
         // Under one another the three groups' values start in one column.
-        assert!(shown[days + 1].contains("Active           318       of 365"));
+        assert!(shown[days + 1].contains("Active        318       of 365"));
         let kind = shown
             .iter()
             .position(|row| row.contains("By kind"))
@@ -612,11 +613,11 @@ fn a_long_favourite_is_cut_in_its_column() {
     assert!(row.ends_with('…') && str_width(row) <= 118, "{row}");
 }
 
-/// Claude Code's own count stands first where its /stats has kept one, with how far it goes
-/// when that isn't up to yesterday. Without it the count here stands alone and says nothing
-/// of what it adds.
+/// Each CLI says what its count holds: Claude Code what its /stats says, with how far that
+/// goes when it isn't up to yesterday, a CLI its own files where they were imported, and the
+/// rest only what ran here. All CLIs adds them up, where there are several.
 #[test]
-fn claude_codes_own_count_comes_first_and_says_how_far_it_goes() {
+fn each_cli_says_what_its_count_holds() {
     use argonauts_core::app::overview::OwnCount;
     use time::Duration;
 
@@ -627,21 +628,20 @@ fn claude_codes_own_count_comes_first_and_says_how_far_it_goes() {
         let first = shown
             .iter()
             .position(|row| row.trim_start().starts_with("Tokens "));
-        shown[first.expect("the groups") + 2..][..3].to_vec()
+        shown[first.expect("the groups") + 2..][..6].to_vec()
     };
     let shown = numbers(sample::numbers());
-    assert!(
-        shown[0].starts_with(" Claude Code      60.6b     as /stats counts "),
-        "{shown:#?}"
-    );
-    assert!(
-        shown[1].starts_with(" Argonauts Code   69.1b     + workflow agents "),
-        "{shown:#?}"
-    );
-    assert!(
-        shown[2].starts_with(" API value        ~$32,540 "),
-        "{shown:#?}"
-    );
+    let said = [
+        " Claude Code   60.8b     /stats says 60.6b ",
+        " Codex         8.0b      from its own files ",
+        " agy           0.3b      only what ran here ",
+        " OpenCode      0.1b      only what ran here",
+        " All CLIs      69.2b     the four added up",
+        " API value     ~$32,540",
+    ];
+    for (row, said) in shown.iter().zip(said) {
+        assert!(row.starts_with(said), "{said:?}: {shown:#?}");
+    }
 
     let mut stale = sample::numbers();
     stale.claude_stats = Some(OwnCount {
@@ -650,23 +650,26 @@ fn claude_codes_own_count_comes_first_and_says_how_far_it_goes() {
     });
     let shown = numbers(stale);
     assert!(
-        shown[0].starts_with(" Claude Code      58.1b     /stats to Sep 23 "),
+        shown[0].starts_with(" Claude Code   60.8b     /stats to Sep 23: 58.1b "),
         "{shown:#?}"
     );
 
     let shown = numbers(sample::overview());
     assert!(
-        shown[0].starts_with(" Argonauts Code   118.4b    "),
+        shown[0].starts_with(" Claude Code   73.5b     from its own files "),
         "{shown:#?}"
     );
-    assert!(!shown[0].contains("workflow agents"), "{shown:#?}");
+
+    let mut alone = sample::numbers();
+    alone.models.retain(|model| model.agent == "claude-code");
+    let shown = numbers(alone);
     assert!(
-        shown[1].starts_with(" API value        ~$9,640 "),
-        "{shown:#?}"
+        shown[1].starts_with(" API value     ~$32,540 "),
+        "one CLI needs no sum: {shown:#?}"
     );
     assert!(
-        shown[2].trim_start().starts_with("Busiest"),
-        "the third row has no token: {shown:#?}"
+        !shown.iter().any(|row| row.contains("All CLIs")),
+        "{shown:#?}"
     );
 }
 
@@ -682,8 +685,11 @@ fn ctrl_s_copies_the_sub_tab_without_the_folders() {
     let ViewOutcome::Copy(text) = outcome else {
         panic!("{outcome:?}");
     };
-    assert!(text.contains("Argonauts Code   118.4b"), "{text}");
-    assert!(text.contains("Favorite         Opus 5.5  46%"), "{text}");
+    assert!(
+        text.contains("All CLIs      118.4b    the three added up"),
+        "{text}"
+    );
+    assert!(text.contains("Favorite      Opus 5.5  46%"), "{text}");
     assert!(
         text.contains("By kind: Cache read 93%, Write 6%, Output <1%, Input 1%"),
         "{text}"
@@ -726,4 +732,78 @@ fn the_overview_moves_as_every_tab_of_the_panel_does() {
         Tab::Stats,
         "←  on the first tab goes to the last"
     );
+}
+
+/// The key line, the last row with anything on it.
+fn key_line(shown: &[String]) -> String {
+    let line = shown.iter().rev().find(|row| !row.trim().is_empty());
+    line.cloned().unwrap_or_default()
+}
+
+/// Overview › Overview's year and figures have nothing to pick, so ↓ and Enter leave the keys
+/// on the sub-tabs, where ←→ still go along them, and the key line offers no ↓ there. Models,
+/// with its list of models, takes the keys in as before, and Shift+Tab from its rows back to
+/// Overview brings them up to the sub-tabs. At every real size.
+#[test]
+fn down_leaves_the_keys_on_the_sub_tabs_where_nothing_below_moves() {
+    use crate::panels::view::Level;
+
+    let state = state();
+    for real in REAL_SIZES {
+        let (width, height, size) = (real.cols, real.rows, real.to_string());
+        let mut view = tab(sample::models());
+        key(&mut view, &state, KeyCode::Down);
+        assert_eq!(view.level(), Level::SubTabs, "{size}");
+        for code in [KeyCode::Down, KeyCode::Enter] {
+            assert!(matches!(
+                key(&mut view, &state, code),
+                ViewOutcome::Consumed
+            ));
+            assert_eq!(view.level(), Level::SubTabs, "{code:?} at {size}");
+        }
+        let shown = rows_on(&mut view, &state, width, height);
+        let keys = key_line(&shown);
+        assert!(!keys.contains('↓'), "{size}: {keys}");
+        assert!(
+            !keys.contains("more") || keys.contains("pgdn more"),
+            "{size}: what's below is a page down away: {keys}"
+        );
+
+        key(&mut view, &state, KeyCode::Right);
+        let shown = rows_on(&mut view, &state, width, height);
+        assert!(shown[3].contains("[Models]"), "{size}: {shown:#?}");
+        let first_page = key_line(&shown);
+        assert!(
+            first_page.contains("1-4 of 7 models"),
+            "{size}: {first_page}"
+        );
+        key(&mut view, &state, KeyCode::Down);
+        assert_eq!(view.level(), Level::Cards, "{size}: into the models");
+        key(&mut view, &state, KeyCode::Down);
+        let next_page = key_line(&rows_on(&mut view, &state, width, height));
+        assert!(next_page.contains("3-6 of 7 models"), "{size}: {next_page}");
+
+        key(&mut view, &state, KeyCode::BackTab);
+        assert_eq!(view.level(), Level::SubTabs, "{size}: back on Overview");
+        let shown = rows_on(&mut view, &state, width, height);
+        assert!(shown[3].contains("[Overview]"), "{size}: {shown:#?}");
+    }
+}
+
+/// Models with no model in the period has nothing to pick either.
+#[test]
+fn models_with_nothing_counted_keeps_the_keys_on_the_sub_tabs() {
+    use crate::panels::view::Level;
+
+    let state = state();
+    let mut data = sample::models();
+    data.models.clear();
+    let mut view = tab(data);
+    for code in [KeyCode::Down, KeyCode::Right, KeyCode::Down] {
+        key(&mut view, &state, code);
+    }
+    assert_eq!(view.level(), Level::SubTabs);
+    let shown = rows(&mut view, &state, 120);
+    assert!(shown[3].contains("[Models]"), "{shown:#?}");
+    assert!(has(&shown, "Nothing in this period yet."), "{shown:#?}");
 }

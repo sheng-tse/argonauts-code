@@ -75,7 +75,11 @@ pub fn as_written(host: &Host, workflow: Workflow) -> Workflow {
     shape(workflow, rules, None)
 }
 
-pub fn shape(mut workflow: Workflow, rules: Rules, first_try: Option<Phase>) -> Workflow {
+pub fn shape(mut workflow: Workflow, mut rules: Rules, first_try: Option<Phase>) -> Workflow {
+    // A council's seats take your request as it is, and its plan is the first thing you approve.
+    if workflow.talks() {
+        rules.understand = UnderstandWhen::Off;
+    }
     match rules.understand {
         UnderstandWhen::Crew => crew_understands(&mut workflow),
         UnderstandWhen::Main => one_reading_goes(&mut workflow),
@@ -121,7 +125,7 @@ pub fn plan_approval_runs(workflow: &Workflow) -> bool {
 /// the goal, or the main agent's own questions, then asks "Run this workflow?" or "Pursue this
 /// goal?".
 fn goal_before_work(workflow: &mut Workflow, understand: UnderstandWhen) {
-    if understand_approval_runs(workflow, understand) {
+    if understand_approval_runs(workflow, understand) || workflow.talks() {
         return;
     }
     let first = workflow
@@ -229,7 +233,7 @@ fn unconditional_approval(steps: &[Step], kind: ApprovalKind) -> bool {
 /// Understand as the examples write it: readings from several providers, comparisons, and the
 /// one question, in a loop that a send back runs again.
 fn understand_phase() -> Option<Phase> {
-    let example = builtin::load("council").ok()?;
+    let example = builtin::load("orchestrator").ok()?;
     example
         .phases
         .into_iter()
@@ -541,6 +545,16 @@ mod tests {
         }
     }
 
+    /// A council talks from your request: nothing reads it first, and no goal question comes
+    /// before the plan.
+    #[test]
+    fn a_council_opens_with_its_talk() {
+        let shaped = shape(builtin("council"), rules(RunStyle::Workflow), None);
+        assert_eq!(names(&shaped), ["Talk", "Build", CHECK_PHASE, "Merge"]);
+        assert!(!understand_approval_runs(&shaped, UnderstandWhen::Crew));
+        assert!(plan_approval_runs(&shaped));
+    }
+
     /// A phase with no steps of its own shows an earlier build's reviews, so it stays.
     #[test]
     fn a_phase_that_shows_reviews_stays() {
@@ -628,7 +642,7 @@ mod tests {
 
     #[test]
     fn a_goal_is_understand_its_tries_then_merge() {
-        let shaped = shape(builtin("council"), rules(RunStyle::Goal), None);
+        let shaped = shape(builtin("orchestrator"), rules(RunStyle::Goal), None);
         assert_eq!(names(&shaped), ["Understand", "Try 1", "Merge"]);
         let first = &shaped.phases[1];
         assert!(is_try(first));
@@ -646,7 +660,11 @@ mod tests {
             standard: StandardPhase::Do,
             steps: try_phase(1, None).steps[..1].to_vec(),
         };
-        let shaped = shape(builtin("council"), rules(RunStyle::Goal), Some(planned));
+        let shaped = shape(
+            builtin("orchestrator"),
+            rules(RunStyle::Goal),
+            Some(planned),
+        );
         assert_eq!(names(&shaped), ["Understand", "Both Fixes", "Merge"]);
         assert!(is_try(&shaped.phases[1]));
     }

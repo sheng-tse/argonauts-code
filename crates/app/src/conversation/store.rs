@@ -14,6 +14,7 @@ use anyhow::Context as _;
 use argonauts_core::RunId;
 use argonauts_core::agents::agent_sessions::AgentSessionRef;
 use argonauts_core::app::ConversationEvent;
+use argonauts_core::base::clock;
 use argonauts_core::base::names::{ConversationId, ModelRef};
 use argonauts_core::base::paths::{create_private_dir_all, write_private_file};
 use argonauts_core::safety::redact::{redact_json, redact_secrets};
@@ -151,7 +152,7 @@ impl ConversationStore {
         // reader of the event leaves the extra key alone.
         if let (ConversationEvent::TurnStarted { .. }, Some(line)) = (event, value.as_object_mut())
         {
-            let now = time::OffsetDateTime::now_utc()
+            let now = clock::now_utc()
                 .format(&time::format_description::well_known::Rfc3339)
                 .context("writing a turn's time")?;
             line.insert(

@@ -12,6 +12,7 @@
 use argonauts_core::settings::ui::ModName;
 use ratatui::text::Span;
 
+use crate::base::format::UNKNOWN;
 use crate::base::kit::{ContextCard, Drawn, Form, Frame, Kit};
 use crate::base::text::truncate_spans;
 use crate::panels::stats::pinned::StatsCard;
@@ -154,7 +155,10 @@ fn context_percent(kit: &Kit<'_>, context: &ContextCard) -> Vec<Span<'static>> {
     let badge = context.header(kit).badge;
     let role = context.level().number_role();
     badge
-        .map(|badge| kit.span(badge.text, role))
+        .map(|badge| match badge.text.as_str() {
+            UNKNOWN => kit.dim(badge.text),
+            _ => kit.span(badge.text, role),
+        })
         .into_iter()
         .collect()
 }

@@ -4,7 +4,7 @@ use argonauts_core::behaviors::behavior_world::{
     Burst, CliFailure, Crash, ModelBehavior, MonthActions, NewerModel, QuietStretch, StormWord,
 };
 use time::macros::datetime;
-use time::{Duration, OffsetDateTime};
+use time::{Duration, OffsetDateTime, UtcOffset};
 
 use super::super::read::{Outcome, Recorded, SessionEnded};
 use super::*;
@@ -91,6 +91,19 @@ fn days_go_back_from_the_end_on_your_clock() {
     );
     let all_time = Period::new(END, None, WallClock::pinned(END));
     assert_eq!((all_time.start(), all_time.before()), (None, None));
+}
+
+/// The screen writes each time in the end's offset and counts days on its calendar, so the end
+/// goes out on your clock, whatever offset the period's own end has.
+#[test]
+fn the_world_ends_on_your_clock() {
+    let period = Period::new(
+        END.to_offset(UtcOffset::UTC),
+        Some(30),
+        WallClock::pinned(END),
+    );
+    let world = facts(&[], &period, &DisplayNames::default(), None);
+    assert_eq!((world.end, world.end.offset()), (END, END.offset()));
 }
 
 #[test]

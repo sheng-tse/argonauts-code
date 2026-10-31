@@ -1,8 +1,8 @@
 {
   "opencode": {
     "agent": "opencode",
-    "model": "ollama/qwen3-coder:30b-64k",
-    "window": 65536,
+    "model": "ollama/qwen3-coder:30b",
+    "window": 262144,
     "buffer": 0,
     "parts": [
       {
@@ -27,10 +27,10 @@
     },
     "first_count": "step"
   },
-  "opencode ollama/qwen3-coder:30b-64k": {
+  "opencode ollama/qwen3-coder:30b": {
     "agent": "opencode",
-    "model": "ollama/qwen3-coder:30b-64k",
-    "window": 65536,
+    "model": "ollama/qwen3-coder:30b",
+    "window": 262144,
     "buffer": 0,
     "parts": [
       {

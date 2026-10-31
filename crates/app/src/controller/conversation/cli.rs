@@ -13,6 +13,7 @@ use argonauts_core::agents::cli_sessions::{
     CliScan, CliSession, CliSessionRef, CliTurn, ResumeLaunch, Speaker,
 };
 use argonauts_core::app::{ReplayTurn, TurnReply};
+use argonauts_core::base::clock;
 use argonauts_core::base::names::ModelRef;
 
 use super::excerpt::Exchange;
@@ -223,7 +224,7 @@ fn unlisted(
         ),
         prompt: None,
         folder: scan.folder.clone(),
-        updated: time::OffsetDateTime::now_utc(),
+        updated: clock::now_utc(),
         model: None,
         branch: None,
         last_message: None,

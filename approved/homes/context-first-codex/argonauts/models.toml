@@ -1,4 +1,4 @@
-# gpt-6-luna as `codex debug models` lists it: 872,000 tokens at most.
+# gpt-6-luna as Codex names it. Its window comes from the shipped catalog.
 
 [[model]]
 id = "codex/gpt-6-luna"
@@ -7,4 +7,3 @@ kind = "cli"
 access = "subscription"
 tools = true
 cost = { unit = "plan_usage" }
-context_window = 872000

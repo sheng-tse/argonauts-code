@@ -79,7 +79,7 @@ mod picture {
                 plan(
                     "claude-code",
                     "Claude Code",
-                    "Max",
+                    "Pro",
                     vec![
                         window(
                             "five_hour",
@@ -94,7 +94,7 @@ mod picture {
                 plan(
                     "codex",
                     "Codex",
-                    "Plus",
+                    "Pro",
                     vec![
                         window("five_hour", "5-hour", None, 0.0),
                         window("weekly", "weekly", codex_week, 0.01),
@@ -104,7 +104,7 @@ mod picture {
                 plan(
                     "antigravity-cli",
                     "agy",
-                    "Pro",
+                    "Ultra",
                     vec![
                         window("five_hour", "Gemini 5h", None, 0.0),
                         window("weekly", "Gemini week", agy_week, 0.0),

@@ -10,7 +10,7 @@ use serde::Deserialize;
 
 use super::frames::{self, Drawn};
 use super::png::{self, Area};
-use super::{Look, Mascot, ROWS, WIDTH};
+use super::{Look, Mascot, WIDTH};
 
 const LISTING: &str = include_str!("../../../assets/mascots/pictures.json");
 
@@ -25,6 +25,9 @@ struct Listing {
     /// Seconds between an ultra look's frames.
     #[cfg(test)]
     step: f64,
+    /// The rows an ultra look's picture takes above the mascot's own.
+    #[cfg(test)]
+    above: usize,
     mascots: BTreeMap<String, Listed>,
 }
 
@@ -118,25 +121,29 @@ pub fn picture(
         return None;
     }
     let source = png::decode(drawn)?;
+    let rows = look.picture_rows();
     let box_of =
-        |(width, height): (u16, u16)| (usize::from(width) * WIDTH, usize::from(height) * ROWS);
-    let from = art_in(mascot, box_of(DRAWN_FOR));
+        |(width, height): (u16, u16)| (usize::from(width) * WIDTH, usize::from(height) * rows);
+    let from = art_in(mascot, look, box_of(DRAWN_FOR));
     let (width, height) = box_of(cell);
     let fitted = png::fitted(
         &source,
         from,
         width,
         height,
-        art_in(mascot, (width, height)),
+        art_in(mascot, look, (width, height)),
     );
     Some(Cow::Owned(png::encode(&fitted)))
 }
 
-/// Where the generator puts `mascot`'s drawn area in a picture `box_size` pixels: as tall as the
-/// picture, or as wide when that would be too wide, and in the middle.
-fn art_in(mascot: Mascot, (box_width, box_height): (usize, usize)) -> Area {
+/// Where the generator puts `mascot`'s drawn area in a picture of `look` `box_size` pixels: in
+/// its bottom three rows, as tall as they are, or as wide as the picture when that would be
+/// too wide, and in their middle. An ultra look's picture shows the rows above too.
+fn art_in(mascot: Mascot, look: Look, (box_width, box_height): (usize, usize)) -> Area {
     let [_, _, area_width, area_height] = listing().mascots[mascot.name()].area;
-    let (box_w, box_h) = (box_width as f64, box_height as f64);
+    let lift = box_height * look.rows_above() / look.picture_rows();
+    let rows_height = box_height - lift;
+    let (box_w, box_h) = (box_width as f64, rows_height as f64);
     let (mut width, mut height) = (box_h * area_width / area_height, box_h);
     if width > box_w {
         (width, height) = (box_w, box_w * area_height / area_width);
@@ -144,13 +151,13 @@ fn art_in(mascot: Mascot, (box_width, box_height): (usize, usize)) -> Area {
     // Python rounds halves to even, and the generator's sizes came from it.
     let (width, height) = (
         (width.round_ties_even() as usize).min(box_width),
-        (height.round_ties_even() as usize).min(box_height),
+        (height.round_ties_even() as usize).min(rows_height),
     );
     Area {
         x: (box_width - width) / 2,
-        y: (box_height - height) / 2,
+        y: (rows_height - height) / 2,
         width,
-        height,
+        height: height + lift,
     }
 }
 
@@ -163,6 +170,7 @@ mod tests {
         let listing = listing();
         assert_eq!(listing.cells, [DRAWN_FOR]);
         assert!(listing.step <= 0.05, "a frame every 50 ms or sooner");
+        assert_eq!(listing.above, super::super::ULTRA_ROWS_ABOVE);
         for mascot in Mascot::ALL {
             let listed = &listing.mascots[mascot.name()];
             let drawn = drawn(mascot);
@@ -181,7 +189,10 @@ mod tests {
                     let bytes = picture(mascot, look, DRAWN_FOR, frame).unwrap();
                     let image = png::decode(&bytes)
                         .unwrap_or_else(|| panic!("{mascot:?} {look:?} {frame}"));
-                    assert_eq!((image.width, image.height), (18 * 9, 42 * 3));
+                    assert_eq!(
+                        (image.width, image.height),
+                        (18 * 9, 42 * look.picture_rows())
+                    );
                 }
             }
         }
@@ -218,15 +229,47 @@ mod tests {
 
     #[test]
     fn the_area_sits_where_the_generator_puts_it() {
-        // The generator's 81 x 63 Hydra is 66 wide: the area's 97.52 x 93.02 at 63 tall.
+        // The generator's 81 x 63 Hydra is 66 wide: the area's 90.3 x 85.8 at 63 tall.
         assert_eq!(
-            art_in(Mascot::Hydra, (81, 63)),
+            art_in(Mascot::Hydra, Look::Normal, (81, 63)),
             Area {
                 x: 7,
                 y: 0,
                 width: 66,
                 height: 63
             }
+        );
+        // An ultra look's picture is a row taller, and shows that row over the same mascot.
+        assert_eq!(
+            art_in(Mascot::Argonaut, Look::Ultracode, (162, 168)),
+            Area {
+                x: 5,
+                y: 0,
+                width: 151,
+                height: 168
+            }
+        );
+    }
+
+    /// Fitted by its own height, the mascot fills its three rows in every look, and an ultra
+    /// mark rises into the row above, the blank one over the header.
+    #[test]
+    fn a_mascot_fills_its_rows_and_its_ultra_mark_rises_above_them() {
+        let ink_rows = |look: Look| {
+            let bytes = picture(Mascot::Argonaut, look, DRAWN_FOR, 0).unwrap();
+            let image = png::decode(&bytes).unwrap();
+            let inked = |y: usize| {
+                (0..image.width).any(|x| image.pixels[(y * image.width + x) * 4 + 3] > 40)
+            };
+            let rows: Vec<usize> = (0..image.height).filter(|y| inked(*y)).collect();
+            (rows[0], rows[rows.len() - 1])
+        };
+        assert_eq!(ink_rows(Look::Normal), (0, 125));
+        let (top, bottom) = ink_rows(Look::Ultracode);
+        assert_eq!(bottom, 42 + 125, "the same mascot under the row above");
+        assert!(
+            top < 42,
+            "the gold shell rises into the row above, from {top}"
         );
     }
 }

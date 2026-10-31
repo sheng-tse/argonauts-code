@@ -646,6 +646,12 @@ pub async fn design_for_task(host: &Host) -> EngineResult<Option<(Option<Workflo
     if settings.orchestrator_designs() == OrchestratorDesign::Off || captain {
         return Ok(None);
     }
+    // A council's seats start from your request, so nothing sizes it before they answer. Where
+    // the main agent may run another workflow, it still picks one.
+    let sizes_only = settings.orchestrator_designs() < OrchestratorDesign::Any;
+    if sizes_only && runner::workflow_for_run(host).is_ok_and(|(_, w)| w.talks()) {
+        return Ok(None);
+    }
     let mut input = design_input(host, None, Vec::new());
     let tie_breaker = tie_breaker(host);
     // Where the main agent may only size your workflow, it sees only the chosen workflow.

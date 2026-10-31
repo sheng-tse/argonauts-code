@@ -97,7 +97,7 @@ pub fn line_at(ground: &Ground, x: f64, y: f64) -> GroundLine {
         return GroundLine::new(
             GroundKind::Snow,
             format!(
-                "Snow and glacier · about {actions} actions here, 100 or more · {}",
+                "Snow and glacier · about {actions} actions here · {}",
                 quoted(near)
             ),
         );
@@ -106,7 +106,7 @@ pub fn line_at(ground: &Ground, x: f64, y: f64) -> GroundLine {
         return GroundLine::new(
             GroundKind::Rock,
             format!(
-                "Bare rock · about {actions} actions here, 30 to 99 · {}",
+                "Bare rock · about {actions} actions here · {}",
                 quoted(near)
             ),
         );
@@ -263,8 +263,8 @@ impl Polar {
                 return Some(GroundLine::new(
                     GroundKind::Ice(IceKind::Berg(berg.index)),
                     format!(
-                        "Iceberg · {} quiet days in a row, {}",
-                        stretch.days,
+                        "Iceberg · {} in a row with no action, starting {}",
+                        plural(stretch.days, "day", "days"),
                         days_ago(stretch.ends + stretch.days - 1)
                     ),
                 ));
@@ -283,8 +283,8 @@ impl Polar {
             return Some(GroundLine::new(
                 GroundKind::Ice(IceKind::South),
                 format!(
-                    "South ice · {} in the period",
-                    plural(ground.facts.quiet_days, "quiet day", "quiet days")
+                    "South ice · {} with no action in the dates shown",
+                    plural(ground.facts.quiet_days, "day", "days")
                 ),
             ));
         }

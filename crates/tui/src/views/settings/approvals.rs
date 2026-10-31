@@ -8,6 +8,7 @@
 
 use argonauts_core::RunId;
 use argonauts_core::app::{SettingRow, UiCommand, ViewData, ViewRequest};
+use argonauts_core::base::clock;
 use argonauts_core::base::names::{ApprovalId, ModelRef, RoleName};
 use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::safety::policy::{ApprovalRow, ApprovalsView as ApprovalsData};
@@ -633,7 +634,7 @@ impl View for ApprovalsView {
                     return false;
                 }
                 flow::fill_models(editor, role, choices);
-                let note = freshness(*refreshed, *refreshing, time::OffsetDateTime::now_utc());
+                let note = freshness(*refreshed, *refreshing, clock::now_utc());
                 flow::show_freshness(editor, note.as_deref());
             }
             ViewData::Approvals { view } => self.data = view.clone(),

@@ -2510,7 +2510,7 @@ fn notes(events: &[RunEvent]) -> Vec<&str> {
 
 /// Qwen on Ollama, as setup offers it for reviews: served without tools, with the window its
 /// tag holds it to.
-const LOCAL_REVIEWER: &str = "ollama/qwen3-coder:30b-64k";
+const LOCAL_REVIEWER: &str = "ollama/qwen3-coder:30b";
 
 /// The crew of [`scripted`] with a local model first among the reviewers, held to `window`
 /// tokens or sized as it loads, and a CLI reviewer of another provider after it.

@@ -24,6 +24,7 @@ use argonauts_core::app::views::{
     WorkflowRow, WorkflowState, WorkflowView as WorkflowData,
 };
 use argonauts_core::app::{UiCommand, ViewData, ViewRequest};
+use argonauts_core::base::clock;
 use argonauts_core::base::names::{SessionKey, WorkflowId};
 use argonauts_core::runs::events::approval::ApprovalPacket;
 use argonauts_core::runs::events::run::WaitReason;
@@ -34,7 +35,6 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use time::OffsetDateTime;
 
 use crate::base::text::sanitize_line;
 use crate::base::theme::{Role, Theme};
@@ -628,7 +628,7 @@ impl WorkflowView {
             return None;
         }
         let run = state.runs.get(self.run())?;
-        let elapsed = run.totals(OffsetDateTime::now_utc()).elapsed?;
+        let elapsed = run.totals(clock::now_utc()).elapsed?;
         Some(millis(elapsed))
     }
 

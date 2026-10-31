@@ -24,6 +24,15 @@ pub const COLS: u16 = 100;
 
 const POLL: Duration = Duration::from_millis(20);
 
+/// What the shell that keeps jobs prompts with.
+pub const JOB_PROMPT: &str = "jobs$ ";
+
+/// What the shell that keeps jobs types to start the test driver.
+const STARTS_ALONE: &str = "\"$DRIVER_BIN\" \"$DRIVER_SCRIPT\"\r";
+/// The same under a parent that waits on it, as npm's launcher does, so the shell's job is
+/// the parent's process group and the test driver isn't its first process.
+const STARTS_UNDER_A_PARENT: &str = "sh -c '\"$DRIVER_BIN\" \"$DRIVER_SCRIPT\"; :'\r";
+
 /// Variables from the developer's shell that would change what the screen draws, beside the
 /// ones naming the terminal, which the pty itself leaves out.
 const CLEARED_ENV: &[&str] = &[
@@ -53,6 +62,8 @@ pub struct Launch {
     pictures: bool,
     /// Written under the private home before start, by path within it.
     home_files: Vec<(String, String)>,
+    /// What a shell that keeps jobs types to start the test driver, when one starts it.
+    job_shell: Option<&'static str>,
     /// How long a first Ctrl+C, Ctrl+D or Esc waits for the second, when not the second
     /// people get.
     double_press: Option<Duration>,
@@ -128,6 +139,19 @@ impl Launch {
         self
     }
 
+    /// Starts the test driver from an interactive shell that keeps jobs, as a person's terminal
+    /// does, so Ctrl+Z stops it and `fg` brings it back. The shell prompts with [`JOB_PROMPT`].
+    pub fn in_a_job_shell(mut self) -> Self {
+        self.job_shell = Some(STARTS_ALONE);
+        self
+    }
+
+    /// As [`Self::in_a_job_shell`], with the test driver started by a parent that waits on it.
+    pub fn in_a_job_shell_under_a_waiting_parent(mut self) -> Self {
+        self.job_shell = Some(STARTS_UNDER_A_PARENT);
+        self
+    }
+
     /// Once the first run quits, the shell starts the test driver again with `script`.
     pub fn then_restart(mut self, script: Script) -> Self {
         self.shell
@@ -157,6 +181,12 @@ impl Launch {
 
         let binary = env!("CARGO_BIN_EXE_argonauts-tui-driver");
         let command = match &self.shell {
+            None if self.job_shell.is_some() => PtyCommand::new("/bin/sh")
+                .args(["-i"])
+                .env_remove("ENV")
+                .env("PS1", JOB_PROMPT)
+                .env("DRIVER_BIN", binary)
+                .env("DRIVER_SCRIPT", script.as_os_str()),
             None => PtyCommand::new(binary).args([script.as_os_str()]),
             Some(shell) => {
                 let again = dir.path().join("again.jsonl");
@@ -208,7 +238,11 @@ impl Launch {
         if self.unanswered {
             command = command.unanswered();
         }
-        let pty = Pty::spawn(command).expect("starting the CLI in a pty");
+        let mut pty = Pty::spawn(command).expect("starting the CLI in a pty");
+        if let Some(line) = self.job_shell {
+            pty.send(line)
+                .expect("starting the test driver from the shell");
+        }
         let name = self.name.unwrap_or_else(test_name);
         TestDriver {
             pty,
@@ -271,6 +305,7 @@ impl TestDriver {
             unanswered: false,
             pictures: false,
             home_files: Vec::new(),
+            job_shell: None,
             double_press: None,
         }
     }

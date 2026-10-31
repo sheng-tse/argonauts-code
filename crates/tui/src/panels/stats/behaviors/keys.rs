@@ -23,7 +23,13 @@ impl BehaviorsTab {
             return true;
         }
         match code {
-            KeyCode::Char('d') => self.map_shown() && self.has_actions() && self.deep.claims(code),
+            // Summaries keep `d` with no dots yet, so the labels are always a key away.
+            KeyCode::Char('d') => {
+                self.map_shown()
+                    && (self.has_actions() || self.on_summaries())
+                    && self.deep.claims(code)
+            }
+            KeyCode::Char('u') => self.map_shown() && self.waiting() > 0 && self.deep.claims(code),
             KeyCode::Char('x') => self.deep.claims(code),
             KeyCode::Char('s' | '1' | '2' | '3' | '+' | '=' | '-' | 't' | 'n' | 'm') => true,
             KeyCode::Char('?') => in_rows || self.shortcuts,
@@ -82,6 +88,18 @@ impl BehaviorsTab {
         })
     }
 
+    fn on_summaries(&self) -> bool {
+        matches!(self.shown(), Some(Shown::Summaries { .. }))
+    }
+
+    /// The actions Summaries on screen wait to add, which `u` adds.
+    pub(super) fn waiting(&self) -> usize {
+        match self.shown() {
+            Some(Shown::Summaries { unsummarized }) => unsummarized,
+            _ => 0,
+        }
+    }
+
     /// What the flow of Summaries asked. The map an update makes is the one asked for next.
     fn deep_key(&mut self, key: DeepKey) -> MapKey {
         match key {
@@ -106,11 +124,12 @@ impl BehaviorsTab {
         MapKey::Ask(self.ask())
     }
 
-    /// Whether Esc has anything to undo before the panel closes: the pointer's line, a place in
-    /// the list, a level inside the universe, or a level away from the map.
+    /// Whether Esc has anything to undo before the panel closes: the mouse's line, a place in
+    /// the list, a level inside the universe, or a level away from the map. Where the keys rest
+    /// the pointer is theirs, not a step to undo.
     fn steps_back(&self) -> bool {
-        self.stop == Stop::Picture
-            && (self.pointed.is_some() || self.at != At::Map || self.level != Level::Map)
+        let moused = self.pointed.is_some() && !self.resting;
+        self.stop == Stop::Picture && (moused || self.at != At::Map || self.level != Level::Map)
     }
 
     pub fn key(&mut self, code: KeyCode) -> Option<MapKey> {
@@ -124,10 +143,18 @@ impl BehaviorsTab {
             return Some(self.deep_key(key));
         }
         if code == KeyCode::Char('d') {
-            if !self.has_actions() {
+            if !self.has_actions() && !self.on_summaries() {
                 return None;
             }
             let key = self.deep.d(self.shown()?);
+            return Some(self.deep_key(key));
+        }
+        if code == KeyCode::Char('u') {
+            let by = match &self.map.as_ref()?.placing {
+                Placing::Summaries { by } => by.clone(),
+                Placing::Labels => return None,
+            };
+            let key = self.deep.u(self.shown()?, &by)?;
             return Some(self.deep_key(key));
         }
         if let Some(key) = self.world_key(code) {
@@ -136,7 +163,7 @@ impl BehaviorsTab {
         if self.stop == Stop::Groupings {
             return self.groupings_key(code);
         }
-        if code == KeyCode::Esc && self.pointed.take().is_some() {
+        if code == KeyCode::Esc && !self.resting && self.pointed.take().is_some() {
             return Some(MapKey::Moved);
         }
         if self.level.in_cosmos() {
@@ -144,6 +171,7 @@ impl BehaviorsTab {
         }
         if code == KeyCode::Up && self.at == At::Map {
             self.stop = Stop::Groupings;
+            self.release_pointer();
             return Some(MapKey::Moved);
         }
         if code == KeyCode::Esc && self.at == At::Map {
@@ -198,6 +226,7 @@ impl BehaviorsTab {
             KeyCode::Right => Some(self.step_grouping(1)),
             KeyCode::Down | KeyCode::Enter | KeyCode::Home | KeyCode::End => {
                 self.stop = Stop::Picture;
+                self.rest_pointer();
                 Some(MapKey::Moved)
             }
             _ => None,
@@ -365,13 +394,21 @@ impl BehaviorsTab {
             return MapKey::Moved;
         }
         let now = self.moment.now;
-        self.zoom = (!self.moment.skips_frames).then(|| Zoom::new(from, to, now));
+        let rate = self.rate();
+        self.zoom = (!self.moment.skips_frames).then(|| Zoom::new(from, to, now, rate));
+        if from == Level::Map {
+            self.rest_on_return = self.resting;
+        }
         self.level = to;
         self.pointed = None;
+        self.resting = false;
         self.picked = None;
         if !to.shows_dots() {
             self.at = At::Map;
             self.first_row.set(0);
+        }
+        if to == Level::Map && std::mem::take(&mut self.rest_on_return) {
+            self.rest_pointer();
         }
         MapKey::Moved
     }
@@ -389,6 +426,7 @@ impl BehaviorsTab {
             .as_ref()
             .map_or_else(Vec::new, |map| super::legend::busiest_first(map));
         let rows = self.comparison().map_or(0, |c| c.rows.len());
+        let was = (self.at, self.compared);
         let next = match (self.at, code) {
             (At::Map | At::List(_), KeyCode::Left | KeyCode::Right) => {
                 let by = if code == KeyCode::Left { -1 } else { 1 };
@@ -480,6 +518,10 @@ impl BehaviorsTab {
             (at, _) => at,
         };
         self.at = next;
+        // A key that moves anything on the map takes the pointer off its resting place.
+        if (next, self.compared) != was {
+            self.release_pointer();
+        }
         Some(MapKey::Moved)
     }
 }

@@ -9,7 +9,7 @@ use serde_json::json;
 
 /// A model that writes summaries.
 pub(crate) trait Summarizer: Send + Sync {
-    /// As the store keys its summaries, such as `ollama/qwen3-coder:30b-64k`.
+    /// As the store keys its summaries, such as `ollama/qwen3-coder:30b`.
     fn id(&self) -> &ModelRef;
     /// The reply to one request.
     fn answer<'a>(&'a self, request: &'a str) -> BoxFuture<'a, Result<String, String>>;
@@ -170,15 +170,14 @@ mod tests {
     async fn a_local_server_is_asked_through_its_openai_style_api() {
         let server = FakeOpenAi::start().unwrap();
         server.push(FakeReply::text("1. Read recent git history"));
-        let summarizer =
-            LocalServer::new("ollama", &server.base_url(), "qwen3-coder:30b-64k").unwrap();
-        assert_eq!(summarizer.id().to_string(), "ollama/qwen3-coder:30b-64k");
+        let summarizer = LocalServer::new("ollama", &server.base_url(), "qwen3-coder:30b").unwrap();
+        assert_eq!(summarizer.id().to_string(), "ollama/qwen3-coder:30b");
         let reply = summarizer.answer("the request").await.unwrap();
         assert_eq!(reply, "1. Read recent git history");
         let asked = server.requests();
         assert_eq!(asked.len(), 1);
         assert_eq!(asked[0].path, "/v1/chat/completions");
-        assert_eq!(asked[0].body["model"], "qwen3-coder:30b-64k");
+        assert_eq!(asked[0].body["model"], "qwen3-coder:30b");
         assert_eq!(asked[0].body["messages"][0]["content"], "the request");
     }
 

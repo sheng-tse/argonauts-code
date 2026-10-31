@@ -2,7 +2,7 @@
  Settings   Overview    Status    Config    Usage    Context    Limits    Stats
   All CLIs   ◧◨ Claude Code   ◧◨ Codex   ◧◨ agy              read live 8:12 PM · ctrl+r reads again
 
- ◧◨ Claude Code · Max · in use
+ ◧◨ Claude Code · Pro · in use
 
  Current session
  ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄  14% used

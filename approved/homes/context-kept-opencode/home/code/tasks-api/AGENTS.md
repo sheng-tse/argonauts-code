@@ -1,0 +1,64 @@
+# Shop
+
+A small web shop: a catalogue, a cart and a checkout, served by one Python app. This file is what the coding agents read first in this repository.
+
+## Layout
+
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+- Each module keeps one job, and its tests sit beside it in a file of their own.
+---------------

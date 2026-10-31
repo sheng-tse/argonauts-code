@@ -8,6 +8,7 @@ use std::sync::{Mutex, PoisonError};
 
 use anyhow::Context as _;
 use argonauts_core::NoteLevel;
+use argonauts_core::base::clock;
 use argonauts_core::input::LineChange;
 use argonauts_core::look::display_names::builtin_cli_name;
 use argonauts_core::settings::SettingScope;
@@ -15,7 +16,6 @@ use argonauts_core::settings::bottom_line::{
     BottomLineSettings, LineCli, PlanUsageLine, PlanUsageShow,
 };
 use argonauts_core::settings::mods::builtin::{BOTTOM_LINE, builtin};
-use time::OffsetDateTime;
 
 use super::{header_agent, line_facts};
 use crate::controller::{Ctx, Effect};
@@ -30,7 +30,7 @@ pub(crate) fn command(
     let main = header_agent(ctx).0.agent;
     let crew = crew(ctx, &main);
     let known_clis = known_clis(&crew);
-    let now = OffsetDateTime::now_utc();
+    let now = clock::now_utc();
     let before = line_facts(&ctx.env, now);
     let now_shown = shown(&before.settings, &before.most_used, &main, &crew);
     let new = match change {

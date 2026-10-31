@@ -391,19 +391,19 @@ fn a_list_that_hides_rows_says_how_many() {
 /// The `/context` panel's rows as `approved/context/claude-code@120x38.txt` draws them.
 const CONTEXT_ROWS: [&str; 14] = [
     "     Context Usage",
-    "     ⛁ ⛁ ⛁ ⛁ ⛁ ⛀ ⛀ ⛀ ⛁ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ￼￼ Opus 5.5",
+    "     ⛁ ⛁ ⛁ ⛁ ⛁ ⛀ ⛀ ⛀ ⛀ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ￼￼ Opus 5.5",
     "     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   claude-opus-5-5",
-    "     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   32.3k/1m tokens (3%)",
+    "     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   28.8k/1m tokens (3%)",
     "     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶",
     "     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   Estimated usage by category",
     "     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System prompt: 4.4k tokens (0.4%)",
     "     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System tools: 19.4k tokens (1.9%)",
-    "     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ MCP tools: 705 tokens (0.1%)",
-    "     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ MCP server instructions: 960 tokens (0.1%)",
+    "     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ MCP tools: 2.1k tokens (0.2%)",
+    "     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ MCP server instructions: 318 tokens (<0.1%)",
     "     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝   ⛁ Memory files: 503 tokens (0.1%)",
-    "                                               ⛁ Skills: ~6.4k tokens (0.6%)",
+    "                                               ⛁ Skills: ~2.1k tokens (0.2%)",
     "                                               ⛁ Messages: 10 tokens (<0.1%)",
-    "                                               ⛶ Free space: 934.7k (93.5%)",
+    "                                               ⛶ Free space: 938.2k (93.8%)",
 ];
 
 #[test]
@@ -413,14 +413,14 @@ fn claude_codes_context_lines_are_prose() {
     // The same figures as a table's columns still keep their room.
     let table = Grid::from_text(
         60,
-        &["System prompt 4.4k (0.4%)", "Skills        6.4k (0.6%)"],
+        &["System prompt 4.4k (0.4%)", "Skills        2.1k (0.2%)"],
     );
     assert_eq!(
         what(laws::columns(&table, &Look::new())),
         [
             "“4.4k” has 1 blank after “prompt”, and a column of numbers takes 3",
             "“(0.4%)” has 1 blank after “4.4k”, and a share after its amount takes 2",
-            "“(0.6%)” has 1 blank after “6.4k”, and a share after its amount takes 2",
+            "“(0.2%)” has 1 blank after “2.1k”, and a share after its amount takes 2",
         ]
     );
 }

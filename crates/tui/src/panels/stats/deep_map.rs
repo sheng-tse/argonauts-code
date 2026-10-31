@@ -1,18 +1,22 @@
 //! Summaries' questions, asked in the tab when you press `d`: what to
 //! summarize, each answer with how long it takes; who summarizes, each with what it costs; and,
-//! for a hosted model, once more, since it would read the other CLIs' actions too. A download
-//! of the embedding model is asked last, and only once.
+//! for a hosted model, once more, since it would read the other CLIs' actions too. Open models
+//! lists every model on this computer to choose from. A download of the embedding model is
+//! asked last, and only once.
 
 use argonauts_core::app::model_picker::Fit;
 use argonauts_core::behaviors::deep_map::{
     DeepOffer, DeepProgress, DeepScope, DeepStart, EmbedderNote, OfferPlace, ScopeOffer,
     SummarizerOffer,
 };
+use argonauts_core::look::logos::{Logo, logo_for, model_logo};
 use crossterm::event::KeyCode;
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
+use super::deep_open::{self, OpenRow};
 use crate::base::kit::Kit;
+use crate::base::kit::logo::logo_before;
 use crate::base::theme::Role;
 
 /// Where every row of a question starts, inside the tab's own margin.
@@ -23,12 +27,17 @@ const DESCRIPTION_AT: usize = 59;
 const GAP: usize = 2;
 
 const GB: f64 = 1_000_000_000.0;
+/// Ollama's sizes, as `/model` on OpenCode says them.
+const GIB: f64 = (1u64 << 30) as f64;
 
 /// Which question shows.
 #[derive(Debug, Clone, PartialEq)]
 enum Step {
-    /// `d` on Summaries: add the actions they don't have yet.
-    Update,
+    /// `u` on Summaries: add the actions they don't have yet with their own summarizer, at
+    /// this place in the offer. A plan's model asks once, since the actions leave this computer.
+    Update(usize),
+    /// `u` on Summaries while their own summarizer doesn't answer here.
+    NotAnswering,
     Scope,
     Summarizer,
     /// A hosted summarizer was chosen; this asks once more.
@@ -37,6 +46,11 @@ enum Step {
     Redo(usize),
     /// The embedding model isn't on this machine yet.
     Download(usize),
+    /// Every model on this computer, as Open models lists them.
+    Open,
+    /// A model Open models lists that isn't here yet, at this place in its list; this asks
+    /// before it downloads.
+    Fetch(usize),
     /// No model could summarize: no server on this machine answered, and no CLI is there.
     NoSummarizer,
 }
@@ -48,8 +62,15 @@ pub enum DeepAnswer {
     Start(DeepStart),
     /// Not now: the map that shows stays as it is.
     NotNow,
-    /// Back to the label map.
-    LabelMap,
+    /// Start the server installed here for this runtime, then ask again.
+    StartServer(String),
+}
+
+/// A row of Summarize with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pick {
+    Summarizer(usize),
+    Open,
 }
 
 /// The questions, from the first to the answer.
@@ -59,16 +80,23 @@ pub struct DeepQuestions {
     step: Step,
     pointer: usize,
     scope: usize,
+    /// The scope you chose, where a redo widened it to every action.
+    narrowed: Option<usize>,
     /// You said yes to redoing the map.
     redo: bool,
-    /// Asked from Summaries: leaving the questions without an update shows the label map, so
-    /// `d` always goes somewhere.
-    from_summaries: bool,
+    /// You said yes to downloading the summarizer you chose from Open models.
+    download_summarizer: bool,
+    /// What you typed after `/` in Open models, while you filter it.
+    filter: Option<String>,
+    /// `u` asked these, rather than `d`.
+    updating: bool,
+    /// You chose to start a server, and the questions wait for it.
+    starting: bool,
 }
 
 impl DeepQuestions {
     pub fn new(offer: DeepOffer) -> DeepQuestions {
-        let step = if offer.summarizers.is_empty() {
+        let step = if offer.summarizers.is_empty() && !offer.open.any() {
             Step::NoSummarizer
         } else {
             Step::Scope
@@ -78,36 +106,63 @@ impl DeepQuestions {
             step,
             pointer: 0,
             scope: 0,
+            narrowed: None,
             redo: false,
-            from_summaries: false,
+            download_summarizer: false,
+            filter: None,
+            updating: false,
+            starting: false,
         }
     }
 
-    /// What `d` on Summaries asks: adding the actions they don't have yet, or going back to
-    /// the label map. With no model to summarize, or no word of who made them, there's nothing
-    /// to add to: the questions say so, or start from what to summarize, and leaving them shows
-    /// the label map.
+    /// The questions again once the server you started answered or the wait ran out: `u`'s
+    /// from the start, `d`'s at Open models with the scope you chose.
+    pub fn restart(&self, offer: DeepOffer) -> DeepQuestions {
+        if self.updating {
+            return DeepQuestions::update(offer);
+        }
+        let mut questions = DeepQuestions::new(offer);
+        if questions.step == Step::Scope {
+            questions.scope = self
+                .scope
+                .min(questions.offer.scopes.len().saturating_sub(1));
+            questions.step = Step::Open;
+        }
+        questions
+    }
+
+    /// You chose to start a server, and these wait for the offer after it.
+    pub fn starting(&self) -> bool {
+        self.starting
+    }
+
+    pub fn updating(&self) -> bool {
+        self.updating
+    }
+
+    /// What `u` on Summaries asks when their own summarizer can't add the new actions at
+    /// once: before sending them to a plan, before making the map again for a newer prompt,
+    /// or that the summarizer isn't answering. It never offers another model, which would
+    /// make the map again. With no word of who made them, it starts from what to summarize.
     pub fn update(offer: DeepOffer) -> DeepQuestions {
-        let questions = DeepQuestions {
-            from_summaries: true,
-            ..DeepQuestions::new(offer)
-        };
-        if questions.step == Step::NoSummarizer || questions.offer.made_by.is_none() {
+        let mut questions = DeepQuestions::new(offer);
+        questions.updating = true;
+        let Some(made_by) = questions.offer.made_by.clone() else {
             return questions;
+        };
+        let offered = questions
+            .offer
+            .summarizers
+            .iter()
+            .position(|offer| offer.model == made_by.model);
+        match offered {
+            None => questions.step = Step::NotAnswering,
+            Some(at) if made_by.redone_by(&made_by.model) => {
+                questions.summarize_with(at);
+            }
+            Some(at) => questions.step = Step::Update(at),
         }
-        DeepQuestions {
-            step: Step::Update,
-            ..questions
-        }
-    }
-
-    /// Leaving the questions without an update: the label map where they were asked from
-    /// Summaries, else the map as it is.
-    fn left(&self) -> DeepAnswer {
-        match self.from_summaries {
-            true => DeepAnswer::LabelMap,
-            false => DeepAnswer::NotNow,
-        }
+        questions
     }
 
     /// The update `start` begins, as the tab says it until the app reports: the summarizer by
@@ -121,9 +176,10 @@ impl DeepQuestions {
             .find(|offer| offer.model == start.summarizer);
         let summarizer =
             chosen.map_or_else(|| start.summarizer.to_string(), |offer| offer.name.clone());
+        let short = chosen.map_or_else(|| summarizer.clone(), |offer| offer.short.clone());
         let everything = self.offer.scopes.first();
         let (actions, seconds) = match (&self.step, &self.offer.made_by) {
-            (Step::Update, Some(made_by)) => {
+            (Step::Update(_), Some(made_by)) => {
                 let new = made_by.new_actions;
                 let seconds = everything.map_or(0, |scope| {
                     scope.seconds * new as u64 / scope.actions.max(1) as u64
@@ -145,14 +201,23 @@ impl DeepQuestions {
             total: actions,
             seconds_left: timed.then_some(seconds),
             summarizer,
+            short,
+            redo: start.redo,
+            downloading: start.download_summarizer,
         }
     }
 
     /// A key while the questions show. `None` while they go on.
     pub fn key(&mut self, code: KeyCode) -> Option<DeepAnswer> {
+        if self.starting {
+            return None;
+        }
+        if self.step == Step::Open {
+            return self.open_key(code);
+        }
         let count = self.answers().len();
         if count == 0 {
-            return matches!(code, KeyCode::Enter | KeyCode::Esc).then(|| self.left());
+            return matches!(code, KeyCode::Enter | KeyCode::Esc).then(|| DeepAnswer::NotNow);
         }
         match code {
             KeyCode::Up => {
@@ -179,12 +244,21 @@ impl DeepQuestions {
 
     fn back(&mut self) -> Option<DeepAnswer> {
         let (step, pointer) = match self.step {
-            Step::Update => return Some(DeepAnswer::NotNow),
-            Step::Scope | Step::NoSummarizer => return Some(self.left()),
+            Step::Update(_) | Step::NotAnswering | Step::Scope | Step::NoSummarizer => {
+                return Some(DeepAnswer::NotNow);
+            }
             Step::Summarizer => (Step::Scope, self.scope),
             Step::Hosted(chosen) | Step::Redo(chosen) | Step::Download(chosen) => {
-                (Step::Summarizer, chosen)
+                if let Some(scope) = self.narrowed.take() {
+                    self.scope = scope;
+                }
+                (Step::Summarizer, self.row_of(Pick::Summarizer(chosen)))
             }
+            Step::Open => {
+                self.filter = None;
+                (Step::Summarizer, self.row_of(Pick::Open))
+            }
+            Step::Fetch(_) => (Step::Open, 0),
         };
         self.step = step;
         self.pointer = pointer;
@@ -193,17 +267,21 @@ impl DeepQuestions {
 
     fn choose(&mut self) -> Option<DeepAnswer> {
         match self.step.clone() {
-            Step::Update => match self.pointer {
-                0 => self.update_with_its_summarizer(),
-                1 => Some(DeepAnswer::LabelMap),
-                _ => Some(DeepAnswer::NotNow),
-            },
+            Step::Update(at) if self.pointer == 0 => Some(DeepAnswer::Start(DeepStart {
+                scope: DeepScope::Everything,
+                summarizer: self.offer.summarizers[at].model.clone(),
+                download_embedder: false,
+                redo: false,
+                download_summarizer: false,
+            })),
+            Step::NotAnswering if self.pointer == 0 => self.start_server(),
+            Step::Update(_) | Step::NotAnswering => Some(DeepAnswer::NotNow),
             Step::Scope => {
                 if self.pointer >= self.offer.scopes.len() {
                     return Some(DeepAnswer::NotNow);
                 }
                 self.scope = self.pointer;
-                self.step = if self.offer.summarizers.is_empty() {
+                self.step = if self.offer.summarizers.is_empty() && !self.offer.open.any() {
                     Step::NoSummarizer
                 } else {
                     Step::Summarizer
@@ -211,8 +289,16 @@ impl DeepQuestions {
                 self.pointer = 0;
                 None
             }
-            Step::Summarizer => self.summarize_with(self.pointer),
-            Step::NoSummarizer => Some(self.left()),
+            Step::Summarizer => match self.picks().get(self.pointer) {
+                Some(Pick::Summarizer(chosen)) => self.summarize_with(*chosen),
+                Some(Pick::Open) => {
+                    self.step = Step::Open;
+                    self.pointer = 0;
+                    None
+                }
+                None => None,
+            },
+            Step::NoSummarizer => Some(DeepAnswer::NotNow),
             Step::Hosted(chosen) => match (self.pointer, self.first_local()) {
                 (0, _) => self.chosen(chosen),
                 (1, Some(local)) => self.chosen(local),
@@ -224,19 +310,142 @@ impl DeepQuestions {
             }
             Step::Redo(_) => Some(DeepAnswer::NotNow),
             Step::Download(chosen) => Some(self.start(chosen, self.pointer == 0)),
+            Step::Open => None,
+            Step::Fetch(model) if self.pointer == 0 => {
+                self.download_summarizer = true;
+                let chosen = self.adopt(model);
+                self.chosen(chosen)
+            }
+            Step::Fetch(_) => self.back(),
         }
+    }
+
+    /// A key on Open models: the pointer, the filter after `/`, and a choice.
+    fn open_key(&mut self, code: KeyCode) -> Option<DeepAnswer> {
+        let shown = deep_open::rows(&self.offer.open, self.filter.as_deref().unwrap_or(""));
+        let count = shown.len();
+        match (code, self.filter.as_mut()) {
+            (KeyCode::Up, _) if count > 0 => {
+                self.pointer = self.pointer.checked_sub(1).unwrap_or(count - 1);
+                None
+            }
+            (KeyCode::Down, _) if count > 0 => {
+                self.pointer = (self.pointer + 1) % count;
+                None
+            }
+            (KeyCode::Enter, _) => self.open_chosen(shown.get(self.pointer).copied()),
+            (KeyCode::Esc, Some(_)) => {
+                self.filter = None;
+                self.pointer = 0;
+                None
+            }
+            (KeyCode::Esc, None) => self.back(),
+            (KeyCode::Backspace, Some(typed)) => {
+                typed.pop();
+                self.pointer = 0;
+                None
+            }
+            (KeyCode::Char(c), Some(typed)) => {
+                typed.push(c);
+                self.pointer = 0;
+                None
+            }
+            (KeyCode::Char('/'), None) => {
+                self.filter = Some(String::new());
+                self.pointer = 0;
+                None
+            }
+            (KeyCode::Char(digit @ '1'..='9'), None) => {
+                let at = digit as usize - '1' as usize;
+                if at >= count {
+                    return None;
+                }
+                self.pointer = at;
+                self.open_chosen(shown.get(at).copied())
+            }
+            _ => None,
+        }
+    }
+
+    fn open_chosen(&mut self, row: Option<OpenRow>) -> Option<DeepAnswer> {
+        match row? {
+            OpenRow::Start => self.start_server(),
+            OpenRow::Model(model) => {
+                if deep_open::download(&self.offer.open.models[model]).is_some() {
+                    self.step = Step::Fetch(model);
+                    self.pointer = 0;
+                    return None;
+                }
+                self.filter = None;
+                let chosen = self.adopt(model);
+                self.chosen(chosen)
+            }
+        }
+    }
+
+    /// Start the server installed here, which you chose, when one is stopped.
+    fn start_server(&mut self) -> Option<DeepAnswer> {
+        let stopped = self.offer.open.stopped.as_ref()?;
+        self.starting = true;
+        Some(DeepAnswer::StartServer(stopped.runtime.clone()))
+    }
+
+    /// The model at `model` in Open models as one of the summarizers, added where it isn't.
+    fn adopt(&mut self, model: usize) -> usize {
+        let choice = &self.offer.open.models[model];
+        if let Some(at) = self
+            .offer
+            .summarizers
+            .iter()
+            .position(|offer| offer.model == choice.worker)
+        {
+            return at;
+        }
+        let memory = choice
+            .listed
+            .as_ref()
+            .and_then(|listed| listed.memory.as_ref());
+        let short = choice.display_name();
+        let server = choice
+            .listed
+            .as_ref()
+            .and_then(|listed| listed.group.clone())
+            .unwrap_or_else(|| choice.worker.agent.clone());
+        self.offer.summarizers.push(SummarizerOffer {
+            model: choice.worker.clone(),
+            name: format!("{short} on {server}"),
+            short,
+            place: OfferPlace::ThisMachine {
+                bytes: memory.map(|memory| memory.ram),
+                fit: memory.map(|memory| memory.fit),
+            },
+        });
+        self.offer.summarizers.len() - 1
+    }
+
+    /// Summarize with's rows: the local models offered, Open models after them, then the
+    /// hosted ones.
+    fn picks(&self) -> Vec<Pick> {
+        let summarizers = &self.offer.summarizers;
+        let mut picks: Vec<Pick> = (0..summarizers.len()).map(Pick::Summarizer).collect();
+        if self.offer.open.any() {
+            let after = summarizers
+                .iter()
+                .rposition(SummarizerOffer::local)
+                .map_or(0, |at| at + 1);
+            picks.insert(after, Pick::Open);
+        }
+        picks
+    }
+
+    fn row_of(&self, pick: Pick) -> usize {
+        self.picks().iter().position(|p| *p == pick).unwrap_or(0)
     }
 
     /// The summarizer is settled: redoing a map made by another is asked about, then the
     /// embedder's download, each when it's needed.
     fn chosen(&mut self, summarizer: usize) -> Option<DeepAnswer> {
-        let model = &self.offer.summarizers[summarizer].model;
-        let redoes = self
-            .offer
-            .made_by
-            .as_ref()
-            .is_some_and(|made_by| made_by.redone_by(model));
-        if redoes && !self.redo {
+        if self.redoes(summarizer) && !self.redo {
             self.step = Step::Redo(summarizer);
             self.pointer = 0;
             return None;
@@ -252,47 +461,18 @@ impl DeepQuestions {
     /// A summarizer chosen: a hosted one is asked about once more, then redoing a map made by
     /// another, then the embedder's download.
     fn summarize_with(&mut self, chosen: usize) -> Option<DeepAnswer> {
-        if !self.offer.summarizers.get(chosen)?.local() {
+        let local = self.offer.summarizers.get(chosen)?.local();
+        // The map is only ever replaced by a whole one, so a redo takes every action.
+        if self.redoes(chosen) && self.scope != 0 {
+            self.narrowed = Some(self.scope);
+            self.scope = 0;
+        }
+        if !local {
             self.step = Step::Hosted(chosen);
             self.pointer = 0;
             return None;
         }
         self.chosen(chosen)
-    }
-
-    /// The map's own summarizer adds the new actions when it runs on this machine. A newer
-    /// prompt, or another summarizer the settings now name, would make the map again, which
-    /// asks first. A hosted summarizer asks again, from what to summarize, as it did when the
-    /// map was made.
-    fn update_with_its_summarizer(&mut self) -> Option<DeepAnswer> {
-        let made_by = self.offer.made_by.as_ref()?;
-        let wanted = self
-            .offer
-            .named
-            .clone()
-            .unwrap_or_else(|| made_by.model.clone());
-        let offered = self
-            .offer
-            .summarizers
-            .iter()
-            .position(|offer| offer.model == wanted);
-        if made_by.redone_by(&wanted)
-            && let Some(at) = offered
-        {
-            return self.summarize_with(at);
-        }
-        let local = offered.is_some_and(|at| self.offer.summarizers[at].local());
-        if local && !made_by.redone_by(&wanted) {
-            return Some(DeepAnswer::Start(DeepStart {
-                scope: DeepScope::Everything,
-                summarizer: wanted,
-                download_embedder: false,
-                redo: false,
-            }));
-        }
-        self.step = Step::Scope;
-        self.pointer = 0;
-        None
     }
 
     fn start(&self, summarizer: usize, download_embedder: bool) -> DeepAnswer {
@@ -301,7 +481,17 @@ impl DeepQuestions {
             summarizer: self.offer.summarizers[summarizer].model.clone(),
             download_embedder,
             redo: self.redo,
+            download_summarizer: self.download_summarizer,
         })
+    }
+
+    /// Whether summarizing with this summarizer makes the map there again.
+    fn redoes(&self, summarizer: usize) -> bool {
+        let model = &self.offer.summarizers[summarizer].model;
+        self.offer
+            .made_by
+            .as_ref()
+            .is_some_and(|made_by| made_by.redone_by(model))
     }
 
     fn first_local(&self) -> Option<usize> {
@@ -315,7 +505,11 @@ impl DeepQuestions {
     /// The answers on the question that shows, each with its description.
     fn answers(&self) -> Vec<Answer> {
         match &self.step {
-            Step::Update => {
+            Step::Update(at) if !self.offer.summarizers[*at].local() => vec![
+                Answer::new("Yes, send them".to_owned()),
+                Answer::new("Not now".to_owned()),
+            ],
+            Step::Update(_) => {
                 let new = self
                     .offer
                     .made_by
@@ -331,9 +525,24 @@ impl DeepQuestions {
                         plural(new, "new action"),
                         short_duration_words(seconds)
                     )),
-                    Answer::new("Show the label map".to_owned()),
                     Answer::new("Not now".to_owned()),
                 ]
+            }
+            Step::NotAnswering => {
+                let made_by = self.offer.made_by.as_ref().map(|made| &made.model.agent);
+                let start = self
+                    .offer
+                    .open
+                    .stopped
+                    .as_ref()
+                    .filter(|stopped| Some(&stopped.runtime) == made_by)
+                    .map(|stopped| {
+                        Answer::new(format!("Start {} and add the new actions", stopped.name))
+                    });
+                start
+                    .into_iter()
+                    .chain([Answer::new("Keep the map as it is".to_owned())])
+                    .collect()
             }
             Step::Scope => {
                 let auto_local = self
@@ -363,21 +572,31 @@ impl DeepQuestions {
             }
             Step::Summarizer => {
                 let descriptions = summarizer_descriptions(&self.offer, self.chosen_scope().tokens);
-                self.offer
-                    .summarizers
-                    .iter()
-                    .zip(descriptions)
-                    .enumerate()
-                    .map(|(at, (offer, description))| {
-                        let answer = Answer::new(offer.name.clone()).described(description);
-                        if at == 0 {
-                            answer.noted("(recommended)")
-                        } else {
-                            answer
+                self.picks()
+                    .into_iter()
+                    .map(|pick| match pick {
+                        Pick::Open => Answer::new("Open models".to_owned())
+                            .described(self.open_description())
+                            .logo(self.open_logo()),
+                        Pick::Summarizer(at) => {
+                            let offer = &self.offer.summarizers[at];
+                            let answer = Answer::new(offer.name.clone())
+                                .described(descriptions[at].clone())
+                                .logo(model_logo(&offer.model.agent, offer.model.model.as_deref()));
+                            if at == 0 {
+                                answer.noted("(recommended)")
+                            } else {
+                                answer
+                            }
                         }
                     })
                     .collect()
             }
+            Step::Open => Vec::new(),
+            Step::Fetch(_) => vec![
+                Answer::new("Yes, download it and summarize".to_owned()),
+                Answer::new("Back to the list".to_owned()),
+            ],
             Step::Hosted(chosen) => hosted_answers(&self.offer, *chosen)
                 .into_iter()
                 .map(|(words, description)| {
@@ -415,20 +634,60 @@ impl DeepQuestions {
         here(&self.offer)
     }
 
+    /// `7 on this Mac · 3 more would fit it`, or that its server isn't running.
+    fn open_description(&self) -> String {
+        let open = &self.offer.open;
+        if let Some(stopped) = &open.stopped
+            && open.models.is_empty()
+        {
+            return format!("{} isn't running · this starts it", stopped.name);
+        }
+        let (more, here): (Vec<_>, Vec<_>) = open
+            .models
+            .iter()
+            .partition(|choice| deep_open::download(choice).is_some());
+        let mut words = format!("{} on this {}", here.len(), self.here());
+        if !more.is_empty() {
+            words.push_str(&format!(" · {} more would fit it", more.len()));
+        }
+        words
+    }
+
+    /// Open models' row shows its server's logo.
+    fn open_logo(&self) -> Logo {
+        let open = &self.offer.open;
+        let runtime = open
+            .stopped
+            .as_ref()
+            .map(|stopped| stopped.runtime.as_str())
+            .or_else(|| {
+                open.models
+                    .first()
+                    .map(|choice| choice.worker.agent.as_str())
+            })
+            .unwrap_or("ollama");
+        logo_for(runtime, None)
+    }
+
     fn title_and_body(&self) -> (String, Vec<String>) {
         match &self.step {
-            Step::Update => {
-                let (name, actions) = self
+            Step::Update(at) => self.update_question(*at),
+            Step::NotAnswering => {
+                let name = self
                     .offer
                     .made_by
                     .as_ref()
-                    .map_or(("", 0), |made| (made.name.as_str(), made.actions));
+                    .map_or("", |made| made.name.as_str());
                 (
-                    "Update Summaries?".to_owned(),
-                    vec![format!(
-                        "{name} summarized its {actions} actions. Only the new ones are \
-                         summarized, and the dots there stay where they are."
-                    )],
+                    format!("{name} isn't answering"),
+                    vec![
+                        format!(
+                            "It made this map, and only it adds to it, so the map never mixes \
+                             two summarizers. Start it on this {}, then press u again.",
+                            self.here()
+                        ),
+                        "The map stays as it is.".to_owned(),
+                    ],
                 )
             }
             Step::Scope => (
@@ -440,14 +699,36 @@ impl DeepQuestions {
                         .to_owned(),
                 ],
             ),
-            Step::Summarizer => (
-                "Summarize with".to_owned(),
-                vec![
+            Step::Summarizer => {
+                let mut body = vec![
                     "One model writes every summary, so the map compares the agents, not their \
                      summarizers."
                         .to_owned(),
-                ],
-            ),
+                ];
+                if let Some(stopped) = &self.offer.open.stopped {
+                    body.push(format!(
+                        "{} is installed but isn't running; Open models starts it.",
+                        stopped.name
+                    ));
+                }
+                ("Summarize with".to_owned(), body)
+            }
+            Step::Open => ("Open models".to_owned(), Vec::new()),
+            Step::Fetch(model) => {
+                let choice = &self.offer.open.models[*model];
+                let gb = deep_open::download(choice).unwrap_or(0) as f64 / GIB;
+                (
+                    format!(
+                        "Download {} with Ollama ({gb:.0} GB download)?",
+                        choice.display_name()
+                    ),
+                    vec![format!(
+                        "It's kept on this {}, and summarizes for free from then on. The \
+                         progress shows while it downloads, then it summarizes.",
+                        self.here()
+                    )],
+                )
+            }
             Step::Hosted(chosen) => {
                 hosted_question(&self.offer, *chosen, Some(self.chosen_scope()))
             }
@@ -474,10 +755,16 @@ impl DeepQuestions {
                         offer.name
                     )
                 };
-                (
-                    "Summarize the map again?".to_owned(),
-                    vec![why, "The summaries already written are kept.".to_owned()],
-                )
+                let mut body = vec![why];
+                if let Some(asked) = self.narrowed.and_then(|at| self.offer.scopes.get(at)) {
+                    body.push(format!(
+                        "A new map takes in every action, so this covers {}, not only {}.",
+                        scope_words(self.chosen_scope()),
+                        lowercase_first(&scope_words(asked)),
+                    ));
+                }
+                body.push("The summaries already written are kept.".to_owned());
+                ("Summarize the map again?".to_owned(), body)
             }
             Step::NoSummarizer => (
                 "No model to summarize with".to_owned(),
@@ -504,9 +791,35 @@ impl DeepQuestions {
         }
     }
 
+    /// `u`'s question for the map's own summarizer: a plan's model asks before the actions
+    /// leave this computer, as the setup asked the first time.
+    fn update_question(&self, at: usize) -> (String, Vec<String>) {
+        let summarizer = &self.offer.summarizers[at];
+        let (name, actions, new) = self.offer.made_by.as_ref().map_or(("", 0, 0), |made| {
+            (made.name.as_str(), made.actions, made.new_actions)
+        });
+        let kept = format!(
+            "{name} summarized its {actions} actions. Only the new ones are summarized, and the \
+             dots there stay where they are."
+        );
+        match &summarizer.place {
+            OfferPlace::Plan { plan, .. } => (
+                format!(
+                    "Send {} to {} on your {plan} plan?",
+                    plural(new, "action"),
+                    summarizer.name
+                ),
+                vec![kept, "Nothing is sent anywhere else.".to_owned()],
+            ),
+            OfferPlace::ThisMachine { .. } => ("Update Summaries?".to_owned(), vec![kept]),
+        }
+    }
+
     fn hint(&self) -> String {
         match &self.step {
-            Step::Update => "Enter to choose · Esc to keep this map".to_owned(),
+            Step::Update(_) | Step::NotAnswering => {
+                "Enter to choose · Esc to keep this map".to_owned()
+            }
             Step::Scope => "Enter to choose · Esc to keep the label map".to_owned(),
             Step::Summarizer => match &self.offer.embedder {
                 EmbedderNote::Ready { name } => format!("Enter to choose · the embedder is {name}"),
@@ -519,7 +832,8 @@ impl DeepQuestions {
                 }
             },
             Step::Hosted(_) | Step::Redo(_) | Step::Download(_) => "Enter to choose".to_owned(),
-            Step::NoSummarizer if self.from_summaries => "Esc shows the label map".to_owned(),
+            Step::Open => deep_open::hint(self.filter.as_deref()),
+            Step::Fetch(_) => "Enter to choose · Esc to go back".to_owned(),
             Step::NoSummarizer => "Esc to keep the label map".to_owned(),
         }
     }
@@ -542,6 +856,39 @@ impl DeepQuestions {
 
     /// The question's rows, `width` cells wide, in the tab's margin.
     pub fn lines(&self, kit: &Kit<'_>, width: usize) -> Vec<Line<'static>> {
+        let mut lines = self.question_lines(kit, width);
+        if self.starting
+            && let Some(stopped) = &self.offer.open.stopped
+            && let Some(hint) = lines.last_mut()
+        {
+            *hint = Line::from(vec![
+                Span::raw(INDENT),
+                kit.span(
+                    format!(
+                        "Starting {} and waiting up to 10 seconds for it to answer…",
+                        stopped.name
+                    ),
+                    Role::Warn,
+                ),
+            ]);
+        }
+        lines
+    }
+
+    fn question_lines(&self, kit: &Kit<'_>, width: usize) -> Vec<Line<'static>> {
+        if self.step == Step::Open {
+            let open = &self.offer.open;
+            let shown = deep_open::rows(open, self.filter.as_deref().unwrap_or(""));
+            return deep_open::lines(
+                kit,
+                open,
+                &shown,
+                self.pointer,
+                self.filter.as_deref(),
+                self.here(),
+                width,
+            );
+        }
         let (title, body) = self.title_and_body();
         let mut lines = vec![Line::from(vec![
             Span::styled("  ◆ ", kit.style(Role::Question)),
@@ -601,6 +948,12 @@ pub(crate) fn summarizer_descriptions(offer: &DeepOffer, tokens: u64) -> Vec<Str
                     format!("free · on this {here}{}", memory_words(*bytes, *fit))
                 }
             }
+            OfferPlace::Plan { plan, provider, .. } if plan.is_empty() => {
+                format!(
+                    "hosted by {provider} · about {} tokens",
+                    token_words(tokens)
+                )
+            }
             OfferPlace::Plan { plan, .. } => {
                 format!("your {plan} plan · about {} tokens", token_words(tokens))
             }
@@ -658,9 +1011,13 @@ pub(crate) fn hosted_question(
         vec![
             format!(
                 "{} would read each action as it ran: commands, file paths and the lines they \
-                 touched{reads}. It uses about {} tokens of your {plan} plan.",
+                 touched{reads}. It uses about {} tokens{}.",
                 summarizer.name,
-                token_words(scope.tokens)
+                token_words(scope.tokens),
+                match plan.is_empty() {
+                    true => format!(" with {provider}"),
+                    false => format!(" of your {plan} plan"),
+                }
             ),
             "Nothing is sent anywhere else.".to_owned(),
         ],
@@ -698,6 +1055,7 @@ struct Answer {
     words: String,
     note: Option<&'static str>,
     description: Option<String>,
+    logo: Option<Logo>,
 }
 
 impl Answer {
@@ -706,7 +1064,13 @@ impl Answer {
             words,
             note: None,
             description: None,
+            logo: None,
         }
+    }
+
+    fn logo(mut self, logo: Logo) -> Answer {
+        self.logo = Some(logo);
+        self
     }
 
     fn noted(mut self, note: &'static str) -> Answer {
@@ -726,13 +1090,16 @@ impl Answer {
         } else {
             Span::raw(format!("{INDENT}  "))
         }];
-        let words = format!("{}. {}", at + 1, self.words);
-        let mut used = INDENT.len() + 2 + words.width();
-        spans.push(if pointed {
-            Span::styled(words, lit)
-        } else {
-            Span::styled(words, kit.style(Role::Text))
-        });
+        let style = if pointed { lit } else { kit.style(Role::Text) };
+        let number = format!("{}. ", at + 1);
+        let mut used = INDENT.len() + 2 + number.width() + self.words.width();
+        spans.push(Span::styled(number, style));
+        if let Some(logo) = &self.logo {
+            let logo = logo_before(logo, kit.theme);
+            used += logo.iter().map(|span| span.content.width()).sum::<usize>();
+            spans.extend(logo);
+        }
+        spans.push(Span::styled(self.words.clone(), style));
         if let Some(note) = self.note {
             spans.push(kit.dim(format!(" {note}")));
             used += 1 + note.width();
@@ -779,6 +1146,13 @@ fn scope_words(scope: &ScopeOffer) -> String {
         DeepScope::Days { days } => format!("The last {days} days: {actions}"),
         DeepScope::Since { at } => format!("Since {}: {actions}", at.date()),
     }
+}
+
+fn lowercase_first(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_lowercase().chain(chars).collect()
+    })
 }
 
 fn plural(count: usize, word: &str) -> String {
@@ -958,6 +1332,7 @@ pub(crate) mod sample {
             made_by: None,
             named: None,
             keyed_embedder: None,
+            open: Default::default(),
         }
     }
 }
@@ -1042,6 +1417,7 @@ mod tests {
                 summarizer: "ollama/qwen3-coder:30b".parse().unwrap(),
                 download_embedder: true,
                 redo: false,
+                download_summarizer: false,
             }))
         );
     }
@@ -1122,13 +1498,50 @@ mod tests {
         questions.key(KeyCode::Enter);
         assert_eq!(questions.key(KeyCode::Char('2')), Some(DeepAnswer::NotNow));
         // The map's own summarizer goes straight on.
-        let mut questions = DeepQuestions::new(offer);
+        let mut questions = DeepQuestions::new(offer.clone());
         questions.key(KeyCode::Enter);
         let answer = questions.key(KeyCode::Char('2'));
         assert!(
             matches!(answer, Some(DeepAnswer::Start(ref start)) if !start.redo),
             "{answer:?}"
         );
+    }
+
+    #[test]
+    fn a_redo_over_a_map_takes_every_action_whatever_was_chosen() {
+        let mut offer = page_offer();
+        offer.embedder = EmbedderNote::Ready {
+            name: "nomic-embed-text on Ollama".to_owned(),
+        };
+        offer.made_by = Some(argonauts_core::behaviors::deep_map::MadeBy {
+            model: "ollama/gemma3:12b".parse().unwrap(),
+            name: "Gemma 3 12B on Ollama".to_owned(),
+            actions: 562,
+            new_actions: 0,
+            prompt_changed: false,
+        });
+        let narrow = offer.scopes.len() - 1;
+        let mut questions = DeepQuestions::new(offer.clone());
+        questions.key(KeyCode::Char(char::from(b'1' + narrow as u8)));
+        assert_eq!(questions.key(KeyCode::Enter), None, "it asks first");
+        let theme = theme();
+        let text = questions
+            .lines(&Kit::new(&theme), 118)
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(text.contains("A new map takes in every action"), "{text}");
+        let Some(DeepAnswer::Start(start)) = questions.key(KeyCode::Enter) else {
+            panic!("a yes starts it");
+        };
+        assert_eq!((start.scope, start.redo), (DeepScope::Everything, true));
+        // Back from the question, the scope you chose is yours again.
+        let mut questions = DeepQuestions::new(offer);
+        questions.key(KeyCode::Char(char::from(b'1' + narrow as u8)));
+        questions.key(KeyCode::Enter);
+        questions.key(KeyCode::Esc);
+        assert_eq!(questions.scope, narrow);
     }
 
     fn made_by_qwen(prompt_changed: bool) -> argonauts_core::behaviors::deep_map::MadeBy {
@@ -1149,7 +1562,6 @@ mod tests {
         };
         offer.made_by = Some(made_by_qwen(true));
         let mut questions = DeepQuestions::update(offer.clone());
-        assert_eq!(questions.key(KeyCode::Enter), None, "Update asks first");
         let theme = theme();
         let text: Vec<String> = questions
             .lines(&Kit::new(&theme), 118)
@@ -1172,24 +1584,57 @@ mod tests {
             matches!(answer, Some(DeepAnswer::Start(ref start)) if !start.redo),
             "{answer:?}"
         );
-        // The settings now name another summarizer: that one would make it again, which asks.
+        // The settings now name another summarizer, but `u` never makes the map again with it.
         offer.named = Some("ollama/gemma3:12b".parse().unwrap());
         let mut questions = DeepQuestions::update(offer);
-        assert_eq!(questions.key(KeyCode::Enter), None);
         let Some(DeepAnswer::Start(start)) = questions.key(KeyCode::Enter) else {
-            panic!("a yes starts it");
+            panic!("its own summarizer adds them");
         };
-        assert!(start.redo);
-        assert_eq!(start.summarizer.to_string(), "ollama/gemma3:12b");
+        assert!(!start.redo);
+        assert_eq!(start.summarizer.to_string(), "ollama/qwen3-coder:30b");
     }
 
     #[test]
-    fn with_no_model_to_summarize_with_d_says_so_and_summaries_go_back_to_the_labels() {
+    fn a_plans_model_asks_once_before_sending_the_new_actions() {
+        let mut offer = page_offer();
+        let hosted = offer
+            .summarizers
+            .iter()
+            .find(|summarizer| !summarizer.local())
+            .unwrap()
+            .clone();
+        offer.made_by = Some(argonauts_core::behaviors::deep_map::MadeBy {
+            model: hosted.model.clone(),
+            name: hosted.name.clone(),
+            ..made_by_qwen(false)
+        });
+        let mut questions = DeepQuestions::update(offer.clone());
+        let theme = theme();
+        let text: Vec<String> = questions
+            .lines(&Kit::new(&theme), 118)
+            .iter()
+            .map(|line| line.to_string())
+            .collect();
+        assert!(
+            text[0].starts_with(&format!("  ◆ Send 37 actions to {}", hosted.name)),
+            "{text:?}"
+        );
+        assert!(text[0].ends_with(" plan?"), "{text:?}");
+        let Some(DeepAnswer::Start(start)) = questions.key(KeyCode::Enter) else {
+            panic!("a yes sends them");
+        };
+        assert_eq!((start.summarizer, start.redo), (hosted.model, false));
+        let mut questions = DeepQuestions::update(offer);
+        assert_eq!(questions.key(KeyCode::Char('2')), Some(DeepAnswer::NotNow));
+    }
+
+    #[test]
+    fn with_no_model_to_summarize_with_the_questions_say_so_and_keep_the_map() {
         let mut offer = page_offer();
         offer.summarizers.clear();
         for (mut questions, left) in [
             (DeepQuestions::new(offer.clone()), DeepAnswer::NotNow),
-            (DeepQuestions::update(offer.clone()), DeepAnswer::LabelMap),
+            (DeepQuestions::update(offer.clone()), DeepAnswer::NotNow),
         ] {
             let theme = theme();
             let text: Vec<String> = questions
@@ -1204,10 +1649,18 @@ mod tests {
             assert_eq!(questions.key(KeyCode::Enter), Some(left.clone()));
             assert_eq!(questions.key(KeyCode::Esc), Some(left));
         }
+        // The map's own summarizer isn't answering: it says so, and offers no other model.
         offer.made_by = Some(made_by_qwen(false));
         let mut questions = DeepQuestions::update(offer);
+        let theme = theme();
+        let text: Vec<String> = questions
+            .lines(&Kit::new(&theme), 118)
+            .iter()
+            .map(|line| line.to_string())
+            .collect();
+        assert_eq!(text[0], "  ◆ Qwen3 Coder 30B on Ollama isn't answering");
         assert_eq!(questions.key(KeyCode::Down), None);
-        assert_eq!(questions.key(KeyCode::Esc), Some(DeepAnswer::LabelMap));
+        assert_eq!(questions.key(KeyCode::Esc), Some(DeepAnswer::NotNow));
     }
 
     #[test]
@@ -1237,6 +1690,7 @@ mod tests {
             summarizer: summarizer.parse().unwrap(),
             download_embedder: false,
             redo: false,
+            download_summarizer: false,
         };
         let local = questions.started(&start("ollama/qwen3-coder:30b"));
         assert_eq!((local.done, local.total), (0, 562));

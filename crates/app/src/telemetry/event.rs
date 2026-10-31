@@ -690,8 +690,7 @@ mod tests {
     #[test]
     fn a_local_model_goes_by_its_series() {
         let settings = Settings::default();
-        let (cli, model, billing) =
-            sent_as("opencode", Some("ollama/qwen3-coder:30b-64k"), &settings);
+        let (cli, model, billing) = sent_as("opencode", Some("ollama/qwen3-coder:30b"), &settings);
         assert_eq!(
             (cli.as_str(), model.as_str(), billing),
             ("opencode", "qwen", "local")
@@ -805,7 +804,7 @@ mod tests {
         let session = SessionKey::numbered(1);
         let mut started = session_started(0, &session, None, RoleName::Worker, "opencode");
         if let RunEventKind::Session(SessionEvent::Started(started)) = &mut started.kind {
-            let tag = "ollama/qwen3-coder:30b-64k".to_owned();
+            let tag = "ollama/qwen3-coder:30b".to_owned();
             started.worker = ModelRef::new("opencode", Some(tag));
         }
         let call = agent(
@@ -838,6 +837,6 @@ mod tests {
             sent["behaviors"],
             serde_json::json!({"qwen": {"worker": {"git_history": 1}}})
         );
-        assert!(!sent.to_string().contains("30b-64k"), "{sent}");
+        assert!(!sent.to_string().contains("coder:30b"), "{sent}");
     }
 }

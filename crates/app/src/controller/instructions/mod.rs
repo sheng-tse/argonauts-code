@@ -22,10 +22,13 @@ use argonauts_crew::roles::captain_or_crew::Asked;
 
 use crate::controller::turns::turn::DirectWords;
 
+mod checks;
 mod request_words;
 mod roster;
 mod words;
 
+use checks::LOOSENING;
+pub(crate) use checks::{asks_to_keep_checks, refusal as checks_refusal};
 pub(crate) use roster::{Agent, AgentState, Roster};
 use roster::{clamp, display_model, known_model, model_named};
 use words::{
@@ -368,6 +371,9 @@ pub(crate) fn check(
             says: entry.instruction.says,
             kind: entry.instruction.kind,
             outcome: match entry.result {
+                Ok(Effect {
+                    noted: Some(line), ..
+                }) => InstructionOutcome::Noted { line },
                 Ok(effect) => InstructionOutcome::Followed {
                     said: effect.said,
                     note: effect.note,
@@ -393,6 +399,8 @@ struct Effect {
     /// As the start line says it.
     said: String,
     note: Option<String>,
+    /// Nothing to apply or refuse, and a line that says how things stand instead.
+    noted: Option<String>,
     /// Two instructions with the same slot disagree, and the later one wins.
     slot: Option<String>,
     /// Agents it names, so leaving one out and giving it a role disagree.
@@ -473,10 +481,7 @@ impl Checker<'_> {
             Kind::Merge => self.merge(instruction),
             Kind::Limit => self.limit(instruction),
             Kind::Network => self.network(instruction),
-            Kind::Checks => Err(
-                "checks.run is a safety setting, /config changes the tests a change must pass"
-                    .to_owned(),
-            ),
+            Kind::Checks => checks::resolve(instruction, self.settings),
             Kind::Sandbox => {
                 Err("the sandbox is a safety setting, /permissions changes it".to_owned())
             }
@@ -1956,28 +1961,6 @@ fn settle_mode(entries: &mut [Entry], command: Option<&Command>) -> Option<RunMo
             None
         }
     })
-}
-
-/// Words that ask for less of something, as "skip the tests" does.
-const LOOSENING: [&str; 8] = [
-    "skip", "no", "without", "dont", "disable", "off", "never", "ignore",
-];
-
-/// Whether words of yours about checks ask for them to run, as "make sure the tests pass"
-/// does, rather than for fewer, as "skip the tests" does.
-pub(crate) fn asks_for_checks(says: &str) -> bool {
-    !tokens(says)
-        .iter()
-        .any(|word| LOOSENING.contains(&word.as_str()))
-}
-
-/// Whether your message asks to keep checks, as "keep these checks" or "save the tests" does,
-/// and not "don't keep the checks".
-pub(crate) fn asks_to_keep_checks(message: &str) -> bool {
-    let names_checks = tokens(message)
-        .iter()
-        .any(|word| matches!(word.as_str(), "check" | "checks" | "test" | "tests"));
-    names_checks && stance(message, &["keep", "save"], &[]) == Stance::For
 }
 
 /// Free text the main agent gets as a must. It never touches a safety setting, as the main agent

@@ -94,8 +94,8 @@ fn a_plateau_answers_the_pointer_on_its_mesa() {
     let plateau = plateaus[0];
     assert_eq!(
         plateau.line(&placed.ground),
-        "Plateau · ‘tried an edit that didn't apply’ · 55 actions, 11 to 17 in every week of \
-         the period: a steady habit"
+        "Plateau · ‘tried an edit that didn't apply’ · 55 actions, 11 to 17 every week: a steady \
+         habit"
     );
     let (cx, cy) = placed.ground.centre[plateau.behavior];
     let found = (0..21).any(|step| {

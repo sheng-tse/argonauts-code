@@ -37,6 +37,7 @@ pub use storms::{Hurricane, Thunderstorm, Tornado};
 pub use water::{Current, Flow, Stretch, Tsunami};
 
 use crate::base::draw::scene::picture_key;
+use crate::world::deliver::clock::Rate;
 use crate::world::raster::Canvas;
 
 /// Which kind of thing moves, in the order they are drawn: the water's light first, the clouds
@@ -70,7 +71,8 @@ impl Kind {
 }
 
 /// A motion's loop: how long it runs before it starts over, and how many pictures of it the
-/// terminal keeps, shown 8 times a second.
+/// terminal keeps, 8 a second of its loop where the world steps 8 times a second.
+/// [`Motion::at`] gives it at the world's rate.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Motion {
     pub seconds: f64,
@@ -93,6 +95,15 @@ impl Motion {
         Self { seconds, frames }
     }
 
+    /// The loop with as many more pictures as `rate` has steps over 8 a second, so it shows a
+    /// new one each step and still comes round in the same time.
+    pub fn at(self, rate: Rate) -> Self {
+        Self {
+            frames: self.frames * rate.per_second() / 8,
+            ..self
+        }
+    }
+
     /// The moment the `index`th of its pictures shows.
     pub fn moment(&self, index: u32) -> f64 {
         f64::from(index % self.frames.max(1)) / f64::from(self.frames.max(1)) * self.seconds
@@ -102,7 +113,9 @@ impl Motion {
     pub fn picture_at(&self, t: f64) -> u32 {
         let frames = f64::from(self.frames.max(1));
         let into = t.rem_euclid(self.seconds) / self.seconds;
-        ((into * frames).floor() as u32).min(self.frames.max(1) - 1)
+        // A step at 12 a second isn't a whole number of seconds in binary, so a picture that
+        // starts on one lands a hair under it.
+        ((into * frames + 1e-9).floor() as u32).min(self.frames.max(1) - 1)
     }
 }
 

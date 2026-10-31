@@ -9,6 +9,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 use time::OffsetDateTime;
 
+use argonauts_core::base::clock;
 use argonauts_core::base::hash::sha256_hex;
 
 use super::document::{self, Cleaned};
@@ -83,7 +84,7 @@ const SCRIPT_EXTENSIONS: &[&str] = &[
 pub fn import(store: &Store, source: &str) -> Result<ImportReport> {
     let imports = store.imports_dir();
     fs::create_dir_all(&imports)?;
-    let at = OffsetDateTime::now_utc();
+    let at = clock::now_utc();
     match origin(source)? {
         Origin::Folder(path) => stage(&imports, source, &path, at),
         Origin::Git(url) => {

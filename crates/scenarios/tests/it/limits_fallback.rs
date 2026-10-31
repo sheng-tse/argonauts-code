@@ -110,6 +110,9 @@ fn said_for_the_workflows_view(events: &[RunEvent]) -> anyhow::Result<()> {
             .map(|session| DisplayNames::default().worker(&session.worker))
     };
     let stopped = worker_on("claude-code").context("no Claude Code session")?;
+    // A session that names no model is named by its CLI's default from its start: the
+    // catalog's for Claude Code runs Opus 5.5, and it gives Codex none.
+    let stopped = format!("Opus 5.5 on {stopped}");
     let fallback = worker_on("codex").context("no Codex session")?;
     assert_eq!(
         said.text,

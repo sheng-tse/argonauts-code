@@ -111,7 +111,7 @@ fn a_shoal_lies_where_an_unused_place_falls_at_sea() {
     assert!((first.x - 196.931).abs() < 0.01 && (first.y - 201.631).abs() < 0.01);
     assert_eq!(
         first.line(),
-        "Shoal · on the list, never used · ‘failed to read a file’"
+        "Shoal · ‘failed to read a file’ is a label no action has used"
     );
     assert_eq!(world(Key::S).nature.shoals.len(), 24);
     assert_eq!(world(Key::T).nature.shoals.len(), 29);
@@ -257,9 +257,9 @@ fn the_storms_word_follows_the_time_zone() {
         .find(|feature| matches!(feature.kind, Kind::Hurricane(_)))
         .expect("crew R has a hurricane");
     for (word, start) in [
-        (StormWord::Typhoon, "Typhoon, category"),
-        (StormWord::Cyclone, "Cyclone, category"),
-        (StormWord::Hurricane, "Hurricane, category"),
+        (StormWord::Typhoon, "Typhoon · "),
+        (StormWord::Cyclone, "Cyclone · "),
+        (StormWord::Hurricane, "Hurricane · "),
     ] {
         let facts = NatureFacts {
             storm: word,

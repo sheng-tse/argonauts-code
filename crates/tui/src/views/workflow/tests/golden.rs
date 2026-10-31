@@ -116,7 +116,7 @@ fn every_mark_reads_as_its_picture() {
             (6, "Opus 5.5", examples::OPUS),
             (7, "5.6 Luna", examples::LUNA),
             (8, "Sonnet 5.5", examples::SONNET),
-            (9, "Qwen3 Coder 30B (64k)", examples::QWEN),
+            (9, "Qwen3 Coder 30B", examples::QWEN),
             (10, "Nemotron 3.5 Super VL Free", examples::NEMOTRON),
         ],
     );

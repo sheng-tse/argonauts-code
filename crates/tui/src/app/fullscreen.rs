@@ -149,6 +149,21 @@ impl Scrollback {
         if below - top != rows {
             return None;
         }
+        self.rows_shown_at(top..below)
+    }
+
+    /// Where the live rows `first..first + rows` of the last frame showed, as
+    /// [`printed_rows_at`](Self::printed_rows_at) says it for printed rows. They follow the
+    /// printed rows and never wrap.
+    pub fn live_rows_at(&self, first: usize, rows: usize) -> Option<(i32, Range<u16>)> {
+        rows.checked_sub(1)?;
+        let top = self.wrapped.len() + first;
+        self.rows_shown_at(top..top + rows)
+    }
+
+    /// Where the rows `wrapped` of the printed rows and the live rows after them showed.
+    fn rows_shown_at(&self, wrapped: Range<usize>) -> Option<(i32, Range<u16>)> {
+        let (top, below) = (wrapped.start, wrapped.end);
         let (start, end) = (top.max(self.shown.start), below.min(self.shown.end));
         if start >= end {
             return None;
@@ -443,6 +458,7 @@ impl<W: Write> Ui<W> {
     ) -> io::Result<()> {
         self.resend_mascot(now);
         self.animate_full_screen_mascot(now);
+        let under_text = self.under_text_cell();
         let dock = self.dock_lines(now, state);
         let screen = self.terminal.screen_size();
         let ctx = RenderCtx::new(screen.width, &self.theme, Clock::new(self.started, now))
@@ -468,16 +484,26 @@ impl<W: Write> Ui<W> {
             ),
         };
         let (trailing, pinned) = view.lines.split_at(view.trailing.min(view.lines.len()));
+        if let Some(cell) = under_text {
+            super::council::keep_live_pictures(
+                &mut self.council_pictures,
+                &self.model.history,
+                (&view.whole, trailing),
+                &ctx,
+                cell,
+            );
+        }
         let pinned_rows = u16::try_from(pinned.len())
             .unwrap_or(u16::MAX)
             .min(screen.height);
         let top = screen.height - pinned_rows;
+        let picture_look = self.picture_look();
         let Some(scrollback) = self.scrollback.as_mut() else {
             return Ok(());
         };
         scrollback.holds_still = !self.model.screen.autoscroll;
         let conversation = scrollback.window(trailing, usize::from(top), &ctx);
-        let mascot_at = super::mascot::mascot_cell(scrollback);
+        let mascot_at = super::mascot::mascot_cell(scrollback, picture_look);
 
         let mut buffer = Buffer::empty(Rect::new(0, 0, screen.width, screen.height));
         paint_rows(
@@ -503,7 +529,7 @@ impl<W: Write> Ui<W> {
         self.terminal.draw_buffer_resting(&buffer, cursor)?;
         self.send_placing(placing)?;
         self.send_map_placing(map)?;
-        self.place_council_pictures()
+        self.place_council_pictures(true)
     }
 
     /// PgUp and PgDn scroll the conversation. False on the inline screen, where the terminal

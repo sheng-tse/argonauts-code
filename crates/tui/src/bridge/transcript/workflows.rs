@@ -11,6 +11,7 @@
 use std::time::Duration;
 
 use argonauts_core::RunId;
+use argonauts_core::base::clock;
 use argonauts_core::base::names::ModelRef;
 use argonauts_core::base::text::sentence_case;
 use argonauts_core::look::display_names::DisplayNames;
@@ -20,8 +21,6 @@ use argonauts_core::runs::events::session::CliWorkflowRun;
 use argonauts_core::runs::events::workflow::{WorkflowDeclared, WorkflowReport};
 use argonauts_core::runs::hidden_git::MergedInto;
 use argonauts_core::workflows::steps::intake::InstructionKind;
-
-use time::OffsetDateTime;
 
 use crate::base::format;
 use crate::base::text::sanitize_line;
@@ -53,8 +52,14 @@ pub(super) fn declared(
     let name = named
         .map(|named| named.name.trim())
         .filter(|name| !name.is_empty())
-        .unwrap_or(declared.name.trim())
-        .to_owned();
+        .unwrap_or(declared.name.trim());
+    // A slug spells each word as your words did, `API` and not `api`.
+    let spelled = format!(
+        "{} {}",
+        named.map_or("", |named| named.description.as_str()),
+        state.map_or("", |run| run.title.as_str())
+    );
+    let name = argonauts_core::base::text::title_words_as(name, &spelled);
     let based_on = named
         .and_then(|named| named.based_on.as_deref())
         .map(str::trim)
@@ -78,6 +83,10 @@ pub(super) fn declared(
     };
     let waits = state.is_some_and(|run| run.reported.expected_from(&declared.id));
     story.workflow = Some(start.title());
+    // A council's conversation opens the run under its own heading.
+    if declared.talks {
+        return;
+    }
     if waits {
         story.workflow_start = Some(start);
     } else {
@@ -338,7 +347,7 @@ pub(super) fn done(
     }
     if let Some(state) = cx.state.runs.get(run) {
         // The workflow's agents and tokens, as its view's header and its panel row count them.
-        let totals = crate::bridge::panel::run_totals(state, OffsetDateTime::now_utc());
+        let totals = crate::bridge::panel::run_totals(state, clock::now_utc());
         let agents = usize::try_from(totals.agents_total).unwrap_or(usize::MAX);
         counts.push(plural(agents, "agent", "agents"));
         if totals.tokens > 0 {
@@ -388,6 +397,7 @@ mod tests {
                 description: String::new(),
                 phases: Vec::new(),
                 required: Vec::new(),
+                talks: false,
             },
             in_use: None,
             based_on: Some("orchestrator".to_owned()),

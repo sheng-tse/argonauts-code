@@ -357,15 +357,34 @@ mod spin {
 
     use super::*;
     use crate::base::draw::scene::{Depth, Part, Scene};
+    use crate::world::deliver::clock::Rate;
     use crate::world::planet_fx::{Hurricane, Weather};
     use crate::world::raster::{Brush, Colour, Path};
 
     /// A quarter of the map's size, so a whole turn draws quickly.
     const SMALL: (usize, usize) = (288, 137);
 
+    /// The pictures a turn holds at the world's usual rate.
+    fn a_turn() -> u32 {
+        turn_steps(Rate::default())
+    }
+
+    /// The planet facing the `step`th of the steps of 10° a key turns it by.
     fn shot<'a>(step: u32, weather: &'a [&'a dyn Weather], moment: Moment) -> Shot<'a> {
         Shot {
             view: View::stepped(f64::from(step) * std::f64::consts::TAU / 36.0),
+            ..turning(0, weather, moment)
+        }
+    }
+
+    /// The planet facing the `step`th of the pictures a turn holds at the moment's rate.
+    fn turning<'a>(step: u32, weather: &'a [&'a dyn Weather], moment: Moment) -> Shot<'a> {
+        let steps = turn_steps(moment.rate);
+        Shot {
+            view: View::stepped_in(
+                f64::from(step) * std::f64::consts::TAU / f64::from(steps),
+                steps,
+            ),
             side: Side::Day,
             size: SMALL,
             clouds: CloudsIn::Ground,
@@ -419,18 +438,34 @@ mod spin {
         let r = planet(Key::R);
         let mut spin = Spin::new();
         let mut grounds = BTreeSet::new();
-        for step in 0..36 {
-            let scene = spin.scene(r, &shot(step, &[], Moment::default()));
+        for step in 0..a_turn() {
+            let scene = spin.scene(r, &turning(step, &[], Moment::default()));
             grounds.extend(part(&scene, Depth::Ground));
             assert!(scene.moves, "R's planet turns");
         }
-        assert_eq!(grounds.len(), 36);
+        assert_eq!(grounds.len(), a_turn() as usize);
         let kept = spin.kept();
-        for step in 0..36 {
-            let scene = spin.scene(r, &shot(step, &[], Moment::default()));
+        for step in 0..a_turn() {
+            let scene = spin.scene(r, &turning(step, &[], Moment::default()));
             assert!(grounds.contains(&part(&scene, Depth::Ground)[0]));
         }
         assert_eq!(spin.kept(), kept, "nothing new drawn on the second turn");
+    }
+
+    /// A faster world turns the planet in finer steps while a whole turn of them stays kept,
+    /// and in steps of 10° where it wouldn't.
+    #[test]
+    fn a_turn_takes_finer_steps_at_a_faster_rate_while_it_stays_kept() {
+        let spin = Spin::new();
+        let usual = (64 * 18, 13 * 42);
+        let steps = |key, size, rate| spin.steps(planet(key), size, CloudsIn::Apart, rate);
+        assert_eq!(steps(Key::R, usual, Rate::QUICK), 72);
+        assert_eq!(steps(Key::R, usual, Rate::STEADY), 54);
+        assert_eq!(steps(Key::R, SMALL, Rate::QUICK), 72);
+        // T's clouds and dots lie apart on pictures of their own, so a step takes three.
+        assert_eq!(steps(Key::T, usual, Rate::QUICK), 36);
+        assert_eq!(steps(Key::T, SMALL, Rate::QUICK), 72);
+        assert_eq!(steps(Key::R, (64 * 36, 13 * 84), Rate::QUICK), 36);
     }
 
     /// The planet as the tab shows it, at `cell` pixels a cell: the map's 64 × 13 cells, the
@@ -439,7 +474,7 @@ mod spin {
         Shot {
             size: (64 * usize::from(cell.0), 13 * usize::from(cell.1)),
             clouds: CloudsIn::Apart,
-            ..shot(step, weather, Moment::default())
+            ..turning(step, weather, Moment::default())
         }
     }
 
@@ -457,7 +492,7 @@ mod spin {
         };
         let drawn = spin.drawn();
         let mut sent = 0;
-        for step in 0..36 {
+        for step in 0..a_turn() {
             let scene = spin.scene(planet, &shown_at(step, cell, &[]));
             let out = String::from_utf8_lossy(&stage.show(&scene, spot)).into_owned();
             sent += out.matches("a=t,").count();
@@ -552,8 +587,13 @@ mod spin {
         let turn = r.turn_seconds().expect("R turns");
         let loops = (turn / storm.motion().seconds).round();
         assert_eq!(loops, 2.0);
-        assert_eq!(turning_moment(r, &storm, 0), turning_moment(r, &storm, 36));
-        assert_ne!(turning_moment(r, &storm, 0), turning_moment(r, &storm, 9));
+        for rate in [Rate::QUICK, Rate::STEADY] {
+            let steps = u64::from(turn_steps(rate));
+            let turn = turn_steps(rate);
+            let first = turning_moment(r, &storm, 0, turn, rate);
+            assert_eq!(first, turning_moment(r, &storm, steps, turn, rate));
+            assert_ne!(first, turning_moment(r, &storm, steps / 4, turn, rate));
+        }
     }
 
     #[test]
@@ -914,14 +954,15 @@ mod pointing {
             still: true,
             ..Moment::default()
         };
-        assert_eq!(shown_drift(CloudsIn::Apart, held), 0.0);
+        assert_eq!(shown_drift(CloudsIn::Apart, held, 36), 0.0);
         assert_eq!(
             shown_drift(
                 CloudsIn::Ground,
                 Moment {
                     drift: 30.0,
                     ..held
-                }
+                },
+                36
             ),
             0.0
         );
@@ -929,7 +970,8 @@ mod pointing {
             drift: 30.0,
             ..Moment::default()
         };
-        assert!((shown_drift(CloudsIn::Apart, moving) - 6.0 * step).abs() < 1e-9);
+        assert!((shown_drift(CloudsIn::Apart, moving, 36) - 6.0 * step).abs() < 1e-9);
+        assert!((shown_drift(CloudsIn::Apart, moving, 72) - 12.0 * step / 2.0).abs() < 1e-9);
     }
 
     #[test]

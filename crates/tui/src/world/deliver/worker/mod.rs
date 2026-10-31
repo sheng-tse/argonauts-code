@@ -6,7 +6,8 @@
 //! scenes here and hands the screen the newest one finished; the screen packs its new pictures
 //! here, and stops them all once the map leaves. A worker's thread that has finished all it was
 //! asked for wakes the screen through [`arrivals`], so no frame is drawn to look for a drawing,
-//! and the pictures a scene asked for at once arrive in one frame.
+//! and the pictures a scene asked for at once arrive in one frame. A job that panics wakes it
+//! too, so the screen can say what went wrong.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -57,6 +58,8 @@ struct State<T> {
     done: Vec<(u64, T)>,
     /// A job panicked: its drawing gave nothing, and the drawings after it went on.
     failed: bool,
+    /// What the last job to panic said, until the screen takes it to tell you.
+    failure: Option<String>,
 }
 
 impl<T> Shared<T> {
@@ -102,6 +105,7 @@ impl<T: Send + 'static> Worker<T> {
                     current: Cancel(Arc::new(AtomicBool::new(false))),
                     done: Vec::new(),
                     failed: false,
+                    failure: None,
                 }),
             }),
             sender: Mutex::new(None),
@@ -173,6 +177,11 @@ impl<T: Send + 'static> Worker<T> {
         self.shared.state().failed
     }
 
+    /// What the last job to panic said, once: the next call gives `None` until another does.
+    pub fn take_failure(&self) -> Option<String> {
+        self.shared.state().failure.take()
+    }
+
     /// Whether any drawing asked for isn't done.
     pub fn busy(&self) -> bool {
         !self.shared.state().under_way.is_empty()
@@ -227,26 +236,36 @@ pub fn panicking_in_a_drawing() -> bool {
     DRAWING.with(Cell::get)
 }
 
-/// Runs a job, a panic in it caught: `Err` when it panicked.
-fn guarded<T>(job: Run<T>, cancel: &Cancel) -> Result<Option<T>, ()> {
+/// Runs a job, a panic in it caught: `Err` with what it said when it panicked.
+fn guarded<T>(job: Run<T>, cancel: &Cancel) -> Result<Option<T>, String> {
     let was = DRAWING.with(|drawing| drawing.replace(true));
     let drawn = panic::catch_unwind(AssertUnwindSafe(|| job(cancel)));
     DRAWING.with(|drawing| drawing.set(was));
-    drawn.map_err(drop)
+    drawn.map_err(|payload| {
+        payload
+            .downcast_ref::<&str>()
+            .map(|words| (*words).to_owned())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "it stopped without saying why".to_owned())
+    })
 }
 
-/// Runs `job`: whether it left a drawing done.
+/// Runs `job`: whether it left something for the screen, a drawing done or a panic to tell.
 fn run<T>(shared: &Shared<T>, job: Job<T>) -> bool {
-    let (drawn, panicked) = if job.cancel.cancelled() {
-        (None, false)
+    let (drawn, failure) = if job.cancel.cancelled() {
+        (None, None)
     } else {
         match guarded(job.run, &job.cancel) {
-            Ok(drawn) => (drawn, false),
-            Err(()) => (None, true),
+            Ok(drawn) => (drawn, None),
+            Err(failure) => (None, Some(failure)),
         }
     };
     let mut state = shared.state();
+    let panicked = failure.is_some();
     state.failed |= panicked;
+    if failure.is_some() {
+        state.failure = failure;
+    }
     // A stop since may have asked for the same key again, under its own stop.
     let asked_again = state
         .under_way
@@ -260,7 +279,7 @@ fn run<T>(shared: &Shared<T>, job: Job<T>) -> bool {
             state.done.push((job.key, drawn));
             true
         }
-        None => false,
+        None => panicked,
     }
 }
 

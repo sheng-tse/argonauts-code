@@ -18,7 +18,6 @@ use crate::engine::error::EngineResult;
 use crate::engine::host::Host;
 use crate::engine::job_fallback::{self, Job};
 use crate::fallback::rules;
-use crate::roles::display_name;
 use crate::sessions::labels;
 
 /// How many fallbacks take `reviewer`'s place at once, and how their reviews count. `None`
@@ -89,12 +88,7 @@ pub(super) fn say_who_reviews(
         return Ok(());
     }
     let label = host.read(|state| labels::task_label(state, task));
-    let names: Vec<String> = already
-        .iter()
-        .copied()
-        .chain(more)
-        .map(display_name)
-        .collect();
+    let names = host.names().workers(already.iter().copied().chain(more));
     let who = match names.as_slice() {
         [] | [_] => return Ok(()),
         [one, other] => format!("{one} and {other} both review"),
@@ -107,7 +101,7 @@ pub(super) fn say_who_reviews(
     };
     let text = format!(
         "{who} {label} in place of {} · {how} · /fallback changes this",
-        display_name(reviewer)
+        host.names().worker(reviewer)
     );
     let level = NoteLevel::Info;
     host.record(Some(task), None, RunEventKind::Note(Note { level, text }))?;

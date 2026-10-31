@@ -568,14 +568,14 @@ pub fn of_run(host: &Host) -> Lexicon {
         new
     });
     let provider = |model: &ModelRef| roles::provider(host, model);
-    let sitting: Vec<ModelRef> = super::seats::seat(settings, &DisplayNames::default())
+    let sitting: Vec<ModelRef> = super::seats::seat(settings, host.names())
         .unwrap_or_default()
         .into_iter()
         .map(|seat| seat.model)
         .collect();
     let mut lexicon = Lexicon::built_in()
-        .with_models(&models, &DisplayNames::default(), &provider)
-        .with_seats(&sitting, &DisplayNames::default());
+        .with_models(&models, host.names(), &provider)
+        .with_seats(&sitting, host.names());
     for model in &models {
         if let Ok(runner) = workers.get(model) {
             lexicon = lexicon.with_marks(runner.identity_marks());

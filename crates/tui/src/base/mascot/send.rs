@@ -71,7 +71,7 @@ impl Sent {
         let escapes = match graphics {
             Graphics::Kitty if look.is_ultra() => {
                 let mut out = sent.keep(0)?;
-                out.extend(graphics::show(sent.ids[0], None));
+                out.extend(graphics::show(sent.ids[0], None, look.picture_rows()));
                 out.extend(sent.keep_next(0));
                 out
             }
@@ -80,7 +80,7 @@ impl Sent {
                 if graphics == Graphics::Kitty {
                     sent.kept.push(sent.ids[0]);
                 }
-                graphics::draw(graphics, &first, sent.ids[0])
+                graphics::draw(graphics, &first, sent.ids[0], look.picture_rows())
             }
         };
         Some((sent, escapes))
@@ -160,13 +160,17 @@ impl Sent {
             Graphics::Kitty => {
                 let mut out = self.keep(frame)?;
                 out.extend(graphics::hide(self.ids[self.frame]));
-                out.extend(graphics::show(self.ids[frame], None));
+                out.extend(graphics::show(
+                    self.ids[frame],
+                    None,
+                    self.look.picture_rows(),
+                ));
                 out.extend(self.keep_next(frame));
                 out
             }
             Graphics::Iterm => {
                 let png = picture(self.mascot, self.look, self.cell, frame)?;
-                graphics::draw(Graphics::Iterm, &png, 0)
+                graphics::draw(Graphics::Iterm, &png, 0, self.look.picture_rows())
             }
         };
         self.frame = frame;
@@ -193,13 +197,17 @@ impl Sent {
         let escapes = match self.graphics {
             Graphics::Kitty => {
                 let mut out = self.keep(frame)?;
-                out.extend(graphics::show(self.ids[frame], Some(self.ids[self.frame])));
+                out.extend(graphics::show(
+                    self.ids[frame],
+                    Some(self.ids[self.frame]),
+                    self.look.picture_rows(),
+                ));
                 out.extend(self.keep_next(frame));
                 out
             }
             Graphics::Iterm => {
                 let png = picture(self.mascot, self.look, self.cell, frame)?;
-                graphics::draw(Graphics::Iterm, &png, 0)
+                graphics::draw(Graphics::Iterm, &png, 0, self.look.picture_rows())
             }
         };
         self.frame = frame;
@@ -242,12 +250,12 @@ mod tests {
         let text = String::from_utf8_lossy(&escapes);
         // The frame that shows and the one after it, no more, so the header never waits.
         assert_eq!(kept_in(&escapes), 2);
-        assert!(text.contains("\x1b_Ga=p,q=2,C=1,c=9,r=3,i=100\x1b\\"));
+        assert!(text.contains("\x1b_Ga=p,q=2,C=1,c=9,r=4,i=100\x1b\\"));
         assert!(escapes.len() < 40_000, "{} bytes", escapes.len());
         assert_eq!(sent.show(0), None);
         let next = sent.show(1).unwrap();
         let text = String::from_utf8_lossy(&next);
-        assert!(text.starts_with("\x1b_Ga=p,q=2,C=1,c=9,r=3,i=101\x1b\\\x1b_Ga=d,d=i,q=2,i=100"));
+        assert!(text.starts_with("\x1b_Ga=p,q=2,C=1,c=9,r=4,i=101\x1b\\\x1b_Ga=d,d=i,q=2,i=100"));
         assert_eq!(kept_in(&next), 1, "the frame after it, ahead of time");
         // Over a cycle every picture goes once, and the next cycle only swaps them.
         let frames = Mascot::Hydra.frames();
@@ -302,12 +310,12 @@ mod tests {
         );
         assert_eq!(
             String::from_utf8(sent.place(0).unwrap()).unwrap(),
-            "\x1b_Ga=d,d=i,q=2,i=40\x1b\\\x1b_Ga=p,q=2,C=1,c=9,r=3,i=40\x1b\\"
+            "\x1b_Ga=d,d=i,q=2,i=40\x1b\\\x1b_Ga=p,q=2,C=1,c=9,r=4,i=40\x1b\\"
         );
         let moved = sent.place(1).unwrap();
         assert!(
             String::from_utf8_lossy(&moved)
-                .starts_with("\x1b_Ga=d,d=i,q=2,i=40\x1b\\\x1b_Ga=p,q=2,C=1,c=9,r=3,i=41\x1b\\")
+                .starts_with("\x1b_Ga=d,d=i,q=2,i=40\x1b\\\x1b_Ga=p,q=2,C=1,c=9,r=4,i=41\x1b\\")
         );
         assert_eq!(
             String::from_utf8(sent.hide()).unwrap(),

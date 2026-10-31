@@ -7,6 +7,7 @@ use argonauts_core::app::views::{
     conversation_run,
 };
 use argonauts_core::app::{AppEvent, ViewData};
+use argonauts_core::base::clock;
 use argonauts_core::base::names::WorkflowId;
 use argonauts_core::runs::events::session::CliWorkflowRun;
 use time::OffsetDateTime;
@@ -118,8 +119,7 @@ fn host_row(context: &ContextRow, workflow: &CliWorkflowRun) -> AgentRow {
 }
 
 fn now_ms() -> Option<u64> {
-    u64::try_from((OffsetDateTime::now_utc() - OffsetDateTime::UNIX_EPOCH).whole_milliseconds())
-        .ok()
+    u64::try_from((clock::now_utc() - OffsetDateTime::UNIX_EPOCH).whole_milliseconds()).ok()
 }
 
 #[cfg(test)]

@@ -12,16 +12,17 @@ use serde::{Deserialize, Serialize};
 
 use super::ModBody;
 
-/// The context mod's sample before a session counts its context: Claude Code's categories with
-/// a fresh conversation's numbers in a window of a million tokens, and the free space, which
-/// leaves out the 33k held back for compacting.
+/// The context mod's sample before a session counts its context: Claude Code's categories for
+/// a fresh conversation in a made-up setup (two MCP servers with nine tools, 18 skills) in a
+/// window of a million tokens, and the free space, which leaves out the 33k held back for
+/// compacting.
 const CONTEXT_SAMPLE: [(&str, u64); 7] = [
     ("System prompt", 4_380),
     ("System tools", 19_380),
-    ("MCP tools", 705),
-    ("MCP server instructions", 960),
+    ("MCP tools", 2_115),
+    ("MCP server instructions", 318),
     ("Memory files", 503),
-    ("Skills", 6_360),
+    ("Skills", 2_104),
     ("Messages", 10),
 ];
 const CONTEXT_SAMPLE_WINDOW: u64 = 1_000_000;
@@ -285,7 +286,7 @@ impl ModReading {
             ModSource::Builtin {
                 source: BuiltinSource::Context,
             } => Self {
-                summary: "32.3k of 1M · compacts at 967k".to_owned(),
+                summary: "28.8k of 1M · compacts at 967k".to_owned(),
                 parts: context_sample(),
                 ..Self::default()
             },
@@ -508,7 +509,7 @@ mod tests {
         let sample = |name: &str| {
             ModReading::sample_for(cards.iter().find(|card| card.name == name).unwrap())
         };
-        assert_eq!(sample("context").summary, "32.3k of 1M · compacts at 967k");
+        assert_eq!(sample("context").summary, "28.8k of 1M · compacts at 967k");
         assert_eq!(sample("context").parts.len(), 8);
         assert_eq!(sample("plan-usage").parts[1].label, "Claude Code 7d");
         assert_eq!(

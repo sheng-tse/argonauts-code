@@ -75,7 +75,10 @@ fn pointing_at_the_ice_says_what_it_is() {
     let line = polar
         .line_at(busy, 576.0, HEIGHT as f64 - 14.0)
         .expect("the south ice");
-    assert_eq!(line.text, "South ice · 8 quiet days in the period");
+    assert_eq!(
+        line.text,
+        "South ice · 8 days with no action in the dates shown"
+    );
     assert_eq!(line.kind, GroundKind::Ice(IceKind::South));
     assert_eq!(polar.line_at(busy, 576.0, 12.0), None);
 
@@ -133,7 +136,7 @@ fn bare_rock_and_snow_say_their_counts() {
     assert_eq!(
         line.text,
         format!(
-            "Snow and glacier · about {} actions here, 100 or more · ‘returned its structured answer’",
+            "Snow and glacier · about {} actions here · ‘returned its structured answer’",
             ground.height_at(x, y).round()
         )
     );
@@ -144,7 +147,7 @@ fn bare_rock_and_snow_say_their_counts() {
     });
     let rock = rock.expect("bare rock round the busiest peak");
     assert!(
-        Regex::new("^Bare rock · about [0-9]+ actions here, 30 to 99 · ‘.+’$")
+        Regex::new("^Bare rock · about [0-9]+ actions here · ‘.+’$")
             .expect("a pattern")
             .is_match(&rock),
         "{rock}"

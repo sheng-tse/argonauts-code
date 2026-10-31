@@ -32,9 +32,53 @@ pub(crate) fn standing(tools: &[String]) -> String {
     .to_owned()
 }
 
+/// How much the estimate reads, when it plans a change itself, leading into the read-only
+/// rule.
+const READING: &str = "Read files and search as you need, but";
+
+/// How much the estimate reads when a workflow you chose takes every change: a question gets
+/// what it needs, a change none, since the workflow reads it again in its own sessions.
+const VERDICT_FIRST_READING: &str = "Read files and search as you need to answer a question, \
+     but size up a change from its words alone, reading nothing for it. Either way,";
+
+/// The facts the estimate gives, when it plans a change itself.
+const FACTS: &str = "Give facts in the estimate: the task type, the files likely touched and how \
+     many, risk labels, whether tests exist, and what you don't know.";
+
+/// The facts the estimate gives from the request's words alone.
+const VERDICT_FIRST_FACTS: &str = "Give facts in the estimate from the request's words: the task \
+     type, the files it names or likely touches and how many, and risk labels. Put the files you \
+     haven't read, and whether tests exist, under what you don't know.";
+
 /// With `read_instructions` (`captain_or_crew.read_instructions`), the estimate also lists what the
-/// request says about how to run it.
-pub(crate) fn estimate(input: &IntakeInput, read_instructions: bool) -> String {
+/// request says about how to run it. `verdict_first` names the workflow you chose, which takes
+/// every change and reads and plans it itself, so a change is sized up from your words alone.
+pub(crate) fn estimate(
+    input: &IntakeInput,
+    read_instructions: bool,
+    verdict_first: Option<&str>,
+) -> String {
+    let (reading, facts) = match verdict_first {
+        Some(_) => (VERDICT_FIRST_READING, VERDICT_FIRST_FACTS),
+        None => (READING, FACTS),
+    };
+    let (who_changes, change) = match verdict_first {
+        Some(workflow) => (
+            format!("the {workflow} workflow you chose makes it."),
+            format!(
+                "Decide this first, before you read or search anything. The {workflow} workflow \
+                 you chose takes every change and reads and plans it itself, so read nothing, \
+                 search nothing and plan nothing: say in one sentence that it goes to the \
+                 {workflow} workflow, estimate it from the request's words alone with what you'd \
+                 have to read under what you don't know, and end your reply."
+            ),
+        ),
+        None => (
+            "you plan and estimate it here, and Argonauts Code makes the change in a run."
+                .to_owned(),
+            "Say in one paragraph how you would go about it, and estimate it.".to_owned(),
+        ),
+    };
     let uncommitted = input
         .uncommitted_note
         .as_ref()
@@ -48,6 +92,10 @@ pub(crate) fn estimate(input: &IntakeInput, read_instructions: bool) -> String {
     fill(
         &catalog::text(&catalog::ESTIMATE),
         &[
+            ("reading", reading.to_owned()),
+            ("who_changes", who_changes),
+            ("change", change),
+            ("facts", facts.to_owned()),
             ("how_to_run", how_to_run.to_owned()),
             ("schema", schema::<Estimate>()),
             ("uncommitted", uncommitted),
@@ -256,6 +304,7 @@ mod tests {
                 uncommitted_note: Some("2 uncommitted files are not included".to_owned()),
             },
             true,
+            None,
         );
         assert!(
             prompt.contains("list each instruction in `how_to_run`"),
@@ -263,6 +312,8 @@ mod tests {
         );
         assert!(prompt.contains("\"how_to_run\""), "{prompt}");
         read_only_and_quiet_about_it(&prompt);
+        assert!(prompt.contains("Read files and search as you need, but change nothing"));
+        assert!(prompt.contains("whether tests exist, and what you don't know"));
         assert!(prompt.contains("Argonauts Code makes the change in a run"));
         assert!(prompt.contains("\"answer_markdown\""), "{prompt}");
         assert!(prompt.contains("\"file_count\""), "{prompt}");
@@ -281,12 +332,63 @@ mod tests {
                 uncommitted_note: None,
             },
             false,
+            None,
         );
         assert!(!without.contains("working tree"), "{without}");
         // `captain_or_crew.read_instructions = false` drops the paragraph.
         assert!(!without.contains("list each instruction"), "{without}");
         assert!(without.contains("Leave `how_to_run` empty."), "{without}");
         assert!(!without.contains("\n\n\n"), "{without}");
+    }
+
+    /// A workflow you chose takes every change, so the estimate asks for the verdict before
+    /// any reading, and a change gets no plan from the main agent. A question is answered as
+    /// ever, reading what it needs.
+    #[test]
+    fn a_workflow_you_chose_gets_the_verdict_first() {
+        let prompt = estimate(
+            &IntakeInput {
+                request: "Make the rate limiter per API key".to_owned(),
+                uncommitted_note: None,
+            },
+            true,
+            Some("council"),
+        );
+        read_only_and_quiet_about_it(&prompt);
+        assert!(
+            prompt.contains("Decide this first, before you read or search anything"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("read nothing, search nothing and plan nothing"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("goes to the council workflow"), "{prompt}");
+        assert!(prompt.contains("the council workflow you chose makes it."));
+        assert!(prompt.contains("`answer`: talk or a question. Answer it."));
+        assert!(
+            prompt.contains("search as you need to answer a question")
+                && prompt.contains("size up a change from its words alone, reading nothing"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains(
+                "Put the files you haven't read, and whether tests exist, under what \
+                 you don't know."
+            ),
+            "{prompt}"
+        );
+        for planning in [
+            "how you would go about it",
+            "you plan and estimate it here",
+            "Read files and search as you need, but",
+            "the files likely touched and how many",
+        ] {
+            assert!(!prompt.contains(planning), "{planning:?}:\n{prompt}");
+        }
+        assert!(prompt.contains("\"answer_markdown\""), "{prompt}");
+        assert!(!prompt.contains("{{"), "{prompt}");
+        assert!(!prompt.contains("\n\n\n"), "{prompt}");
     }
 
     #[test]
@@ -357,6 +459,7 @@ mod tests {
                 uncommitted_note: None,
             },
             true,
+            None,
         );
         assert!(prompt.contains("reviews, judges, plans"), "{prompt}");
         assert!(

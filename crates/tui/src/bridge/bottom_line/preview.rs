@@ -338,7 +338,7 @@ mod tests {
         pressed.clis[2].five_hours = Some(1.0);
         let shown = text(&settings("[plan-usage]\nshow = \"all\""), &pressed, 150);
         assert!(
-            shown.contains("● Claude Code 5h ██████  93%  7d"),
+            shown.contains("● Claude Code 5h █████░  93%  7d"),
             "{shown}"
         );
         assert!(shown.ends_with("○ agy out"), "{shown}");

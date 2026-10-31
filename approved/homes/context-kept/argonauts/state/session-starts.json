@@ -17,12 +17,12 @@
       },
       {
         "name": "MCP tools",
-        "tokens": 705,
+        "tokens": 2115,
         "color": "cyan_FOR_SUBAGENTS_ONLY"
       },
       {
         "name": "MCP server instructions",
-        "tokens": 960,
+        "tokens": 318,
         "color": "green_FOR_SUBAGENTS_ONLY"
       },
       {
@@ -32,7 +32,7 @@
       },
       {
         "name": "Skills",
-        "tokens": 6360,
+        "tokens": 2104,
         "color": "warning"
       }
     ],
@@ -59,12 +59,12 @@
       },
       {
         "name": "MCP tools",
-        "tokens": 705,
+        "tokens": 2115,
         "color": "cyan_FOR_SUBAGENTS_ONLY"
       },
       {
         "name": "MCP server instructions",
-        "tokens": 960,
+        "tokens": 318,
         "color": "green_FOR_SUBAGENTS_ONLY"
       },
       {
@@ -74,7 +74,7 @@
       },
       {
         "name": "Skills",
-        "tokens": 6360,
+        "tokens": 2104,
         "color": "warning"
       }
     ],

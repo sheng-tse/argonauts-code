@@ -6,6 +6,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use argonauts_core::agents::session_runner::{RunnerDirectory, model_run};
+use argonauts_core::base::clock;
 use argonauts_core::base::names::{AgentId, ModelRef, RoleName};
 use argonauts_core::models::limits::{
     Candidate, CandidateQuery, CostEstimate, HealthBoard, HealthState, ModelState, PlanUsageBoard,
@@ -148,14 +149,14 @@ pub fn check(
     if sources
         .plan_usage
         .get(&agent_id)
-        .is_some_and(|reading| out_of_plan_usage(&reading, OffsetDateTime::now_utc()))
+        .is_some_and(|reading| out_of_plan_usage(&reading, clock::now_utc()))
     {
         return Err(Dropped::OutOfPlanUsage);
     }
     if sources
         .plan_usage
         .get(&agent_id)
-        .is_some_and(|reading| at_plan_limit(&reading, sources.settings, OffsetDateTime::now_utc()))
+        .is_some_and(|reading| at_plan_limit(&reading, sources.settings, clock::now_utc()))
     {
         return Err(Dropped::AtPlanLimit);
     }
@@ -590,12 +591,12 @@ mod tests {
     #[test]
     fn a_model_with_no_tools_never_takes_over_a_build() {
         let mut fixture = Fixture::new();
-        fixture.settings_mut().fallback.order = list(&["ollama/gemma3:12b-32k", "antigravity-cli"]);
+        fixture.settings_mut().fallback.order = list(&["ollama/gemma3:12b", "antigravity-cli"]);
         let workers = Arc::new(argonauts_testkit::FakeDirectory::new());
-        workers.add(FakeRunner::endpoint("ollama/gemma3:12b-32k", "ollama"));
+        workers.add(FakeRunner::endpoint("ollama/gemma3:12b", "ollama"));
         workers.add(FakeRunner::cli("antigravity-cli", "google"));
         let planner = fixture.planner().with_workers(workers);
-        let query = fixture.query("opencode/ollama/qwen3-coder:30b-64k");
+        let query = fixture.query("opencode/ollama/qwen3-coder:30b");
         assert_eq!(picked_with(&planner, &query), ["antigravity-cli"]);
         let review = CandidateQuery {
             role: RoleName::Reviewer,
@@ -604,7 +605,7 @@ mod tests {
         assert!(
             picked_with(&planner, &review)
                 .iter()
-                .any(|picked| picked == "ollama/gemma3:12b-32k")
+                .any(|picked| picked == "ollama/gemma3:12b")
         );
     }
 
@@ -713,7 +714,7 @@ mod tests {
 
     #[test]
     fn your_plan_limit_counts_until_the_window_resets() {
-        let now = OffsetDateTime::now_utc();
+        let now = clock::now_utc();
         let mut settings = Settings::default();
         let mut reading = plan_usage("codex", PlanUsageStatus::Allowed, Some(0.8));
         assert!(!at_plan_limit(&reading, &settings, now), "no limit is set");

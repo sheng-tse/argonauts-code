@@ -41,15 +41,18 @@ fn names() -> DisplayNames {
     }
     let mut entry = CatalogEntry::new(ModelRef::new(
         "opencode",
-        Some("ollama/qwen3-coder:30b-64k".to_owned()),
+        Some("ollama/qwen3-coder:30b".to_owned()),
     ));
-    entry.name = Some("Qwen3 Coder 30B (64k)".to_owned());
+    entry.name = Some("Qwen3 Coder 30B".to_owned());
     names.catalog.models.push(entry);
     let mut entry = CatalogEntry::new(ModelRef::new(
         "antigravity-cli",
         Some("gemini-3.8-flash-low".to_owned()),
     ));
     entry.name = Some("Gemini 3.8 Flash (Low)".to_owned());
+    names.catalog.models.push(entry);
+    let mut entry = CatalogEntry::new(ModelRef::new("antigravity-cli", Some(NO_WINDOW.to_owned())));
+    entry.name = Some("Gemini 3.6 Pro".to_owned());
     names.catalog.models.push(entry);
     names
 }
@@ -59,6 +62,12 @@ fn part(name: &str, tokens: u64, color: &str) -> StartPart {
 }
 
 const CX_WINDOW: u64 = 872_000;
+/// Argonauts Code's own tools and the lines about them on Claude Code's very first run, to the
+/// figures the app's screen rounds them to.
+const FIRST_APP_TOOLS: u64 = 31_800;
+const FIRST_APP_NOTE: u64 = 889;
+/// agy's model whose window no list gives.
+const NO_WINDOW: &str = "gemini-3.6-pro";
 
 struct Cli {
     slug: &'static str,
@@ -94,8 +103,8 @@ fn clis() -> Vec<Cli> {
         Cli {
             slug: "opencode",
             agent: "opencode",
-            model: "ollama/qwen3-coder:30b-64k",
-            window: 65_536,
+            model: "ollama/qwen3-coder:30b",
+            window: 262_144,
             buffer: 0,
             used: 23_700,
             estimated: false,
@@ -109,7 +118,7 @@ fn clis() -> Vec<Cli> {
             slug: "agy",
             agent: "antigravity-cli",
             model: "gemini-3.8-flash-low",
-            window: 1_000_000,
+            window: 1_048_576,
             buffer: 0,
             used: 38_900,
             estimated: false,
@@ -146,10 +155,12 @@ fn start_of(cli: &Cli, from: StartedFrom) -> StartingCount {
 }
 
 fn claude_start(from: StartedFrom, first: bool) -> StartingCount {
-    let (prompt, tools) = if first {
-        (6_888, 15_135)
+    // A very first run counts what the made-up home holds on Claude Code 2.1.289's recorded
+    // start; a kept start is the made-up setup's last session.
+    let (prompt, tools, mcp_tools, mcp_note, skills) = if first {
+        (6_888, 15_135, FIRST_APP_TOOLS, FIRST_APP_NOTE, 1_656)
     } else {
-        (4_380, 19_380)
+        (4_380, 19_380, 2_115, 318, 2_104)
     };
     StartingCount {
         agent: "claude-code".to_owned(),
@@ -159,10 +170,14 @@ fn claude_start(from: StartedFrom, first: bool) -> StartingCount {
         parts: vec![
             part("System prompt", prompt, "promptBorder"),
             part("System tools", tools, "inactive"),
-            part("MCP tools", 705, "cyan_FOR_SUBAGENTS_ONLY"),
-            part("MCP server instructions", 960, "green_FOR_SUBAGENTS_ONLY"),
+            part("MCP tools", mcp_tools, "cyan_FOR_SUBAGENTS_ONLY"),
+            part(
+                "MCP server instructions",
+                mcp_note,
+                "green_FOR_SUBAGENTS_ONLY",
+            ),
             part("Memory files", 503, "claude"),
-            part("Skills", 6_360, "warning"),
+            part("Skills", skills, "warning"),
         ],
         files: Vec::new(),
         tools: None,
@@ -175,7 +190,7 @@ fn main_row(
     agent: &str,
     model: &str,
     used: u64,
-    window: u64,
+    window: Option<u64>,
     counts: bool,
     estimated: bool,
 ) -> ContextRow {
@@ -185,7 +200,7 @@ fn main_row(
         label: "main".to_owned(),
         worker: ModelRef::new(agent, Some(model.to_owned())),
         used,
-        window: Some(window),
+        window,
         cap: None,
         tool_calls: 0,
         spent: Spend::default(),
@@ -254,7 +269,7 @@ fn cases(size: &str) -> Vec<Case> {
                 "claude-code",
                 "claude-opus-5-5",
                 0,
-                1_000_000,
+                Some(1_000_000),
                 true,
                 false,
             ));
@@ -284,7 +299,8 @@ fn cases(size: &str) -> Vec<Case> {
                     cli.agent,
                     cli.model,
                     used,
-                    cli.window,
+                    // The app's row has a window only where the CLI says it.
+                    cli.cli_window.then_some(cli.window),
                     false,
                     cli.estimated,
                 ));
@@ -307,6 +323,26 @@ fn cases(size: &str) -> Vec<Case> {
             });
         }
     }
+    // agy's very first run on a model whose window no list gives.
+    let agy = clis()
+        .into_iter()
+        .find(|cli| cli.slug == "agy")
+        .expect("agy");
+    let mut start = start_of(&agy, recording(agy.version));
+    start.model = Some(NO_WINDOW.to_owned());
+    start.window = None;
+    out.push(Case {
+        file: format!("context/agy-no-window@{size}.txt"),
+        count: None,
+        view: ContextView {
+            main_start: Some(start),
+            ..ContextView::default()
+        },
+        worker: Some(ModelRef::new(agy.agent, Some(NO_WINDOW.to_owned()))),
+        running: false,
+        crew: false,
+        every_list: false,
+    });
     // Claude Code with a run at work.
     let mut view = cc.view.clone();
     let run = example::run();
@@ -539,6 +575,7 @@ fn told(case: &Case) -> Vec<AppEvent> {
             uncommitted: Vec::new(),
             settings_sha256: None,
             continues: false,
+            opens_a_talk: false,
         },
     });
     if let Some(used) = main.map(|row| row.used).filter(|used| *used > 0) {

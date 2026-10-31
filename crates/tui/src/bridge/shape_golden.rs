@@ -216,7 +216,6 @@ fn a_run_draws_no_row_until_its_workflow_has_its_phases() {
         (&picture(), COLOURS),
         3..9,
         &theme(),
-        &[],
     );
 
     // The crew's reviewers Claude Code's workflow asks for come and go before it reports its

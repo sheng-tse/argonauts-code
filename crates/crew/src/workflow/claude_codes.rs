@@ -16,6 +16,7 @@ use argonauts_core::TaskId;
 use argonauts_core::agents::session_runner::{Access, Asking, SessionSpec};
 use argonauts_core::app::views::cli_workflow_run_id;
 use argonauts_core::base::names::{ModelRef, RoleName, SessionKey};
+use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::look::labels;
 use argonauts_core::runs::asking::{Ask, AskLine, AskReply};
 use argonauts_core::runs::events::RunEventKind;
@@ -40,7 +41,8 @@ use tokio::net::{TcpListener, TcpStream};
 
 use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::{Fallbacks, Host, SessionPlan};
-use crate::roles::{display_name, provider};
+use crate::roles::provider;
+use crate::state::RunState;
 use crate::task::machine::Trigger;
 use crate::task::pipeline::{self, Until};
 use crate::task::support::part;
@@ -119,7 +121,7 @@ struct RecordedAsks {
 /// Every ask recorded for the task: each label's reviews, in the order they came, by the
 /// session that gave them. What each one read of the change isn't recorded, so the final change
 /// is gone through again before it merges.
-fn recorded_asks(state: &crate::state::RunState, task: &TaskId) -> RecordedAsks {
+fn recorded_asks(names: &DisplayNames, state: &RunState, task: &TaskId) -> RecordedAsks {
     let mut recorded = RecordedAsks::default();
     let Some(record) = state.tasks.get(task) else {
         return recorded;
@@ -151,7 +153,7 @@ fn recorded_asks(state: &crate::state::RunState, task: &TaskId) -> RecordedAsks 
             .as_ref()
             .or(session.started.asked.as_ref())
             .unwrap_or(reviewer);
-        let who = in_place_of(state, key, asked, reviewer);
+        let who = in_place_of(names, state, key, asked, reviewer);
         let said = said_by(&who, review);
         let same_ask = recorded
             .reviewed
@@ -217,7 +219,7 @@ pub async fn run(
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     // A relaunched run carries on the asks its earlier process answered, so the cap, the
     // rounds and the earlier findings hold across it.
-    let recorded = host.read(|state| recorded_asks(state, &task));
+    let recorded = host.read(|state| recorded_asks(host.names(), state, &task));
     let asks = Asks {
         host,
         at,
@@ -230,7 +232,8 @@ pub async fn run(
         rounds: Mutex::new(recorded.rounds),
         asked: Mutex::new(recorded.asked),
     };
-    note(host, call, format!("{name} · {}", engine_line(crew)))?;
+    let engine = engine_line(host.names(), crew);
+    note(host, call, format!("{name} · {engine}"))?;
     let required =
         crate::script::required::shared(&crate::script::required::for_run(host, request));
     if host.read(|state| state.tasks.get(&task).is_none()) {
@@ -417,23 +420,16 @@ fn lacked(host: &Host, task: &TaskId, required: &Required) -> Vec<String> {
 
 /// "Claude Code's own workflow · workers on Opus 5.5 · reviews by Astra", which says which
 /// engine runs it.
-pub fn engine_line(crew: &OwnCrew) -> String {
+pub fn engine_line(names: &DisplayNames, crew: &OwnCrew) -> String {
     let mut line = "Claude Code's own workflow".to_owned();
     if crew.worker.model.is_some() {
-        line.push_str(&format!(" · workers on {}", display_name(&crew.worker)));
+        line.push_str(&format!(" · workers on {}", names.worker(&crew.worker)));
     }
     if !crew.reviewer.is_empty() {
-        line.push_str(&format!(" · reviews by {}", names(&crew.reviewer)));
+        let reviewers = names.workers(&crew.reviewer).join(", ");
+        line.push_str(&format!(" · reviews by {reviewers}"));
     }
     line
-}
-
-fn names(models: &[ModelRef]) -> String {
-    models
-        .iter()
-        .map(display_name)
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 /// The crew with only the models its asks go to: `review.per_task` reviewers and one judge,
@@ -527,7 +523,7 @@ fn spec_for(
     TaskSpec {
         id: task.clone(),
         title: format!("build:{}", labels::slug(name, 3)),
-        task: instructions(request, crew, required, asks_allowed(host)),
+        task: instructions(host.names(), request, crew, required, asks_allowed(host)),
         kind: TaskKind::Build,
         owned_paths: Vec::new(),
         read_only_paths: Vec::new(),
@@ -547,7 +543,13 @@ fn spec_for(
 /// What the orchestrator's session reads besides the request: run it as a workflow of its own,
 /// with the steps you require and the tasks you fixed, and send each review and the sign-off
 /// to the crew's roles through the tools.
-fn instructions(request: &str, crew: &OwnCrew, required: &Required, asks: u32) -> String {
+fn instructions(
+    names: &DisplayNames,
+    request: &str,
+    crew: &OwnCrew,
+    required: &Required,
+    asks: u32,
+) -> String {
     let mut text = format!(
         "{request}\n\nRun this as one workflow of your own with the Workflow tool: plan its \
          phases and let its agents do the work. Start one Workflow call for the whole task, \
@@ -556,7 +558,7 @@ fn instructions(request: &str, crew: &OwnCrew, required: &Required, asks: u32) -
     if crew.worker.model.is_some() {
         text.push_str(&format!(
             " Your agents run on {}.",
-            display_name(&crew.worker)
+            names.worker(&crew.worker)
         ));
     }
     if let Some(yours) = brief::for_claude_code(required) {
@@ -566,13 +568,13 @@ fn instructions(request: &str, crew: &OwnCrew, required: &Required, asks: u32) -
         "\n\nThe crew's reviewers are {}. At the review step, the agent that reviews calls \
          mcp__argonauts_status__argonauts_ask_reviewer with its own label and what the change \
          is meant to do, instead of reviewing it itself, and what they mark blocking is fixed.",
-        names(&crew.reviewer)
+        names.workers(&crew.reviewer).join(", ")
     ));
     if !crew.judge.is_empty() {
         text.push_str(&format!(
             " Then the judge, {}, signs off through \
              mcp__argonauts_status__argonauts_ask_judge.",
-            names(&crew.judge)
+            names.workers(&crew.judge).join(", ")
         ));
     }
     text.push_str(&format!(
@@ -885,7 +887,7 @@ impl Asks<'_> {
             picked_by: Some(picked_by),
         };
         host.record(Some(self.task), Some(&ran.key), RunEventKind::Review(event))?;
-        let who = host.read(|state| in_place_of(state, &ran.key, model, &ran.worker));
+        let who = host.read(|state| in_place_of(host.names(), state, &ran.key, model, &ran.worker));
         Ok((who, review))
     }
 }
@@ -1111,12 +1113,13 @@ fn weight(comment: &ReviewComment) -> &'static str {
 /// Who gave a review: the model asked, or its fallback, with why the asked one
 /// couldn't: "Claude Code, in place of Codex (it crashed)".
 fn in_place_of(
-    state: &crate::state::RunState,
-    key: &argonauts_core::base::names::SessionKey,
+    names: &DisplayNames,
+    state: &RunState,
+    key: &SessionKey,
     asked: &ModelRef,
     worker: &ModelRef,
 ) -> String {
-    let who = display_name(worker);
+    let who = names.worker(worker);
     if worker == asked {
         return who;
     }
@@ -1133,12 +1136,12 @@ fn in_place_of(
         .find_map(|record| record.end.as_ref())
         .map(|end| format!(" ({})", crate::engine::job_fallback::in_words(&end.reason)))
         .unwrap_or_default();
-    format!("{who}, in place of {}{why}", display_name(asked))
+    format!("{who}, in place of {}{why}", names.worker(asked))
 }
 
 /// The answer as the asking agent reads it.
-pub fn said(reviewer: &ModelRef, review: &ReviewOutput) -> String {
-    said_by(&display_name(reviewer), review)
+pub fn said(names: &DisplayNames, reviewer: &ModelRef, review: &ReviewOutput) -> String {
+    said_by(&names.worker(reviewer), review)
 }
 
 /// [`said`] under a name already worded, such as a fallback's.
@@ -1248,7 +1251,6 @@ mod tests {
     use argonauts_core::runs::events::session::SessionEvent;
     use argonauts_core::runs::events::task::TaskEvent;
 
-    use crate::state::RunState;
     use crate::state::tests::{envelope, session_started};
     use crate::testing::task_spec;
 
@@ -1421,7 +1423,11 @@ mod tests {
             ));
         }
         let state = RunState::fold(&events);
-        let recorded = recorded_asks(&state, &TaskId::new(task).unwrap());
+        let recorded = recorded_asks(
+            &DisplayNames::default(),
+            &state,
+            &TaskId::new(task).unwrap(),
+        );
         assert_eq!(
             recorded.asked,
             BTreeMap::from([(CrewRole::Reviewer, 2), (CrewRole::Judge, 1)])
@@ -1477,6 +1483,7 @@ mod tests {
     #[test]
     fn the_orchestrator_is_told_to_send_reviews_through_argonauts() {
         let text = instructions(
+            &DisplayNames::default(),
             "add due dates to tasks",
             &crew(&[]),
             &Required::default(),
@@ -1488,6 +1495,7 @@ mod tests {
         assert!(!text.contains("argonauts_ask_judge"));
         assert!(text.ends_with("A report sent while the workflow still runs isn't taken."));
         let judged = instructions(
+            &DisplayNames::default(),
             "add due dates",
             &crew(&["claude-code/opus-5-5"]),
             &Required::default(),
@@ -1501,6 +1509,7 @@ mod tests {
     #[test]
     fn the_orchestrator_is_asked_for_one_workflow_and_told_the_cap() {
         let text = instructions(
+            &DisplayNames::default(),
             "fix the rounding",
             &crew(&["codex"]),
             &Required::default(),
@@ -1529,7 +1538,13 @@ mod tests {
             }],
             tasks: vec!["migrate the schema".into()],
         };
-        let text = instructions("add due dates", &crew(&[]), &required, 3);
+        let text = instructions(
+            &DisplayNames::default(),
+            "add due dates",
+            &crew(&[]),
+            &required,
+            3,
+        );
         assert!(
             text.contains(
                 "Your workflow must have a phase for each of these steps, by this name, \
@@ -1625,7 +1640,10 @@ mod tests {
         assert_eq!(review.verdict, ReviewVerdict::RequestChanges);
         assert_eq!(review.summary, "Not accepted");
         let astra: ModelRef = "astra".parse().unwrap();
-        assert!(said(&astra, &review).ends_with("\n- blocking: past dates pass"));
+        assert!(
+            said(&DisplayNames::default(), &astra, &review)
+                .ends_with("\n- blocking: past dates pass")
+        );
         assert_eq!(
             review_of(&Value::Null).verdict,
             ReviewVerdict::RequestChanges
@@ -1659,7 +1677,7 @@ mod tests {
         assert_eq!(blocking.verdict, ReviewVerdict::RequestChanges);
         let codex: ModelRef = "codex".parse().unwrap();
         assert_eq!(
-            said(&codex, &blocking),
+            said(&DisplayNames::default(), &codex, &blocking),
             "Codex asks for changes: Fine\n- blocking: with_tax drops the tax\n- note: a docstring is stale"
         );
     }

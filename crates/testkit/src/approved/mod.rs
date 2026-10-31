@@ -72,10 +72,11 @@ pub use compare::{Aspect, Difference, differences, differences_at, report};
 pub use drawing::{At, COVERED, Drawing, Named, Paint, Region, drawing_text};
 pub use drawn::Drawn;
 pub use manifest::{
-    DRAWN_FOLDER, Departure, Entry, MANIFEST, Manifest, Step, hash_of, key_named, reach,
+    DRAWN_AT, DRAWN_CELL, DRAWN_FOLDER, Departure, Entry, MANIFEST, Manifest, Step, hash_of,
+    key_named, reach,
 };
 pub use paint::{Palette, Terminal};
-pub use place::Placement;
+pub use place::{Placement, same_mark};
 
 pub use crate::screen::{Colour, Rgb};
 

@@ -32,7 +32,8 @@ pub enum RunLifecycle {
         /// Stop now instead of at the next safe point.
         now: bool,
     },
-    /// Shift+Tab changed the approval mode for every decision point of this run.
+    /// Shift+Tab changed the approval mode for every decision point of this run, or a new run
+    /// started supervised, as its request asked.
     ApprovalModeChanged {
         mode: ApprovalMode,
         /// Always you.
@@ -229,6 +230,9 @@ pub enum InstructionOutcome {
     },
     /// Not followed, and why, as the start line says it.
     NotFollowed { why: String },
+    /// Nothing to apply or refuse, and a line of its own on how things stand: "No checks will
+    /// run, since none are set: /config checks.run sets them".
+    Noted { line: String },
     /// Its words aren't in your message, so the model wrote it, not you. Only Ctrl+O lists it.
     Dropped,
 }

@@ -334,7 +334,9 @@ impl CouncilBridge {
     /// The working line while the run of the council that sat down last is the work on
     /// screen: "Parleying" with its token limit and how many seats agree while the seats talk,
     /// and the points still open under it, then "Rowing" with the tasks done once they work.
-    /// The talk's first line gets its tip.
+    /// Once the talk ends, the line says what comes next: nothing while a question waits on
+    /// you, else the note keeper writing the plan. The talk's first line gets its tip, and no
+    /// other tip shows while the council has the line.
     pub fn dress_working_line(&mut self, cx: &mut Cx<'_>) {
         let Some(talk) = self.talks.last_mut() else {
             return;
@@ -344,12 +346,29 @@ impl CouncilBridge {
         };
         let bottom = &mut cx.model.bottom;
         let ours = bottom.synced.work.as_deref() == Some(format!("run:{}", talk.run).as_str());
-        let Some(line) = bottom.working.as_mut().filter(|_| ours) else {
+        if !ours || bottom.working.is_none() {
+            return;
+        }
+        let ended = talk.planned.is_empty() && talk.conversation.has_ended();
+        if ended && bottom.question.is_some() {
+            bottom.working = None;
+            return;
+        }
+        let Some(line) = bottom.working.as_mut() else {
             return;
         };
-        if talk.planned.is_empty() {
+        if ended {
+            line.verb = crate::council::WRITING_PLAN.to_owned();
+            line.details = Vec::new();
+            line.tokens_limit = None;
+            line.note = None;
+        } else if talk.planned.is_empty() {
+            let (agreeing, seats) = run
+                .talk
+                .as_ref()
+                .map_or((0, 0), crate::frame::state::Talk::backing);
             line.verb = crate::council::TALKING.to_owned();
-            line.details = vec![talk.conversation.agree_note()];
+            line.details = vec![format!("{agreeing}/{seats} seats agree")];
             line.tokens_limit = talk.conversation.token_limit;
             line.note = talk.conversation.still_open_line();
         } else {
@@ -359,9 +378,12 @@ impl CouncilBridge {
             line.tokens_limit = None;
             line.note = None;
         }
-        if !std::mem::replace(&mut talk.tipped, true) {
-            line.tip = cx.settings.tips.then_some(crate::council::TIP);
-        }
+        let first = !std::mem::replace(&mut talk.tipped, true);
+        line.tip = if first {
+            cx.settings.tips.then_some(crate::council::TIP)
+        } else {
+            line.tip.filter(|tip| *tip == crate::council::TIP)
+        };
     }
 
     /// Enter on a seat's row opens the seat's own session view, where what you write goes to
@@ -474,7 +496,7 @@ impl CouncilBridge {
             self.talks.push(Talk {
                 step: council.talk.clone(),
                 run: run.clone(),
-                conversation: Conversation::new(seating, faces),
+                conversation: Conversation::new(seating, faces).named_by(cx.state.names.clone()),
                 look,
                 spacing: Spacing::default(),
                 live: None,

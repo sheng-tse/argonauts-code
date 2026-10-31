@@ -602,7 +602,7 @@ impl<'a> Bridge<'a> {
         };
         let host = self.host;
         let settings = host.settings();
-        let seats = seats::seat(settings, &DisplayNames::default()).unwrap_or_default();
+        let seats = seats::seat(settings, host.names()).unwrap_or_default();
         let available = host.services().workers.available();
         let mut set_up = roles::candidates(settings, RoleName::Reviewer);
         set_up.extend(roles::candidates(settings, RoleName::Worker));
@@ -820,8 +820,8 @@ impl<'a> Bridge<'a> {
                 let line = format!(
                     "{} goes to {}, in place of {}, {why}",
                     call.label,
-                    roles::display_name(&taker),
-                    roles::display_name(&worker)
+                    self.host.names().worker(&taker),
+                    self.host.names().worker(&worker)
                 );
                 if let Err(err) =
                     job_fallback::say_in_the_view(self.host, &self.call.at.step.workflow, line)
@@ -1124,8 +1124,7 @@ pub(super) fn answer(host: &Host, call: &AgentCall, ran: &Ran) -> AgentEnd {
     let result = if end.reason != EndReason::Completed {
         // The same plain cause the agent's own row gives, such as "Codex refused the answer
         // format Argonauts Code asked for".
-        let cli =
-            argonauts_core::look::display_names::DisplayNames::default().cli(&ran.worker.agent);
+        let cli = host.names().cli(&ran.worker.agent);
         Err(match end.reason.plain_line(&cli) {
             Some(why) => why,
             None => format!("ended early: {}", crate::status::folder::words(&end.reason)),
@@ -1142,7 +1141,7 @@ pub(super) fn answer(host: &Host, call: &AgentCall, ran: &Ran) -> AgentEnd {
     };
     AgentEnd {
         result,
-        model: Some(roles::display_name(&ran.worker)),
+        model: Some(host.names().worker(&ran.worker)),
         tokens: end.spend.input_tokens + end.spend.output_tokens,
         tool_calls: u32::try_from(end.tool_calls).unwrap_or(u32::MAX),
         duration_ms: end.duration_ms,
@@ -1169,7 +1168,7 @@ fn fits(schema: &Value, value: Value) -> Result<Value, String> {
 
 /// The name of the CLI a stalled job was asked of.
 fn cli_of(stall: &Stall) -> String {
-    let names = argonauts_core::look::display_names::DisplayNames::default();
+    let names = DisplayNames::default();
     stall
         .job
         .asked

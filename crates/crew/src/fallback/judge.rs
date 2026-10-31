@@ -16,7 +16,7 @@ use crate::engine::host::{Ask, Host};
 use crate::fallback::rules;
 use crate::plan::context::crew_for;
 use crate::prompts;
-use crate::roles::{self, display_name};
+use crate::roles;
 use crate::task::support::part;
 use crate::task::worktree::TaskTree;
 
@@ -76,7 +76,7 @@ pub async fn pick(host: &Host, task: &TaskId, passed: &[Passed<'_>]) -> EngineRe
         Err(err) => {
             let why = format!(
                 "the judge, {}, couldn't answer ({err})",
-                display_name(&judge)
+                host.names().worker(&judge)
             );
             say(host, task, &first, &why)?;
             return Ok(first);
@@ -92,8 +92,8 @@ pub async fn pick(host: &Host, task: &TaskId, passed: &[Passed<'_>]) -> EngineRe
     };
     let text = format!(
         "{task} · the judge, {}, picked {}'s try out of {} that passed · {}",
-        display_name(&judge),
-        display_name(picked.worker),
+        host.names().worker(&judge),
+        host.names().worker(picked.worker),
         passed.len(),
         answer.why.trim()
     );
@@ -151,7 +151,7 @@ fn slot(host: &Host, task: &TaskId) -> u32 {
 fn say(host: &Host, task: &TaskId, first: &ModelRef, why: &str) -> EngineResult<()> {
     let text = format!(
         "{task} · {}'s try passed first and is kept, since {why}",
-        display_name(first)
+        host.names().worker(first)
     );
     note(host, task, NoteLevel::Warn, text)
 }

@@ -195,7 +195,7 @@ impl ContextTab<'_> {
         }
         let cli_window =
             (self.view.main_window.as_ref()).is_some_and(|window| window.cli.is_some());
-        Started::of(start, row, self.names, cli_window, self.now)
+        Some(Started::of(start, row, self.names, cli_window, self.now))
     }
 
     /// `Context Usage` and the main session's block: as its CLI counted it, as its row says
@@ -221,7 +221,7 @@ impl ContextTab<'_> {
                 model_id: usage.model.as_deref(),
                 logo: Some(logo),
                 used: usage.total_tokens,
-                window: usage.window,
+                window: Some(usage.window),
                 percent: Some(u64::from(usage.percentage)),
                 heading: "Estimated usage by category".to_owned(),
                 parts,
@@ -322,8 +322,10 @@ fn fitted(mut sections: Vec<Section>, width: usize) -> Vec<Section> {
 
 /// `1 session · 182.5k in context · 7 ended`, for the row under the tabs: the live sessions
 /// and what they hold, then how many crew agents ended, their tries and tie-breakers counted
-/// as one. With nothing live, `none open · 7 ended`.
-pub fn summary(rows: &[ContextRow]) -> String {
+/// as one. With nothing live, `none open · 7 ended`. `count` is the conversation's context as
+/// its CLI last counted it.
+pub fn summary(view: &ContextData, count: Option<&ContextCount>) -> String {
+    let rows = &view.rows;
     let live: Vec<&ContextRow> = rows.iter().filter(|row| row.ended.is_none()).collect();
     let used: u64 = live.iter().map(|row| row.used).sum();
     let (_, ended) = crew::tally(rows);
@@ -331,13 +333,19 @@ pub fn summary(rows: &[ContextRow]) -> String {
         [] => "none open".to_owned(),
         // The conversation's session, started and not yet said how full.
         [one] if one.run.is_none() && one.used == 0 => "1 session \u{b7} loading".to_owned(),
-        // One session reads as its block's line does: marked when the count is ours, and in
-        // 1,024s beside a window counted in them.
-        [one] => format!(
-            "1 session \u{b7} {}{} in context",
-            block::mark(one.estimated),
-            block::beside(one.used, one.window.unwrap_or_default())
-        ),
+        // One session reads as its block's line does, in the block's window: marked when the
+        // count is ours, and in 1,024s beside a window counted in them.
+        [one] => {
+            let window = match one.run {
+                None => main_window(view, count, one),
+                Some(_) => one.window,
+            };
+            format!(
+                "1 session \u{b7} {}{} in context",
+                block::mark(one.estimated),
+                block::beside(one.used, window.unwrap_or_default())
+            )
+        }
         several => format!(
             "{} sessions \u{b7} {} in context",
             several.len(),
@@ -348,6 +356,19 @@ pub fn summary(rows: &[ContextRow]) -> String {
         summary.push_str(&format!(" \u{b7} {ended} ended"));
     }
     summary
+}
+
+/// The window the conversation's block counts `row` in, as the tab draws it: its CLI's count's,
+/// else as its start gives it while the start is this session's, else the row's own. A CLI
+/// that never says its window, such as agy, counts in our list's.
+fn main_window(view: &ContextData, count: Option<&ContextCount>, row: &ContextRow) -> Option<u64> {
+    if let Some(count) = count {
+        return Some(count.usage.window);
+    }
+    match &view.main_start {
+        Some(start) if start.agent == row.worker.agent => starting::window_of(start, Some(row)),
+        _ => row.window,
+    }
 }
 
 #[cfg(test)]

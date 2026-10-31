@@ -185,6 +185,7 @@ mod tests {
                 how,
                 asked_by_you,
                 steps: None,
+                why: None,
             }),
         }
     }

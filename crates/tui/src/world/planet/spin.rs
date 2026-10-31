@@ -1,13 +1,14 @@
-//! The planet as the terminal shows it: one picture each 10° of the turn, 36 in all, each
-//! drawn the first time the turn or a drag reaches it and kept, so a second turn costs only
-//! placements.
+//! The planet as the terminal shows it: one picture each step of the turn, 36 a turn where the
+//! world steps 8 times a second and as many more as it steps more often while a whole turn of
+//! them fits in what is kept, each drawn the first time the turn or a drag reaches it and kept,
+//! so a second turn costs only placements.
 //!
 //! The weather is drawn into each of those pictures at a moment fixed by its step, each motion's
 //! speed rounded so one turn holds whole loops: nothing jumps when the turn starts over, and the
 //! same step always shows the same picture. While the turn holds (the pointer is on the planet, a
 //! drag just ended, or the crew stands still), what moves on that one picture plays its own small
 //! loop instead. Where the clouds are kept apart they drift over the ground on pictures of their
-//! own, one each 10° of their drift against the ground, so they too are drawn once.
+//! own, one each step of their drift against the ground, so they too are drawn once.
 
 use std::collections::HashMap;
 
@@ -16,7 +17,8 @@ use super::{Bounds, CloudsIn, Framed, Planet, Side, Sun, plain_sky};
 use crate::base::draw::geo::{Globe, Plate, View};
 use crate::base::draw::scene::{Depth, Image, Layer, PartId, Picture, Scene, Sprite, picture_key};
 use crate::world::deliver;
-use crate::world::planet_fx::{self, GlobeGround, Weather};
+use crate::world::deliver::clock::Rate;
+use crate::world::planet_fx::{self, GlobeGround, Motion, Weather};
 use crate::world::raster::{Brush, Canvas, Colour};
 
 /// Tells the planet's kinds of picture apart in their keys.
@@ -34,7 +36,7 @@ const SKY_PART: PartId = PartId::new("planet sky", 0);
 /// Where the world's clocks stand for one scene.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Moment {
-    /// Seconds on the world's motion clock, which the terminal steps 8 times a second.
+    /// Seconds on the world's motion clock, which steps at the world's rate.
     pub t: f64,
     /// Seconds the clouds have drifted: their clock stops while the turn holds.
     pub drift: f64,
@@ -42,12 +44,14 @@ pub struct Moment {
     pub holding: bool,
     /// Motion is reduced or off: nothing turns or moves, and each thing holds its still pose.
     pub still: bool,
+    /// How often the world steps, which the turn's pictures and each loop's pictures follow.
+    pub rate: Rate,
 }
 
 /// What one scene of the planet shows.
 #[derive(Debug, Clone, Copy)]
 pub struct Shot<'a> {
-    /// Which way the planet faces: one of the terminal's 36 steps.
+    /// Which way the planet faces: it shows the nearest of [`Spin::steps`].
     pub view: View,
     pub side: Side,
     /// The scene's pixels, its cells times the cell size.
@@ -163,11 +167,53 @@ impl Spin {
 
     /// Bytes of pixels it keeps at most for scenes the size of the last one.
     pub fn limit(&self) -> usize {
+        self.limit_at(self.size)
+    }
+
+    fn limit_at(&self, size: (usize, usize)) -> usize {
         self.limit.unwrap_or_else(|| {
             let map = Plate::MAP.width() * Plate::MAP.height();
-            let scale = (self.size.0 * self.size.1) as f64 / map;
+            let scale = (size.0 * size.1) as f64 / map;
             deliver::kept_bytes(scale)
         })
+    }
+
+    /// The pictures a turn of `planet` filling a scene `size` px holds at `rate`, its clouds
+    /// lying as `clouds` says.
+    pub fn steps(
+        &self,
+        planet: &Planet,
+        size: (usize, usize),
+        clouds: CloudsIn,
+        rate: Rate,
+    ) -> u32 {
+        let globe = planet.globe(View::stepped(0.0), size);
+        self.steps_of(planet, &globe, size, clouds, true, rate)
+    }
+
+    /// [`turn_steps`] at `rate` where a whole turn of them fits in what it keeps for a scene
+    /// `size` px, so a second turn costs only placements; else one each 10°.
+    fn steps_of(
+        &self,
+        planet: &Planet,
+        globe: &Globe,
+        size: (usize, usize),
+        clouds: CloudsIn,
+        whole: bool,
+        rate: Rate,
+    ) -> u32 {
+        let steps = turn_steps(rate);
+        let bounds = planet.bounds(globe, size);
+        let apart = clouds == CloudsIn::Apart && planet.skin.clouds.is_some();
+        // The ground each step, and the clouds and the dots on pictures of their own where the
+        // clouds lie apart, each at most the globe's box of four bytes a pixel.
+        let pictures = 1 + usize::from(apart) * (1 + usize::from(whole));
+        let bytes = steps as usize * pictures * bounds.width * bounds.height * 4;
+        if bytes <= self.limit_at(size) {
+            steps
+        } else {
+            steps.min(View::STEPS)
+        }
     }
 
     /// How many pictures it keeps.
@@ -242,10 +288,22 @@ impl Spin {
     /// the turn holds and the loops play over it; the clouds where they lie apart; the loops;
     /// and the dots, on their own picture when anything lies between them and the ground.
     fn parts(&mut self, planet: &Planet, turn: &Turn<'_>) -> (Vec<Sprite>, bool) {
-        let globe = turn.globe;
+        let steps = self.steps_of(
+            planet,
+            &turn.globe,
+            turn.size,
+            turn.clouds,
+            turn.whole,
+            turn.moment.rate,
+        );
+        // Each step's picture is drawn facing that step, whatever view between steps asked.
+        let globe = Globe {
+            view: turn.globe.view.on_steps(steps),
+            ..turn.globe
+        };
         let size = turn.size;
         let side = side_number(turn.side);
-        let step = u64::from(globe.view.step());
+        let step = u64::from(globe.view.step_in(steps));
         let bounds = planet.bounds(&globe, size);
         let ground = GlobeGround::new(globe, turn.side).onto(bounds.left as f64, bounds.top as f64);
         let moment = turn.moment;
@@ -319,7 +377,7 @@ impl Spin {
                 if still {
                     0.0
                 } else {
-                    turning_moment(planet, thing, step)
+                    turning_moment(planet, thing, step, steps, moment.rate)
                 }
             };
             planet_fx::draw_all(&mut canvas, &ground, &shown, at, still);
@@ -354,10 +412,9 @@ impl Spin {
         if apart {
             // The clouds seen against the ground they drifted east over: as the ground turned
             // back by the steps they drifted.
-            let steps = i64::from(View::STEPS);
-            let step_angle = std::f64::consts::TAU / f64::from(View::STEPS);
-            let drifted = (shown_drift(turn.clouds, moment) / step_angle).round() as i64;
-            let index = (step as i64 - drifted).rem_euclid(steps) as u64;
+            let step_angle = std::f64::consts::TAU / f64::from(steps);
+            let drifted = (shown_drift(turn.clouds, moment, steps) / step_angle).round() as i64;
+            let index = (step as i64 - drifted).rem_euclid(i64::from(steps)) as u64;
             let key = picture_key([CLOUDS, place, index]);
             let (image, inset) = self.keep_trimmed(key, place, || {
                 let view = View {
@@ -384,10 +441,10 @@ impl Spin {
         if loops {
             for (index, thing) in moving {
                 let looped = picture_key([place, step, index as u64, thing.fingerprint()]);
-                let Some(area) = self.loop_box(looped, thing, &ground, bounds) else {
+                let motion = thing.motion().at(moment.rate);
+                let Some(area) = self.loop_box(looped, thing, motion, &ground, bounds) else {
                     continue;
                 };
-                let motion = thing.motion();
                 let picture = motion.picture_at(moment.t);
                 let key = picture_key([WEATHER, looped, u64::from(picture)]);
                 let image = self.keep(key, place, || {
@@ -434,6 +491,7 @@ impl Spin {
         &mut self,
         place: u64,
         thing: &dyn Weather,
+        motion: Motion,
         ground: &GlobeGround,
         bounds: Bounds,
     ) -> Option<Box> {
@@ -442,7 +500,6 @@ impl Spin {
         }
         let (left, top) = (bounds.left, bounds.top);
         let mut all = bounds.canvas();
-        let motion = thing.motion();
         for picture in 0..motion.frames {
             thing.draw(&mut all, ground, motion.moment(picture), false);
         }
@@ -549,27 +606,40 @@ fn trimmed(canvas: &Canvas) -> (Image, (usize, usize)) {
     }
 }
 
-/// The moment a thing shows in the picture of `step` while the planet turns: as far through
-/// its loop as the turn is through its steps, its speed rounded so one turn holds whole loops,
-/// and on one of its stored pictures.
-pub fn turning_moment(planet: &Planet, thing: &dyn Weather, step: u64) -> f64 {
-    let motion = thing.motion();
+/// The pictures one turn holds at the world's `rate`: one each 10° where the world steps 8
+/// times a second, and as many more as it steps more often, so the turn moves as smoothly as
+/// the rest of the world.
+pub fn turn_steps(rate: Rate) -> u32 {
+    View::STEPS * rate.per_second() / 8
+}
+
+/// The moment a thing shows in the picture of `step` of a turn of `steps` while the planet
+/// turns: as far through its loop as the turn is through its steps, its speed rounded so one
+/// turn holds whole loops, and on one of its stored pictures at the world's `rate`.
+pub fn turning_moment(
+    planet: &Planet,
+    thing: &dyn Weather,
+    step: u64,
+    steps: u32,
+    rate: Rate,
+) -> f64 {
+    let motion = thing.motion().at(rate);
     let Some(turn) = planet.turn_seconds() else {
         return 0.0;
     };
     let loops = (turn / motion.seconds).round().max(1.0);
-    let through = (step as f64 / f64::from(View::STEPS) * loops).rem_euclid(1.0);
+    let through = (step as f64 / f64::from(steps.max(1)) * loops).rem_euclid(1.0);
     let picture = (through * f64::from(motion.frames)).floor() as u32;
     motion.moment(picture)
 }
 
-/// How far east the clouds a scene shows have drifted, in radians: whole steps of 10° where
-/// they lie apart and motion is on, else none, as they turn with the ground.
-pub fn shown_drift(clouds: CloudsIn, moment: Moment) -> f64 {
+/// How far east the clouds a scene shows have drifted, in radians: whole steps of a turn of
+/// `steps` where they lie apart and motion is on, else none, as they turn with the ground.
+pub fn shown_drift(clouds: CloudsIn, moment: Moment, steps: u32) -> f64 {
     if clouds != CloudsIn::Apart || moment.still {
         return 0.0;
     }
-    let step = std::f64::consts::TAU / f64::from(View::STEPS);
+    let step = std::f64::consts::TAU / f64::from(steps.max(1));
     (planet_fx::drift(moment.drift) / step).floor() * step
 }
 

@@ -40,15 +40,16 @@ fn shown(example: &example::Example, pane: &ContextPane, width: usize) -> Vec<St
 /// their tries and tie-breakers counted as one.
 #[test]
 fn the_summary_counts_live_sessions_and_ended_agents() {
+    let (after, straight) = (example::after_the_run(), example::straight_to_a_run());
     assert_eq!(
-        summary(&example::after_the_run().view.rows),
+        summary(&after.view, after.count.as_ref()),
         "1 session \u{b7} 182.5k in context \u{b7} 7 ended"
     );
     assert_eq!(
-        summary(&example::straight_to_a_run().view.rows),
+        summary(&straight.view, straight.count.as_ref()),
         "none open \u{b7} 7 ended"
     );
-    assert_eq!(summary(&[]), "none open");
+    assert_eq!(summary(&ContextData::default(), None), "none open");
 }
 
 /// Folded, the tab says how to open its lists; open, it doesn't.
@@ -221,6 +222,31 @@ mod before_the_count {
         assert!(rows.iter().any(|row| row.starts_with(" ╭")), "{rows:#?}");
     }
 
+    /// No list gives the window: every figure still shows, with `–` for each one that needs
+    /// the window, and the card above the input says the same.
+    #[test]
+    fn without_a_window_every_figure_shows_with_blanks() {
+        let start = StartingCount {
+            model: Some("gemini-3.6-pro".to_owned()),
+            window: None,
+            from: StartedFrom::Unrecorded,
+            ..agy()
+        };
+        let rows = shown(&before(start), &ContextPane::default(), 118);
+        has(&rows, "~5.4k/\u{2013} tokens (\u{2013})");
+        has(&rows, "agy's own prompt and tools: ~4.2k tokens (\u{2013})");
+        has(&rows, "Free space: \u{2013} (\u{2013})");
+        has(
+            &rows,
+            "No list gives Gemini 3.6 Pro's window yet, so it shows \u{2013}.",
+        );
+        has(&rows, "~5.4k of \u{2013} \u{b7} estimated");
+        assert!(
+            !rows.iter().any(|row| row.contains("No session")),
+            "{rows:#?}"
+        );
+    }
+
     #[test]
     fn a_very_first_run_says_where_its_estimate_comes_from() {
         let from = StartedFrom::Recording {
@@ -304,7 +330,7 @@ mod before_the_count {
         let rows = shown(&example, &ContextPane::default(), 118);
         has(&rows, "Claude Code is loading.");
         has(&rows, "\u{b7} from your last session");
-        assert_eq!(summary(&example.view.rows), "1 session \u{b7} loading");
+        assert_eq!(summary(&example.view, None), "1 session \u{b7} loading");
     }
 
     /// Between turns a CLI that counts by category isn't asked, so after its first answer
@@ -352,16 +378,76 @@ mod before_the_count {
     fn one_sessions_summary_reads_as_its_block() {
         let ours = with_row(codex(StartedFrom::LastSession), 61_400, true);
         assert_eq!(
-            summary(&ours.view.rows),
+            summary(&ours.view, None),
             "1 session \u{b7} ~61.4k in context"
         );
         let mut local = codex(StartedFrom::LastSession);
         local.window = Some(65_536);
         let local = with_row(local, 23_700, false);
         assert_eq!(
-            summary(&local.view.rows),
+            summary(&local.view, None),
             "1 session \u{b7} 23.1k in context"
         );
+    }
+
+    /// agy never says its window, so its row has none and its block counts in our list's
+    /// 1,048,576: the summary takes that window too, never the row's missing one.
+    #[test]
+    fn one_sessions_summary_counts_in_the_blocks_window_when_the_cli_gives_none() {
+        let mut start = agy();
+        start.window = Some(1_048_576);
+        let mut example = with_row(start, 38_900, false);
+        example.view.rows[0].window = None;
+        has(
+            &shown(&example, &ContextPane::default(), 118),
+            "38k/1M tokens (4%)",
+        );
+        assert_eq!(
+            summary(&example.view, None),
+            "1 session \u{b7} 38k in context"
+        );
+    }
+
+    /// Whichever CLI answers and wherever its window comes from (its row, our list, or its
+    /// count by category), one session's summary says the figure its block's line does.
+    #[test]
+    fn one_sessions_summary_says_its_blocks_figure_for_every_cli() {
+        let window = 1_048_576;
+        let mut examples = Vec::new();
+        for start in [
+            claude_code(StartedFrom::LastSession),
+            codex(StartedFrom::LastSession),
+            agy(),
+        ] {
+            for (row_window, estimated) in [(None, false), (Some(window), false), (None, true)] {
+                let start = StartingCount {
+                    window: Some(window),
+                    ..start.clone()
+                };
+                let mut example = with_row(start, 38_900, estimated);
+                example.view.rows[0].window = row_window;
+                examples.push(example);
+            }
+        }
+        let mut counted = example::claude_code_alone();
+        if let Some(count) = counted.count.as_mut() {
+            count.usage.window = window;
+        }
+        counted.view.rows[0].window = None;
+        examples.push(counted);
+        for example in examples {
+            let rows = shown(&example, &ContextPane::default(), 118);
+            let figure = rows
+                .iter()
+                .flat_map(|row| row.split_whitespace())
+                .find_map(|word| word.strip_suffix("/1M"))
+                .unwrap_or_else(|| panic!("a used/1M line in {rows:#?}"));
+            assert_eq!(
+                summary(&example.view, example.count.as_ref()),
+                format!("1 session \u{b7} {figure} in context"),
+                "{rows:#?}"
+            );
+        }
     }
 
     #[test]

@@ -86,7 +86,7 @@ pub(crate) fn what_it_did(host: &Host, task: &TaskId) -> Option<String> {
             _ => None,
         }
     })?;
-    let who = roles::display_name(&roles::runs(host, &worker));
+    let who = host.names().worker(&roles::runs(host, &worker));
     let passed = task_events(host, task)
         .ok()
         .and_then(|events| newest_test_run(&events))

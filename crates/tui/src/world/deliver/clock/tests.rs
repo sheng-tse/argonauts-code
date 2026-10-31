@@ -2,6 +2,9 @@ use std::sync::{Arc, Mutex};
 
 use super::*;
 
+/// A step's length, for counting steps.
+const STEP: Duration = Duration::from_millis(125);
+
 /// A focus, an input time and a power source the test sets.
 #[derive(Clone)]
 struct Fake {
@@ -121,10 +124,13 @@ fn two_minutes_without_a_key_or_a_pointer_move_hold_it_still() {
 }
 
 #[test]
-fn eight_steps_a_second_and_half_as_many_on_battery() {
+fn a_step_at_its_rate_and_twice_as_long_on_battery() {
     let start = Instant::now();
     let (sources, fake) = sources(start);
-    assert_eq!(sources.step(start), Duration::from_millis(125));
+    assert_eq!(
+        sources.step(start, Rate::QUICK),
+        Duration::from_micros(62_500)
+    );
     set(
         &fake.power,
         Power {
@@ -132,7 +138,7 @@ fn eight_steps_a_second_and_half_as_many_on_battery() {
             on_battery: true,
         },
     );
-    assert_eq!(sources.step(start), Duration::from_millis(250));
+    assert_eq!(sources.step(start, Rate::QUICK), Duration::from_millis(125));
     // On battery it still moves.
     assert_eq!(sources.still(MOVING, start), None);
 }
@@ -185,4 +191,31 @@ fn the_real_sources_follow_the_terminal_and_the_keys() {
     // An event read late, stamped earlier, never moves the clock back.
     input.input(start + Duration::from_secs(1));
     assert_eq!(input.last_input(), start + Duration::from_secs(5));
+}
+
+#[test]
+fn a_small_map_steps_16_times_a_second_and_a_big_one_12() {
+    assert_eq!(Rate::for_map(64, 13), Rate::QUICK);
+    assert_eq!(Rate::for_map(88, 16), Rate::STEADY);
+    assert_eq!(Rate::STEADY.step(), Duration::from_nanos(83_333_333));
+    assert_eq!(Rate::STEADY.steps_in(Duration::from_secs(30)), 360);
+    assert_eq!(Rate::QUICK.steps_in(Duration::from_millis(62)), 0);
+    assert_eq!(Rate::QUICK.steps_in(Duration::from_micros(62_500)), 1);
+    assert_eq!(Rate::STEADY.seconds(18), 1.5);
+}
+
+/// A step at 12 a second isn't a whole number of nanoseconds, so the steps are counted in the
+/// clock's own steps: a moment it wakes at is the start of the step it woke for, never the end
+/// of the one before.
+#[test]
+fn a_moment_the_clock_wakes_at_begins_the_step_it_woke_for() {
+    for rate in [Rate::QUICK, Rate::STEADY] {
+        for steps in [1, 7, 360, 4_321] {
+            assert_eq!(
+                rate.steps_in(rate.step() * steps),
+                u64::from(steps),
+                "{rate:?}"
+            );
+        }
+    }
 }

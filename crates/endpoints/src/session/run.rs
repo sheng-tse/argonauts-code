@@ -22,7 +22,6 @@ use argonauts_core::{AgentEvent, ErrorCategory, LimitDimension, MessageStage, Re
 use futures::StreamExt;
 use reqwest::header::{CONTENT_TYPE, HeaderMap, RETRY_AFTER};
 use serde_json::Value;
-use time::OffsetDateTime;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
@@ -487,7 +486,7 @@ impl Session {
         if !limited {
             return;
         }
-        let now = OffsetDateTime::now_utc();
+        let now = argonauts_core::base::clock::now_utc();
         let mut detail =
             serde_json::from_str(body).unwrap_or_else(|_| Value::String(body.to_owned()));
         self.secrets.redact_json(&mut detail);

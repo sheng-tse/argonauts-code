@@ -191,9 +191,18 @@ impl Items {
         }
     }
 
-    /// `AppEvent::Notice`: dim, or in the warning or error color.
+    /// `AppEvent::Notice`: dim, or in the warning or error color, with the rows a note's text
+    /// sets under its first line.
     pub(super) fn notice(&mut self, level: NoteLevel, text: &str, cx: &mut Cx<'_>) {
-        self.notice_with_more(level, text, &[], None, cx);
+        let note = Note {
+            level,
+            text: text.to_owned(),
+        };
+        if note.rows().next().is_some() {
+            self.note(&note, cx);
+        } else {
+            self.notice_with_more(level, text, &[], None, cx);
+        }
     }
 
     /// A run's `Note`: its first line as a notice with its rows under it, and the lines after
@@ -226,7 +235,7 @@ impl Items {
             // Rows are there to be read, so the line over them isn't dimmed away.
             NoteLevel::Info if !rows.is_empty() => Tone::Normal,
             NoteLevel::Info | NoteLevel::Aside | NoteLevel::Quiet => Tone::Dim,
-            NoteLevel::Warn | NoteLevel::Caution => {
+            NoteLevel::Warn | NoteLevel::Caution | NoteLevel::Ask => {
                 if !self.warnings_seen.insert(text.to_owned()) {
                     return;
                 }
@@ -258,6 +267,7 @@ impl Items {
             (None, None) if in_place => Notice::plain_with_after(tone, text, ""),
             (None, None) => Notice::new(tone, text),
         };
+        notice.question |= level == NoteLevel::Ask;
         match level {
             NoteLevel::Aside => notice = notice.with_glyph(ASIDE),
             NoteLevel::Quiet | NoteLevel::Caution => notice = notice.with_glyph(NO_MARK),
@@ -819,9 +829,9 @@ mod report_logos_tests;
 mod offer_tests {
     use std::time::Instant;
 
-    use argonauts_core::NoteLevel;
     use argonauts_core::app::AppEvent;
     use argonauts_core::settings::ui::{UiSettings, Verbosity};
+    use argonauts_core::{Note, NoteLevel};
 
     use super::super::Transcript;
     use crate::app::model::ViewModel;
@@ -835,6 +845,10 @@ mod offer_tests {
         "Doing this alone: about 1 file, and the repo has tests · /crew to have Council do it";
 
     fn printed(verbosity: Verbosity, text: &str) -> String {
+        printed_at(verbosity, NoteLevel::Info, text)
+    }
+
+    fn printed_at(verbosity: Verbosity, level: NoteLevel, text: &str) -> String {
         let mut model = ViewModel::default();
         let state = AppState::default();
         let settings = UiSettings {
@@ -850,7 +864,7 @@ mod offer_tests {
             out: &mut out,
         };
         let notice = AppEvent::Notice {
-            level: NoteLevel::Info,
+            level,
             text: text.to_owned(),
         };
         Transcript::default().on_event(&notice, &mut cx);
@@ -858,6 +872,28 @@ mod offer_tests {
         theme.glyphs = Glyphs::UNICODE;
         let ctx = RenderCtx::new(120, &theme, Clock::still(Instant::now()));
         plain_text(&model.history.drain_printable(&ctx))
+    }
+
+    #[test]
+    fn a_folder_macos_blocks_is_a_diamond_line_with_where_to_let_the_cli_in() {
+        let text = Note::text_with_rows(
+            "3.8 Flash can't read this folder: macOS keeps agy out of Downloads",
+            &[
+                "To let it in: System Settings › Privacy & Security › Files and Folders › \
+               Antigravity › Downloads Folder"
+                    .to_owned(),
+            ],
+        );
+        let printed = printed_at(Verbosity::Full, NoteLevel::Ask, &text);
+        let lines: Vec<&str> = printed.trim().lines().map(str::trim_end).collect();
+        assert_eq!(
+            lines,
+            [
+                "◆ 3.8 Flash can't read this folder: macOS keeps agy out of Downloads",
+                "  ⎿  To let it in: System Settings › Privacy & Security › Files and Folders › \
+                 Antigravity › Downloads Folder",
+            ]
+        );
     }
 
     #[test]

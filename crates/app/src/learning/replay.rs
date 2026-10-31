@@ -11,9 +11,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use time::OffsetDateTime;
-
 use argonauts_core::Paths;
+use argonauts_core::base::clock;
 use argonauts_core::base::future::BoxFuture;
 use argonauts_core::base::names::ModelRef;
 use argonauts_core::models::limits::CheckRunner;
@@ -381,7 +380,7 @@ pub(crate) async fn replay_next(
         return Ok(Turn::Idle("evolution.stage doesn't replay".to_owned()));
     }
     let evolution = Evolution::open(store)?;
-    let spent = super::or_empty(evolution.spent_this_month(OffsetDateTime::now_utc()))?;
+    let spent = super::or_empty(evolution.spent_this_month(clock::now_utc()))?;
     // Without a monthly limit, each replay run still keeps to its own limit.
     let left = settings
         .limits
@@ -564,6 +563,7 @@ async fn drain(
 mod tests {
     use std::path::PathBuf;
     use std::sync::Mutex;
+    use time::OffsetDateTime;
 
     use argonauts_core::RunId;
     use argonauts_core::base::names::ModelRef;
@@ -718,7 +718,7 @@ mod tests {
             let count = self.evolution().candidates().unwrap().len();
             let run = RunRecord {
                 run: RunId::new(format!("run-1{count:02}")).unwrap(),
-                at: OffsetDateTime::now_utc(),
+                at: clock::now_utc(),
                 task_type: "backend".to_owned(),
                 learned_workflow: Some(LearnedWorkflowRef {
                     name: "api-feature".to_owned(),
@@ -868,7 +868,7 @@ mod tests {
         let queued = world.propose("divide.max_tasks", "6");
         assert_eq!(queued.state, CandidateState::Queued);
         let fake = Arc::new(Fake::default());
-        let now = OffsetDateTime::now_utc();
+        let now = clock::now_utc();
 
         let turn = world.turn(&fake).await;
         assert!(
@@ -1395,7 +1395,7 @@ mod tests {
         for (seq, kind) in kinds.into_iter().enumerate() {
             let event = RunEvent {
                 seq: seq as u64,
-                ts: OffsetDateTime::now_utc(),
+                ts: clock::now_utc(),
                 run_id: run.clone(),
                 task_id: None,
                 session: None,
@@ -1410,7 +1410,7 @@ mod tests {
         std::fs::write(dir.join("events.jsonl"), journal).unwrap();
         let line = RunRecord {
             run: run.clone(),
-            at: OffsetDateTime::now_utc(),
+            at: clock::now_utc(),
             task_type: "feature".to_owned(),
             learned_workflow: None,
             workflow: None,

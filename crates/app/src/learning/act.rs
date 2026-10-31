@@ -5,9 +5,8 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use time::OffsetDateTime;
-
 use argonauts_core::app::views::LearningCommand;
+use argonauts_core::base::clock;
 use argonauts_core::base::text::sentence_case;
 use argonauts_core::runs::events::run::Party;
 use argonauts_core::settings::Settings;
@@ -38,7 +37,7 @@ pub(crate) fn act(
     let store = super::store(env);
     match command {
         LearningCommand::Rebuild => {
-            let book = Book::rebuild(&store, &settings.routing, OffsetDateTime::now_utc())?;
+            let book = Book::rebuild(&store, &settings.routing, clock::now_utc())?;
             Ok(format!(
                 "Rebuilt {} track records from the outcome log.",
                 book.rows().len()
@@ -46,7 +45,7 @@ pub(crate) fn act(
         }
         LearningCommand::Pin { worker, task_type } => {
             let cli = cli_of(worker);
-            let book = Book::rebuild(&store, &settings.routing, OffsetDateTime::now_utc())?;
+            let book = Book::rebuild(&store, &settings.routing, clock::now_utc())?;
             let worker_ref = worker.parse()?;
             let rate = book.record(&worker_ref, task_type).pass.mean();
             let key = format!("routing.pins.{cli}.{task_type}");
@@ -58,7 +57,7 @@ pub(crate) fn act(
         }
         LearningCommand::Reset { worker } => {
             let cli = cli_of(worker);
-            let today = OffsetDateTime::now_utc().date().to_string();
+            let today = clock::now_utc().date().to_string();
             save(
                 env,
                 &format!("routing.resets.{cli}"),
@@ -146,7 +145,7 @@ fn close(store: &Store, id: &str) -> anyhow::Result<String> {
                 "you closed the promotion of {learned_workflow} v{}",
                 candidate.version
             ),
-            at: OffsetDateTime::now_utc(),
+            at: clock::now_utc(),
         };
         outcomes::append(store, run, &[LogLine::Reversal(reversal)])?;
     }
@@ -347,6 +346,7 @@ mod tests {
     use argonauts_core::RunId;
     use argonauts_core::workflows::steps::task::MemoryProposal;
     use argonauts_learning::memory::Source;
+    use time::OffsetDateTime;
 
     use super::*;
 

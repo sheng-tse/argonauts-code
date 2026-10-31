@@ -38,12 +38,12 @@ version = "0.163.0"
 model = "gpt-6-luna"
 parts = [{ tokens = 15236 }]
 
-# fixtures/export_last_steps on ollama/qwen3-coder:30b-64k: the first step held 7,757 for a
+# fixtures/export_last_steps on ollama/qwen3-coder:30b: the first step held 7,757 for a
 # 14-token prompt.
 [[cli]]
 agent = "opencode"
 version = "2.0.26"
-model = "ollama/qwen3-coder:30b-64k"
+model = "ollama/qwen3-coder:30b"
 parts = [{ tokens = 7743 }]
 
 # fixtures/readonly_ok, a read-only session: the first answer step held 4,234 for an 8-token

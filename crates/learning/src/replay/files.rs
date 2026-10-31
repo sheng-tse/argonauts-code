@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use argonauts_core::base::clock;
 use argonauts_core::create_private_dir_all;
 
 use crate::store::error::{LearningError, Result};
@@ -27,7 +28,7 @@ impl Drop for Scratch {
 /// Unique within this machine: the process, the time, and a counter.
 pub(super) fn nonce() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let nanos = time::OffsetDateTime::now_utc().unix_timestamp_nanos();
+    let nanos = clock::now_utc().unix_timestamp_nanos();
     format!(
         "{}-{nanos}-{}",
         std::process::id(),

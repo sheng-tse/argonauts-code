@@ -56,6 +56,7 @@ fn a_conversation_that_left_after_the_first_prompt(driver: &TestDriver) -> Conve
             uncommitted: Vec::new(),
             settings_sha256: None,
             continues: false,
+            opens_a_talk: false,
         })
         .unwrap();
     store

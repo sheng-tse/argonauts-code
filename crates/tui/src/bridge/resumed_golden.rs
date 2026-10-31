@@ -254,7 +254,6 @@ fn a_resumed_conversation_is_drawn_as_it_printed_live() {
         &want[..OWN_ROWS].join("\n"),
         COLOURS,
         &theme(),
-        &[],
     );
     let rows: Vec<String> = printed
         .iter()
@@ -281,7 +280,6 @@ fn a_resumed_conversation_is_drawn_as_it_printed_live() {
             (&picture, COLOURS),
             part,
             &theme(),
-            &[],
         );
         covered[at..end].fill(true);
         after = end;

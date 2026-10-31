@@ -97,9 +97,9 @@ fn by_cli_example(now: OffsetDateTime) -> Example {
     example.work(FLASH, Judge, None, split(120_000, 0.08, true), (14, 1, 41));
     example.stats.workflows = 14;
     example.stats.took_secs = 12 * 3600 + 40 * 60;
-    example.plan(CLAUDE, "Max", true, [0.01, 0.56], now);
-    example.plan(CODEX, "Plus", false, [0.01, 0.11], now);
-    example.plan(AGY, "Pro", false, [0.02, 0.01], now);
+    example.plan(CLAUDE, "Pro", true, [0.01, 0.56], now);
+    example.plan(CODEX, "Pro", false, [0.01, 0.11], now);
+    example.plan(AGY, "Ultra", false, [0.02, 0.01], now);
     // Each week's tokens by CLI for the chart, and its pieces of work for the cards, on its
     // Monday.
     let tokens = [
@@ -445,7 +445,7 @@ fn one_card_example(now: OffsetDateTime) -> Example {
     );
     example.tasks(HAIKU, "build", 0, 3, 0);
     example.work(HAIKU, Reviewer, None, Default::default(), (13, 6, 0));
-    example.plan(CLAUDE, "Max", true, [0.07, 0.55], now);
+    example.plan(CLAUDE, "Pro", true, [0.07, 0.55], now);
     for (k, work) in [1, 1, 1, 1, 2, 3, 8].into_iter().enumerate() {
         let day = date!(2026 - 10 - 04) + Duration::days(k as i64);
         example.day(HAIKU, Worker, day, 0, work);
@@ -604,10 +604,12 @@ fn a_long_model_name_leaves_every_card_its_bars() {
                 "{width}: {row}"
             );
         }
-        assert!(
-            shown.contains("… ━"),
-            "{width}: the long name is cut:\n{shown}"
-        );
+        let cut = shown.lines().any(|line| {
+            line.split_once('…').is_some_and(|(_, after)| {
+                after.starts_with(' ') && after.trim_start().starts_with('━')
+            })
+        });
+        assert!(cut, "{width}: the long name is cut:\n{shown}");
     }
 }
 
@@ -639,8 +641,8 @@ fn one_model_two_ways(now: OffsetDateTime) -> Example {
     example.work(HAIKU, Orchestrator, None, Default::default(), (2, 0, 60));
     example.work(LUNA, Orchestrator, None, Default::default(), (1, 0, 60));
     example.stats.workflows = 3;
-    example.plan(CLAUDE, "Max", true, [0.07, 0.55], now);
-    example.plan(CODEX, "Plus", false, [0.01, 0.11], now);
+    example.plan(CLAUDE, "Pro", true, [0.07, 0.55], now);
+    example.plan(CODEX, "Pro", false, [0.01, 0.11], now);
     example
 }
 

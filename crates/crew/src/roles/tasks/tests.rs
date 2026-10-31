@@ -53,6 +53,7 @@ fn layers(workers: Layer, reviewers: Layer) -> Layers {
 #[test]
 fn the_requests_reviewer_and_the_rest_as_workers_hold() {
     let settled = settle(
+        &DisplayNames::default(),
         &settings(&[CLAUDE, CODEX], &[AGY]),
         layers(Layer::Settings, Layer::Words),
         &provider,
@@ -83,7 +84,12 @@ fn the_requests_reviewer_and_the_rest_as_workers_hold() {
 /// planner hears why in plain words.
 #[test]
 fn the_only_reviewer_is_left_out_of_the_workers() {
-    let settled = settle(&settings(&[], &[AGY]), Layers::default(), &provider);
+    let settled = settle(
+        &DisplayNames::default(),
+        &settings(&[], &[AGY]),
+        Layers::default(),
+        &provider,
+    );
     assert_eq!(settled.workers, workers(&[CLAUDE, CODEX]));
     assert_eq!(settled.relaxed, None);
     let why = "agy is the only reviewer you allowed, so agy can't own a task";
@@ -112,6 +118,7 @@ fn the_only_reviewer_is_left_out_of_the_workers() {
 #[test]
 fn the_lowest_rule_gives_way_and_says_so() {
     let settled = settle(
+        &DisplayNames::default(),
         &settings(&[AGY], &[AGY]),
         layers(Layer::Settings, Layer::Words),
         &provider,
@@ -134,6 +141,7 @@ fn the_lowest_rule_gives_way_and_says_so() {
 
     // The other way round, the reviewers' pin is the lower one.
     let settled = settle(
+        &DisplayNames::default(),
         &settings(&[AGY], &[AGY]),
         layers(Layer::Words, Layer::Settings),
         &provider,
@@ -156,7 +164,12 @@ fn the_lowest_rule_gives_way_and_says_so() {
 fn one_providers_crew_reviews_within_it() {
     let mut one_provider = settings(&[], &[]);
     one_provider.crew = workers(&["codex/gpt-5.6", "opencode/gpt-5.6"]).into();
-    let settled = settle(&one_provider, Layers::default(), &provider);
+    let settled = settle(
+        &DisplayNames::default(),
+        &one_provider,
+        Layers::default(),
+        &provider,
+    );
     assert!(!settled.other_provider);
     assert_eq!(settled.workers.len(), 2);
     assert!(
@@ -178,7 +191,7 @@ fn one_providers_crew_reviews_within_it() {
 fn fewer_reviewers_give_way_before_other_agents() {
     let mut two = settings(&[CLAUDE], &[CODEX, AGY]);
     two.review.per_task = 3;
-    let settled = settle(&two, Layers::default(), &provider);
+    let settled = settle(&DisplayNames::default(), &two, Layers::default(), &provider);
     assert_eq!(settled.per_task, 2);
     assert_eq!(settled.workers, workers(&[CLAUDE]));
     assert!(

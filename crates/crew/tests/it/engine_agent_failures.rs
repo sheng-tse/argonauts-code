@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 
 use argonauts_core::agents::session_runner::{RunnerEvent, SessionSpec};
 use argonauts_core::base::names::{RoleName, WorkflowId};
+use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::models::limits::{Candidate, CostEstimate, HealthState};
 use argonauts_core::runs::engine::EngineExit;
 use argonauts_core::runs::events::approval::ApprovalEvent;
@@ -30,7 +31,6 @@ use argonauts_core::settings::protocol::CheckCommand;
 use argonauts_core::workflows::steps::StepName;
 use argonauts_core::{ErrorCategory, LimitDimension};
 use argonauts_crew::engine::shared::with_git_env;
-use argonauts_crew::roles::display_name;
 use argonauts_testkit::{FakeRunner, FakeSession};
 
 use support::{Crew, Outcome};
@@ -1618,7 +1618,7 @@ async fn on_autopilot_the_builders_provider_reviews_and_the_merge_waits_for_you(
     assert!(
         stood_in[0].ends_with(&format!(
             "so {} takes a reviewer on autopilot · its work stays on its branch for you",
-            display_name(&SONNET.parse()?)
+            DisplayNames::default().worker(&SONNET.parse()?)
         )),
         "{stood_in:?}"
     );
@@ -1641,7 +1641,7 @@ async fn on_autopilot_the_builders_provider_reviews_and_the_merge_waits_for_you(
     // Autopilot's line names the fallback and the task it reviewed.
     let named = format!(
         "{}, a fallback from its builder's own provider, reviewed ",
-        display_name(&SONNET.parse()?)
+        DisplayNames::default().worker(&SONNET.parse()?)
     );
     assert!(
         said.iter()
@@ -1713,12 +1713,12 @@ async fn when_only_the_builders_provider_is_left_the_review_waits_and_asks() -> 
         waiting.exit
     );
     assert_eq!(ran(&crew, SONNET, StepName::Review), 0, "{said:?}");
-    let codex = display_name(&CODEX.parse()?);
+    let codex = DisplayNames::default().worker(&CODEX.parse()?);
     let waits = said
         .iter()
         .find(|note| note.starts_with(&format!("A reviewer waits for {codex}: ")))
         .context("one line says why the review waits")?;
-    let haiku = argonauts_crew::roles::short_name(&CLAUDE.parse()?);
+    let haiku = DisplayNames::default().short(&CLAUDE.parse()?);
     assert!(
         waits.contains(&format!(
             ", and nobody outside the builder's provider is left to review {haiku}'s work."
@@ -1760,7 +1760,7 @@ async fn when_only_the_builders_provider_is_left_the_review_waits_and_asks() -> 
             )
         })
         .collect();
-    let sonnet = display_name(&SONNET.parse()?);
+    let sonnet = DisplayNames::default().worker(&SONNET.parse()?);
     let let_sonnet = format!("Let {sonnet} review");
     assert_eq!(
         offered,
@@ -1849,7 +1849,7 @@ async fn picking_an_agent_lists_every_one_that_may_review() -> anyhow::Result<()
     let mut want = vec![("Wait for Codex".to_owned(), None)];
     for model in [SONNET, OPUS] {
         want.push((
-            display_name(&model.parse()?),
+            DisplayNames::default().worker(&model.parse()?),
             Some("the merge is left to you"),
         ));
     }
@@ -1944,7 +1944,7 @@ fn fallbacks_workflow<'e>(events: &'e [RunEvent], asked: &str) -> Option<&'e Wor
 /// and that `same_cli` asked for it only where the setting kept another CLI out.
 #[tokio::test]
 async fn a_reviewers_fallback_stays_on_its_cli_when_the_role_says_so() -> anyhow::Result<()> {
-    let name = |model: &str| display_name(&model.parse().expect("a model"));
+    let name = |model: &str| DisplayNames::default().worker(&model.parse().expect("a model"));
     let free = crew_with_a_second_claude_model(2)?;
     let outcome = drive(&free).await?;
     let said = notes(&outcome.events);
@@ -2718,5 +2718,42 @@ async fn startup_crashes_while_offline_dont_take_a_cli_out() -> anyhow::Result<(
         "{notes:?}"
     );
     assert!(codex.specs().len() >= 3, "{notes:?}");
+    Ok(())
+}
+
+/// A run a session's time limit ends says whose session it was, in words, never the reason's
+/// own name. The fake limits give a step no minutes, so the line can't name a number.
+#[tokio::test]
+async fn a_run_a_time_limit_ends_names_the_worker_and_the_limit() -> anyhow::Result<()> {
+    let agents = [
+        (CODEX, Agent::default()),
+        (CLAUDE, Agent::default()),
+        (GEMINI, Agent::default()),
+    ];
+    let crew = crew_of(&agents, &Assignment::default())?;
+    for (worker, _) in agents {
+        let usual = agent(Agent::default(), Assignment::default());
+        let fake = crew.services.workers.fake(worker).context("seated")?;
+        fake.respond(move |spec| match spec.step {
+            Some(StepName::DesignWorkflow) => FakeSession::ended(EndReason::LimitHit {
+                dimension: LimitDimension::Minutes,
+            }),
+            _ => usual(spec),
+        });
+    }
+    let outcome = drive(&crew).await?;
+    let said = notes(&outcome.events);
+    assert_eq!(
+        finished(&outcome.events),
+        Some(RunOutcome::Failed),
+        "{said:?}"
+    );
+    let detail = said.last().copied().unwrap_or_default();
+    let first = detail.lines().next().unwrap_or_default();
+    assert!(
+        first.ends_with(" ran past its time limit") && first.contains(" on "),
+        "{said:?}"
+    );
+    assert!(!first.contains("limit hit"), "{said:?}");
     Ok(())
 }

@@ -128,7 +128,8 @@ pub(crate) fn classify(
     match status {
         _ if says(BILLING) => end(EndReason::Billing { message }),
         _ if says(USAGE) => end(EndReason::UsageLimit {
-            resets_at: retry_after.and_then(|after| reset_time(OffsetDateTime::now_utc(), after)),
+            resets_at: retry_after
+                .and_then(|after| reset_time(argonauts_core::base::clock::now_utc(), after)),
         }),
         429 => end(EndReason::RateLimited),
         408 | 504 => agent_id(ErrorCategory::Timeout),
@@ -154,6 +155,7 @@ pub(crate) fn parse_retry_after(value: &str) -> Option<Duration> {
         return Duration::try_from_secs_f64(seconds).ok();
     }
     let at = OffsetDateTime::parse(value, &Rfc2822).ok()?;
+    // The server's date is the system's time, not the app's.
     let wait = at - OffsetDateTime::now_utc();
     Some(Duration::try_from(wait).map_or(Duration::ZERO, |wait| wait.min(LONGEST_WAIT)))
 }
@@ -445,7 +447,7 @@ mod tests {
             parse_retry_after("Fri, 31 Dec 9999 23:59:59 GMT"),
             Some(LONGEST_WAIT)
         );
-        let now = OffsetDateTime::now_utc();
+        let now = argonauts_core::base::clock::now_utc();
         assert_eq!(reset_time(now, Duration::MAX), None);
         assert_eq!(reset_time(now, Duration::from_secs(300_000_000_000)), None);
         assert!(reset_time(now, LONGEST_WAIT).is_some_and(|at| at > now));
@@ -512,7 +514,7 @@ mod tests {
             parse_retry_after("Wed, 21 Oct 2015 07:28:00 GMT"),
             Some(Duration::ZERO)
         );
-        let soon = OffsetDateTime::now_utc() + Duration::from_secs(120);
+        let soon = argonauts_core::base::clock::now_utc() + Duration::from_secs(120);
         let wait = parse_retry_after(&soon.format(&Rfc2822).unwrap()).unwrap();
         assert!(wait > Duration::from_secs(100) && wait <= Duration::from_secs(120));
         assert_eq!(parse_retry_after("soon"), None);

@@ -3,6 +3,7 @@
 
 mod agents_support;
 mod app_support;
+mod drawings_support;
 mod limits_support;
 mod policy_support;
 
@@ -15,17 +16,29 @@ mod agents_ollama_endpoint_reviews_task;
 mod agents_opencode_owns_task;
 mod agents_scenario_files;
 mod app_approvals;
+mod app_behaviors_world;
+mod app_bottom_line_picker;
+mod app_context_windows;
 mod app_conversation;
+mod app_council_bubbles;
+mod app_council_counts;
+mod app_council_plan;
 mod app_drawings;
+mod app_first_frame;
 mod app_first_run;
 mod app_helpers;
+mod app_home_folder;
 mod app_main_session;
+mod app_model_names;
 mod app_notices;
+mod app_overview_keys;
+mod app_picked_row;
 mod app_recovery;
 mod app_run_command;
 mod app_runs;
 mod app_settings;
 mod app_shell;
+mod app_suspend;
 mod app_workflow_steps;
 mod crew_runs;
 mod crew_sessions;

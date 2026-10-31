@@ -57,7 +57,7 @@ impl Limits {
 pub struct Spent {
     /// Seat messages in a row that moved nobody's stance.
     pub unmoved: u32,
-    /// Every seat's tokens together.
+    /// The tokens every seat wrote, together.
     pub tokens: u64,
     /// The seats' working time together, never time spent waiting on you.
     pub working: Duration,

@@ -9,6 +9,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use argonauts_core::base::clock;
 use argonauts_core::base::layout::user_files;
 use serde::{Deserialize, Serialize};
 use time::{Date, OffsetDateTime, UtcOffset};
@@ -177,7 +178,7 @@ impl DailyLedger {
         taken: OffsetDateTime,
         now: OffsetDateTime,
     ) -> Result<(), DailyError> {
-        let taken_day = taken.to_offset(UtcOffset::UTC).date().to_string();
+        let taken_day = real_day(taken).to_string();
         self.update(now, |day| {
             if day.day == taken_day {
                 day.outside_agent_runs = day.outside_agent_runs.saturating_sub(1);
@@ -215,7 +216,7 @@ impl DailyLedger {
                 message: format!("it doesn't parse ({err}). Removing it resets today's counts"),
             })?
         };
-        day.roll_to(now.to_offset(UtcOffset::UTC).date());
+        day.roll_to(real_day(now));
         let result = change(&mut day);
 
         let json = serde_json::to_vec_pretty(&day).map_err(|err| self.io(io::Error::other(err)))?;
@@ -235,6 +236,12 @@ impl DailyLedger {
             message: err.to_string(),
         }
     }
+}
+
+/// The real UTC day of `at`, an instant of the app's time: a day's caps count real days even
+/// when `ARGONAUTS_CLOCK` sets the app's time.
+fn real_day(at: OffsetDateTime) -> Date {
+    clock::real(at).to_offset(UtcOffset::UTC).date()
 }
 
 #[cfg(test)]

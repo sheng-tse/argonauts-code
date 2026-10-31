@@ -1,10 +1,10 @@
-# Set up with Council, and OpenCode on ollama/qwen3-coder:30b-64k to talk to. state/ keeps the start of
+# Set up with Council, and OpenCode on ollama/qwen3-coder:30b to talk to. state/ keeps the start of
 # the last fresh OpenCode session on it: its own prompt and tools, and the project's AGENTS.md of
 # 4,800 characters, which the project still holds.
 workflow = "council"
 
 [crew]
-main = "opencode/ollama/qwen3-coder:30b-64k"
+main = "opencode/ollama/qwen3-coder:30b"
 worker = ["claude-code", "codex", "antigravity-cli", "opencode"]
 reviewer = ["claude-code", "codex", "antigravity-cli", "opencode"]
 judge = ["claude-code", "codex", "antigravity-cli", "opencode"]

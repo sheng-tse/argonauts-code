@@ -523,7 +523,7 @@ pub fn builders_provider_reviewed(host: &Host, opened: &ApprovalOpened) -> Optio
             })?;
             Some(format!(
                 "{}, a fallback from its builder's own provider, reviewed {}",
-                crate::roles::display_name(&fallback.started.worker),
+                host.names().worker(&fallback.started.worker),
                 row.task
             ))
         })

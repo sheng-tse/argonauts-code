@@ -11,6 +11,7 @@ use crate::base::draw::panes::{self, Footer};
 use crate::base::kit::{Drawn, Kit, spread};
 use crate::base::text::{spans_width, str_width, truncate_spans};
 use crate::base::theme::{Role, Theme};
+use crate::panels::view::subtabs::chosen_word;
 
 /// Cells a row's name takes, the pointer before it included.
 const LABEL_CELLS: usize = 20;
@@ -38,10 +39,24 @@ pub enum Cells {
         options: Vec<String>,
         current: usize,
     },
+    /// A choice with a line under it that says more about the one in use, such as the CLIs
+    /// a list names.
+    ChoiceAndLine {
+        options: Vec<String>,
+        current: usize,
+        line: Vec<Span<'static>>,
+    },
     /// Parts ticked on or off. `cursor` is the one the keys act on while the row is selected.
     Ticks { items: Vec<Tick>, cursor: usize },
     /// Words that say how something is, with nothing to change here.
     Words(Vec<Span<'static>>),
+}
+
+impl Row {
+    /// The lines it takes: one, and one more for a line under its choices.
+    fn height(&self) -> usize {
+        1 + usize::from(matches!(self.cells, Cells::ChoiceAndLine { .. }))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,15 +146,19 @@ fn cells_spans(kit: &Kit<'_>, cells: &Cells, selected: bool) -> Vec<Span<'static
     let glyphs = PageGlyphs::for_kit(kit);
     let mut out = Vec::new();
     match cells {
-        Cells::Choice { options, current } => {
+        Cells::Choice { options, current }
+        | Cells::ChoiceAndLine {
+            options, current, ..
+        } => {
             for (index, option) in options.iter().enumerate() {
                 if index > 0 {
                     out.push(Span::raw("  "));
                 }
                 if index != *current {
-                    out.push(kit.dim(option.clone()));
+                    out.push(Span::raw(option.clone()));
                 } else if kit.has_color() {
-                    out.push(Span::styled(option.clone(), kit.bold(Role::Question)));
+                    // The row with the cursor has the keys, so only its pick is orange.
+                    out.push(chosen_word(kit, option.clone(), selected));
                 } else {
                     // Without color the brackets say which one is in use.
                     out.push(Span::styled(format!("[{option}]"), kit.bold(Role::Bright)));
@@ -203,6 +222,17 @@ fn row_line(kit: &Kit<'_>, row: &Row, selected: bool, width: usize) -> Line<'sta
     Line::from(spread(left, vec![kit.dim(row.origin)], width))
 }
 
+/// The line under a row's choices, starting where they do.
+fn under_line(spans: &[Span<'static>], width: usize) -> Line<'static> {
+    let mut line = vec![Span::raw(" ".repeat(LABEL_CELLS))];
+    line.extend(spans.iter().cloned());
+    let room = width.saturating_sub(ORIGIN_CELLS + 1);
+    if spans_width(&line) > room {
+        line = truncate_spans(&line, room);
+    }
+    Line::from(line)
+}
+
 /// The groups as lines, with the selected row's index counted across them. `airy` puts a
 /// blank row between two groups.
 pub fn group_lines(
@@ -221,6 +251,9 @@ pub fn group_lines(
         lines.push(Line::from(kit.strong(group.title)));
         for row in &group.rows {
             lines.push(row_line(kit, row, index == selected, width));
+            if let Cells::ChoiceAndLine { line, .. } = &row.cells {
+                lines.push(under_line(line, width));
+            }
             index += 1;
         }
     }
@@ -289,7 +322,12 @@ pub fn draw_page(
     let room = usize::from(area.height.saturating_sub(2));
     // A blank row sets the groups apart where the screen has the rows for it.
     let gaps = groups.len().saturating_sub(1);
-    let airy = rows_from + groups.len() + row_count(groups) + gaps <= room;
+    let row_lines: usize = groups
+        .iter()
+        .flat_map(|group| &group.rows)
+        .map(Row::height)
+        .sum();
+    let airy = rows_from + groups.len() + row_lines + gaps <= room;
     let body = group_lines(&kit, groups, selected, width, airy);
     // The selected row's line among the body's: its index plus the titles and gaps above it.
     let selected_line = {
@@ -298,11 +336,11 @@ pub fn draw_page(
         for (index, group) in groups.iter().enumerate() {
             line += 1 + usize::from(airy && index > 0);
             if left < group.rows.len() {
-                line += left;
+                line += group.rows[..left].iter().map(Row::height).sum::<usize>();
                 break;
             }
             left -= group.rows.len();
-            line += group.rows.len();
+            line += group.rows.iter().map(Row::height).sum::<usize>();
         }
         line
     };

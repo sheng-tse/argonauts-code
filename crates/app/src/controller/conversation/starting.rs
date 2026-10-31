@@ -23,6 +23,7 @@ use serde::Deserialize;
 
 use super::{ConversationState, cli, standing, tools};
 use crate::controller::Ctx;
+use crate::controller::clis;
 use crate::controller::run_commands::window_figures;
 
 /// Claude Code's colour names for the CLI's own part and for the instruction files, which the
@@ -353,7 +354,12 @@ impl StartAsk {
         let writing = before.writing;
         let mut read = vec![(self.kept.clone(), stamp(&self.kept))];
         let asked = &self.asked;
-        let start = kept(&self.kept, &asked.worker).unwrap_or_else(|| {
+        let as_kept = kept(&self.kept, &asked.worker).map(|mut start| {
+            // A start kept before its CLI said the window takes the one known now.
+            start.window = start.window.or(asked.window);
+            start
+        });
+        let start = as_kept.unwrap_or_else(|| {
             let (files, looked_at) = read_files(&asked.files, asked.depth, &self.workdir);
             read.extend(looked_at.into_iter().map(|path| {
                 let was = stamp(&path);
@@ -646,19 +652,28 @@ fn imports(text: &str) -> Vec<&str> {
     found
 }
 
-/// `worker`'s window, as the registry knows it: for a worker left on its CLI's default, the
-/// window of the model that CLI runs by default.
+/// `worker`'s window before its CLI says it: the lists read each day, then the shipped
+/// catalog. A worker left on its CLI's default, or named by an alias such as `opus`, takes the
+/// window of the model it runs.
 pub(crate) fn window_of(ctx: &Ctx, worker: &ModelRef) -> Option<u64> {
     let registry = ctx.services.registry.as_ref();
-    let cli_default = || {
-        if worker.model.is_some() {
-            return None;
-        }
-        let model = ctx.names.names().defaults.get(&worker.agent).cloned()?;
-        registry.get(&ModelRef::new(worker.agent.as_str(), Some(model)))
+    let catalog = registry.catalog();
+    let runs = match &worker.model {
+        Some(_) => catalog.runs(worker),
+        None => (ctx.names.names().defaults.get(&worker.agent).cloned()).or_else(|| {
+            clis::names::cli_defaults(ctx, [worker.agent.as_str()]).remove(&worker.agent)
+        }),
+    }
+    .map(|model| ModelRef::new(worker.agent.as_str(), Some(model)))
+    .filter(|runs| runs != worker);
+    let listed = |id: &ModelRef| {
+        let entry = registry.get(id)?;
+        entry.window.or(entry.context_window)
     };
-    let entry = registry.get(worker).or_else(cli_default)?;
-    entry.window.or(entry.context_window)
+    listed(worker)
+        .or_else(|| runs.as_ref().and_then(listed))
+        .or_else(|| runs.as_ref().and_then(|runs| catalog.window(runs)))
+        .or_else(|| catalog.window(worker))
 }
 
 /// A very first run's start: as recorded where a recording of the CLI ships, else only what
@@ -1107,7 +1122,9 @@ mod tests {
             of_first_fill(&worker, Vec::new(), fill(16_000, 10, None), None).expect("start");
         keep(&root.join("session-starts.json"), &worker, start.clone()).expect("kept");
         let kept = ask(&["start_workflow"]).work_out(offered);
-        assert_eq!(kept.start, Some(start));
+        // Kept before its CLI said the window, it takes the one known now.
+        let window = Some(372_000);
+        assert_eq!(kept.start, Some(StartingCount { window, ..start }));
     }
 
     #[test]

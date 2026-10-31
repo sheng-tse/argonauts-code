@@ -414,7 +414,7 @@ mod tests {
          "info": {"providers": {"ollama": {"name": "Ollama (local)",
             "package": "aisdk:@ai-sdk/openai-compatible",
             "settings": {"baseURL": "http://localhost:11434/v1"},
-            "models": {"qwen3-coder:30b-64k": {"name": "Qwen3 Coder 30B (64k)",
+            "models": {"qwen3-coder:30b": {"name": "Qwen3 Coder 30B",
                 "limit": {"context": 65536, "output": 16384}}}}}}},
         {"type": "directory", "path": "/home/me/.config/opencode"},
         {"type": "document", "info": {"providers": {"lmstudio": {
@@ -426,10 +426,10 @@ mod tests {
         let said =
             |id, model| declared_in_answer(ANSWER, on(id, model)).map(|yours| yours.declared);
         assert_eq!(
-            said("ollama", "qwen3-coder:30b-64k"),
+            said("ollama", "qwen3-coder:30b"),
             Some(Declared::ModelAndWindow)
         );
-        assert_eq!(said("ollama", "gemma3:12b-32k"), Some(Declared::Provider));
+        assert_eq!(said("ollama", "gemma3:12b"), Some(Declared::Provider));
         assert_eq!(said("lmstudio", "qwen/qwen3-8b"), Some(Declared::Model));
         assert_eq!(said("vllm", "qwen"), Some(Declared::Nothing));
         assert_eq!(

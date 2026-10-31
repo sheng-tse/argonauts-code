@@ -7,8 +7,8 @@ use argonauts_core::base::names::ModelRef;
 use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::models::model_catalog::display_name_from_id;
 
-/// The most summarizers the question lists.
-pub(crate) const LISTED: usize = 4;
+/// The local models the question lists before Open models, which lists them all.
+pub(crate) const LOCAL_LISTED: usize = 2;
 
 /// A model a server on this machine serves.
 #[derive(Debug, Clone, PartialEq)]
@@ -16,7 +16,7 @@ pub(crate) struct LocalModel {
     /// The runtime's id, such as `ollama`.
     pub runtime: String,
     pub base_url: String,
-    /// As the server names it, such as `qwen3-coder:30b-64k`.
+    /// As the server names it, such as `qwen3-coder:30b`.
     pub model: String,
     /// Its weights, where the server says.
     pub bytes: Option<u64>,
@@ -126,7 +126,7 @@ pub(crate) fn local_candidate(local: &LocalModel, names: &DisplayNames) -> Candi
     }
 }
 
-/// A local model as people say it: `qwen3-coder:30b-64k` reads "Qwen3 Coder 30B", the window
+/// A local model as people say it: `sample-coder:30b-64k` reads "Sample Coder 30B", the window
 /// a local tag was made with left out.
 pub(crate) fn local_name(model: &str) -> String {
     let without_window = match model.rsplit_once('-') {
@@ -177,9 +177,9 @@ pub(crate) mod sample {
             fit: Some(Fit::Fits),
         };
         let locals = vec![
-            local("gemma3:12b-32k", 8),
+            local("gemma3:12b", 8),
             local("nomic-embed-text:latest", 0),
-            local("qwen3-coder:30b-64k", 18),
+            local("qwen3-coder:30b", 18),
         ];
         let hosted = ["claude-code/haiku", "codex/gpt-6-luna"]
             .iter()
@@ -213,7 +213,7 @@ mod tests {
         );
         let picked = offered.first().unwrap();
         assert!(picked.local());
-        assert_eq!(picked.model.to_string(), "ollama/qwen3-coder:30b-64k");
+        assert_eq!(picked.model.to_string(), "ollama/qwen3-coder:30b");
     }
 
     #[test]
@@ -230,8 +230,8 @@ mod tests {
         let (mut locals, hosted) = page_models();
         locals[2].fit = Some(Fit::Tight { at: None });
         let offered = candidates(&locals, &hosted, &DisplayNames::default());
-        assert_eq!(offered[0].model.to_string(), "ollama/gemma3:12b-32k");
-        assert_eq!(offered[1].model.to_string(), "ollama/qwen3-coder:30b-64k");
+        assert_eq!(offered[0].model.to_string(), "ollama/gemma3:12b");
+        assert_eq!(offered[1].model.to_string(), "ollama/qwen3-coder:30b");
     }
 
     #[test]
@@ -249,30 +249,33 @@ mod tests {
     #[test]
     fn a_model_served_twice_under_one_name_is_offered_once_the_one_in_memory() {
         let (mut locals, hosted) = page_models();
+        let mut capped = locals[2].clone();
+        capped.model = "sample-coder:30b-64k".to_owned();
+        locals.push(capped);
         let mut base = locals[0].clone();
-        base.model = "qwen3-coder:30b".to_owned();
+        base.model = "sample-coder:30b".to_owned();
         locals.push(base.clone());
         let offered = candidates(&locals, &hosted, &DisplayNames::default());
-        let qwen: Vec<String> = offered
+        let twins: Vec<String> = offered
             .iter()
-            .filter(|c| c.short == "Qwen3 Coder 30B")
+            .filter(|c| c.short == "Sample Coder 30B")
             .map(|c| c.model.to_string())
             .collect();
-        assert_eq!(qwen, ["ollama/qwen3-coder:30b-64k"]);
+        assert_eq!(twins, ["ollama/sample-coder:30b-64k"]);
         base.fit = Some(Fit::Loaded);
         locals.push(base);
         let offered = candidates(&locals, &hosted, &DisplayNames::default());
-        let qwen: Vec<String> = offered
+        let twins: Vec<String> = offered
             .iter()
-            .filter(|c| c.short == "Qwen3 Coder 30B")
+            .filter(|c| c.short == "Sample Coder 30B")
             .map(|c| c.model.to_string())
             .collect();
-        assert_eq!(qwen, ["ollama/qwen3-coder:30b"]);
+        assert_eq!(twins, ["ollama/sample-coder:30b"]);
     }
 
     #[test]
     fn local_names_leave_out_the_window() {
-        assert_eq!(local_name("qwen3-coder:30b-64k"), "Qwen3 Coder 30B");
+        assert_eq!(local_name("sample-coder:30b-64k"), "Sample Coder 30B");
         assert_eq!(local_name("qwen3-coder:30b"), "Qwen3 Coder 30B");
         assert!(embeds("nomic-embed-text:latest"));
     }

@@ -1,0 +1,140 @@
+# The Orchestrator run "Add due dates", as conversation/orchestrator-run draws it: the plan on
+# Opus 5.5 with 2 tool uses at 54.6k, two builds on Haiku 5.5 with 6 and 9 tool uses at 30.3k and
+# 22.4k, and GPT-6 Luna reviews that accept. These rules come before the default fake agents'.
+
+# The orchestrator plans two tasks, each with its builder and a GPT-6 Luna reviewer.
+[[rule]]
+argv0 = "claude"
+prompt_contains = '"assignments"'
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-orchestrate","cwd":".","tools":["Read","Grep","Glob","Edit","Write","Bash"],"model":"claude-opus-5-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-orchestrate","message":{"id":"msg-sess-orchestrate-0","content":[{"type":"tool_use","id":"tu-sess-orchestrate-0","name":"Read","input":{"file_path":"todo.py"}}]}}'
+[[rule.step]]
+emit = '{"type":"user","parent_tool_use_id":null,"session_id":"sess-orchestrate","message":{"content":[{"type":"tool_result","tool_use_id":"tu-sess-orchestrate-0","content":"ok"}]}}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-orchestrate","message":{"id":"msg-sess-orchestrate-1","content":[{"type":"tool_use","id":"tu-sess-orchestrate-1","name":"Grep","input":{"pattern":"argparse"}}]}}'
+[[rule.step]]
+emit = '{"type":"user","parent_tool_use_id":null,"session_id":"sess-orchestrate","message":{"content":[{"type":"tool_result","tool_use_id":"tu-sess-orchestrate-1","content":"ok"}]}}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-orchestrate","message":{"id":"msg-sess-orchestrate-2","content":[{"type":"text","text":"Two tasks: the tests for --due, then the flag."}],"usage":{"input_tokens":54000,"output_tokens":600}}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-orchestrate","result":"done","total_cost_usd":0.001,"usage":{"input_tokens":54000,"output_tokens":600},"modelUsage":{"claude-opus-5-5":{"contextWindow":1000000}},"structured_output":{"plan":{"summary":"Two tasks: the tests for --due, then the flag.","approach":"Write the tests, and add the flag beside them.","pieces":[{"name":"tests","description":"Tests for --due","paths":["tests/test_due.py"],"interfaces":[],"depends_on":[]},{"name":"flag","description":"The --due flag","paths":["todo.py"],"interfaces":[],"depends_on":[]}],"choices":[],"risks":[],"test_strategy":"Unit tests for --due.","new_dependencies":[]},"tasks":[{"key":"due-tests","title":"test --due","task":"Write the tests for the --due flag in tests/test_due.py.","kind":"build","owned_paths":["tests/test_due.py"],"read_only_paths":[],"depends_on":[],"criteria":[]},{"key":"due-flag","title":"add the --due flag","task":"Add the --due flag to todo.py.","kind":"build","owned_paths":["todo.py"],"read_only_paths":[],"depends_on":[],"criteria":[]}],"assignments":[{"task":"due-tests","worker":"claude-code/haiku","reviewers":["codex/gpt-6-luna"]},{"task":"due-flag","worker":"claude-code/haiku","reviewers":["codex/gpt-6-luna"]}]}}'
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "claude"
+args_contain = ["acceptEdits"]
+prompt_contains = 'tests for the --due flag'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-due-tests","cwd":".","tools":["Read","Grep","Glob","Edit","Write","Bash"],"model":"claude-haiku-5-5"}'
+[[rule.step]]
+write = { path = "tests/test_due.py", content = "def test_due():\n    pass\n" }
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-due-tests","message":{"id":"msg-sess-due-tests-0","content":[{"type":"tool_use","id":"tu-sess-due-tests-0","name":"Read","input":{"file_path":"tests/test_due.py"}}]}}'
+[[rule.step]]
+emit = '{"type":"user","parent_tool_use_id":null,"session_id":"sess-due-tests","message":{"content":[{"type":"tool_result","tool_use_id":"tu-sess-due-tests-0","content":"ok"}]}}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-due-tests","message":{"id":"msg-sess-due-tests-1","content":[{"type":"tool_use","id":"tu-sess-due-tests-1","name":"Read","input":{"file_path":"tests/test_due.py"}}]}}'
+[[rule.step]]
+emit = '{"type":"user","parent_tool_use_id":null,"session_id":"sess-due-tests","message":{"content":[{"type":"tool_result","tool_use_id":"tu-sess-due-tests-1","content":"ok"}]}}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-due-tests","message":{"id":"msg-sess-due-tests-2","content":[{"type":"tool_use","id":"tu-sess-due-tests-2","name":"Read","input":{"file_path":"tests/test_due.py"}}]}}'
+[[rule.step]]
+emit = '{"type":"user","parent_tool_use_id":null,"session_id":"sess-due-tests","message":{"content":[{"type":"tool_result","tool_use_id":"tu-sess-due-tests-2","content":"ok"}]}}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-due-tests","message":{"id":"msg-sess-due-tests-3","content":[{"type":"tool_use","id":"tu-sess-due-tests-3","name":"Read","input":{"file_path":"tests/test_due.py"}}]}}'
+[[rule.step]]
+emit = '{"type":"user","parent_tool_use_id":null,"session_id":"sess-due-tests","message":{"content":[{"type":"tool_result","tool_use_id":"tu-sess-due-tests-3","content":"ok"}]}}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-due-tests","message":{"id":"msg-sess-due-tests-4","content":[{"type":"tool_use","id":"tu-sess-due-tests-4","name":"Read","input":{"file_path":"tests/test_due.py"}}]}}'
+[[rule.step]]
+emit = '{"type":"user","parent_tool_use_id":null,"session_id":"sess-due-tests","message":{"content":[{"type":"tool_result","tool_use_id":"tu-sess-due-tests-4","content":"ok"}]}}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-due-tests","message":{"id":"msg-sess-due-tests-5","content":[{"type":"tool_use","id":"tu-sess-due-tests-5","name":"Write","input":{"file_path":"tests/test_due.py"}}]}}'
+[[rule.step]]
+emit = '{"type":"user","parent_tool_use_id":null,"session_id":"sess-due-tests","message":{"content":[{"type":"tool_result","tool_use_id":"tu-sess-due-tests-5","content":"ok"}]}}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-due-tests","message":{"id":"msg-sess-due-tests-6","content":[{"type":"text","text":"Done."}],"usage":{"input_tokens":30000,"output_tokens":300}}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-due-tests","result":"done","total_cost_usd":0.001,"usage":{"input_tokens":30000,"output_tokens":300},"modelUsage":{"claude-haiku-5-5":{"contextWindow":1000000}},"structured_output":{"status":"done","summary":"Done.","files_changed":["tests/test_due.py"],"tests_run":[],"concerns":[],"questions":[],"change_requests":[],"memory_proposals":[]}}'
+[[rule.step]]
+exit = 0
+
+[[rule]]
+argv0 = "claude"
+args_contain = ["acceptEdits"]
+prompt_contains = 'Add the --due flag to todo.py'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-due-flag","cwd":".","tools":["Read","Grep","Glob","Edit","Write","Bash"],"model":"claude-haiku-5-5"}'
+[[rule.step]]
+write = { path = "todo.py", content = "# --due\n" }
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-due-flag","message":{"id":"msg-sess-due-flag-0","content":[{"type":"tool_use","id":"tu-sess-due-flag-0","name":"Read","input":{"file_path":"todo.py"}}]}}'
+[[rule.step]]
+emit = '{"type":"user","parent_tool_use_id":null,"session_id":"sess-due-flag","message":{"content":[{"type":"tool_result","tool_use_id":"tu-sess-due-flag-0","content":"ok"}]}}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-due-flag","message":{"id":"msg-sess-due-flag-1","content":[{"type":"tool_use","id":"tu-sess-due-flag-1","name":"Read","input":{"file_path":"todo.py"}}]}}'
+[[rule.step]]
+emit = '{"type":"user","parent_tool_use_id":null,"session_id":"sess-due-flag","message":{"content":[{"type":"tool_result","tool_use_id":"tu-sess-due-flag-1","content":"ok"}]}}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-due-flag","message":{"id":"msg-sess-due-flag-2","content":[{"type":"tool_use","id":"tu-sess-due-flag-2","name":"Read","input":{"file_path":"todo.py"}}]}}'
+[[rule.step]]
+emit = '{"type":"user","parent_tool_use_id":null,"session_id":"sess-due-flag","message":{"content":[{"type":"tool_result","tool_use_id":"tu-sess-due-flag-2","content":"ok"}]}}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-due-flag","message":{"id":"msg-sess-due-flag-3","content":[{"type":"tool_use","id":"tu-sess-due-flag-3","name":"Read","input":{"file_path":"todo.py"}}]}}'
+[[rule.step]]
+emit = '{"type":"user","parent_tool_use_id":null,"session_id":"sess-due-flag","message":{"content":[{"type":"tool_result","tool_use_id":"tu-sess-due-flag-3","content":"ok"}]}}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-due-flag","message":{"id":"msg-sess-due-flag-4","content":[{"type":"tool_use","id":"tu-sess-due-flag-4","name":"Read","input":{"file_path":"todo.py"}}]}}'
+[[rule.step]]
+emit = '{"type":"user","parent_tool_use_id":null,"session_id":"sess-due-flag","message":{"content":[{"type":"tool_result","tool_use_id":"tu-sess-due-flag-4","content":"ok"}]}}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-due-flag","message":{"id":"msg-sess-due-flag-5","content":[{"type":"tool_use","id":"tu-sess-due-flag-5","name":"Read","input":{"file_path":"todo.py"}}]}}'
+[[rule.step]]
+emit = '{"type":"user","parent_tool_use_id":null,"session_id":"sess-due-flag","message":{"content":[{"type":"tool_result","tool_use_id":"tu-sess-due-flag-5","content":"ok"}]}}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-due-flag","message":{"id":"msg-sess-due-flag-6","content":[{"type":"tool_use","id":"tu-sess-due-flag-6","name":"Read","input":{"file_path":"todo.py"}}]}}'
+[[rule.step]]
+emit = '{"type":"user","parent_tool_use_id":null,"session_id":"sess-due-flag","message":{"content":[{"type":"tool_result","tool_use_id":"tu-sess-due-flag-6","content":"ok"}]}}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-due-flag","message":{"id":"msg-sess-due-flag-7","content":[{"type":"tool_use","id":"tu-sess-due-flag-7","name":"Read","input":{"file_path":"todo.py"}}]}}'
+[[rule.step]]
+emit = '{"type":"user","parent_tool_use_id":null,"session_id":"sess-due-flag","message":{"content":[{"type":"tool_result","tool_use_id":"tu-sess-due-flag-7","content":"ok"}]}}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-due-flag","message":{"id":"msg-sess-due-flag-8","content":[{"type":"tool_use","id":"tu-sess-due-flag-8","name":"Write","input":{"file_path":"todo.py"}}]}}'
+[[rule.step]]
+emit = '{"type":"user","parent_tool_use_id":null,"session_id":"sess-due-flag","message":{"content":[{"type":"tool_result","tool_use_id":"tu-sess-due-flag-8","content":"ok"}]}}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-due-flag","message":{"id":"msg-sess-due-flag-9","content":[{"type":"text","text":"Done."}],"usage":{"input_tokens":22100,"output_tokens":300}}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-due-flag","result":"done","total_cost_usd":0.001,"usage":{"input_tokens":22100,"output_tokens":300},"modelUsage":{"claude-haiku-5-5":{"contextWindow":1000000}},"structured_output":{"status":"done","summary":"Done.","files_changed":["todo.py"],"tests_run":[],"concerns":[],"questions":[],"change_requests":[],"memory_proposals":[]}}'
+[[rule.step]]
+exit = 0
+
+# Each GPT-6 Luna review accepts, with the checks' result it was given.
+[[rule]]
+argv0 = "codex"
+args_contain = ["exec"]
+prompt_contains = "Review the task's change in the input."
+stdin_prompt = "all"
+[[rule.step]]
+emit = '{"type":"thread.started","thread_id":"thread-review"}'
+[[rule.step]]
+emit = '{"type":"turn.started"}'
+[[rule.step]]
+emit = '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"verdict\":\"approve\",\"summary\":\"\",\"comments\":[],\"tamper_suspected\":false}"}}'
+[[rule.step]]
+emit = '{"type":"turn.completed","usage":{"input_tokens":12000,"cached_input_tokens":0,"output_tokens":60,"reasoning_output_tokens":0}}'
+[[rule.step]]
+exit = 0
+
+# Codex lists its models, so the registry knows GPT-6 Luna and the reviewers' rows name it.
+[[rule]]
+argv0 = "codex"
+args_contain = ["debug", "models"]
+[[rule.step]]
+emit = '{"models":[{"slug":"gpt-6-luna","display_name":"GPT-6 Luna","description":"Fast and cheap","priority":1,"visibility":"list","max_context_window":872000,"default_reasoning_level":"low","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"}]}]}'

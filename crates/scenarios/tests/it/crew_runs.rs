@@ -1,5 +1,5 @@
-//! Crew runs through the real binary with fake agents: WORKFLOW 12's rate-limiting example end
-//! to end, its goal question, and your answers at the understand, plan, and merge approvals.
+//! Crew runs through the real binary with fake agents: the rate-limiting example end to end,
+//! its goal question, and your answers at the understand, plan, and merge approvals.
 
 use std::collections::BTreeSet;
 use std::fs;

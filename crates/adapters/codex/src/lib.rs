@@ -5,6 +5,7 @@ mod launch;
 mod parser;
 mod plan_usage;
 mod sessions;
+pub mod tokens;
 
 pub use commands::BUILTIN_COMMANDS;
 pub use launch::adapter::{

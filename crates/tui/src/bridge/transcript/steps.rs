@@ -118,34 +118,42 @@ fn start_note(mut lines: Vec<String>, cx: &mut Cx<'_>) {
 }
 
 /// `As you asked: Codex orchestrates · Claude Code reviews`, then a `Not followed:` line for
-/// each instruction that wasn't, or was only in part, with its words and why. Instructions
-/// whose words you didn't write show only in Ctrl+O.
+/// each instruction that wasn't, or was only in part, with its words and why, and the lines of
+/// those that only say how things stand. Instructions whose words you didn't write show only in
+/// Ctrl+O.
 pub(super) fn as_you_asked(instructions: &[CheckedInstruction]) -> Vec<String> {
-    let followed: Vec<&str> = instructions
-        .iter()
-        .filter_map(|instruction| match &instruction.outcome {
-            InstructionOutcome::Followed { said, .. } => Some(without_as_you_asked(said)),
-            _ => None,
-        })
-        .filter(|said| !said.is_empty())
-        .collect();
+    let mut followed: Vec<&str> = Vec::new();
+    for instruction in instructions {
+        let InstructionOutcome::Followed { said, .. } = &instruction.outcome else {
+            continue;
+        };
+        let said = without_as_you_asked(said);
+        // Two instructions met the same way, as two about the checks are, say it once.
+        if !said.is_empty() && !followed.contains(&said) {
+            followed.push(said);
+        }
+    }
     let mut lines = Vec::new();
     if !followed.is_empty() {
         lines.push(format!("As you asked: {}", followed.join(" · ")));
     }
     for instruction in instructions {
-        let why = match &instruction.outcome {
-            InstructionOutcome::NotFollowed { why } => why,
-            InstructionOutcome::Followed {
-                note: Some(note), ..
-            } => note,
+        let line = match &instruction.outcome {
+            InstructionOutcome::NotFollowed { why }
+            | InstructionOutcome::Followed {
+                note: Some(why), ..
+            } => format!(
+                "Not followed: \"{}\" · {}",
+                cut(instruction.says.trim(), SAYS_CELLS),
+                why.trim()
+            ),
+            InstructionOutcome::Noted { line } => line.trim().to_owned(),
             _ => continue,
         };
-        lines.push(format!(
-            "Not followed: \"{}\" · {}",
-            cut(instruction.says.trim(), SAYS_CELLS),
-            why.trim()
-        ));
+        // Two instructions about the same thing say how it stands once.
+        if !lines.contains(&line) {
+            lines.push(line);
+        }
     }
     lines
 }
@@ -379,6 +387,41 @@ mod tests {
         assert_eq!(
             as_you_asked(&[plain, alone, within]),
             ["As you asked: Codex orchestrates · Keep what was asked for"]
+        );
+    }
+
+    /// Checks your words ask for and your settings run read as followed, and with none set the
+    /// line that says so stands on its own, once, never as a refusal.
+    #[test]
+    fn words_about_checks_read_as_they_stand() {
+        let met = followed(
+            "Keep the tests passing",
+            InstructionKind::Checks,
+            "tests must pass",
+        );
+        assert_eq!(as_you_asked(&[met]), ["As you asked: tests must pass"]);
+        let both = |says: &str| followed(says, InstructionKind::Checks, "lint and tests must pass");
+        assert_eq!(
+            as_you_asked(&[
+                both("Keep the tests passing"),
+                both("make sure lint is clean")
+            ]),
+            ["As you asked: lint and tests must pass"]
+        );
+        let none_set = |says: &str| CheckedInstruction {
+            says: says.into(),
+            kind: InstructionKind::Checks,
+            outcome: InstructionOutcome::Noted {
+                line: "No checks will run, since none are set: /config checks.run sets them".into(),
+            },
+        };
+        let lines = as_you_asked(&[
+            none_set("Keep the tests passing"),
+            none_set("make sure lint is clean"),
+        ]);
+        assert_eq!(
+            lines,
+            ["No checks will run, since none are set: /config checks.run sets them"]
         );
     }
 }

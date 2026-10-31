@@ -13,6 +13,7 @@ use super::motion::{self, Group};
 use super::paint::Paint;
 use super::shapes::{self, Frame, Shapes};
 use super::sky;
+use crate::world::deliver::clock::Rate;
 use crate::world::raster::Canvas;
 use crate::world::{Depth, Image, PartId, Picture, Pointed, Scene, Sprite, picture_key};
 
@@ -36,6 +37,8 @@ pub struct View {
     pub height: usize,
     /// Everything holds its still pose, as motion reduced or off asks.
     pub still: bool,
+    /// The world's steps a second, which the scene's time arrives on.
+    pub rate: Rate,
     /// What the pointer rests on or the keys picked, ringed.
     pub ringed: Option<Pointed>,
     /// Your planet for the universe's middle, as the planet level draws it at
@@ -50,6 +53,7 @@ impl View {
             width,
             height,
             still: false,
+            rate: Rate::QUICK,
             ringed: None,
             home: None,
         }
@@ -78,6 +82,15 @@ impl Kept {
             (false, false) => &mut self.bare_moving,
         }
     }
+
+    /// Fills each picture this lacks from `other`'s.
+    fn fill_from(&mut self, other: Kept) {
+        self.still = self.still.take().or(other.still);
+        self.moving = self.moving.take().or(other.moving);
+        self.bare_still = self.bare_still.take().or(other.bare_still);
+        self.bare_moving = self.bare_moving.take().or(other.bare_moving);
+        self.front = self.front.take().or(other.front);
+    }
 }
 
 /// The earlier months' clusters on the sky behind your planet, as one picture places them.
@@ -95,8 +108,9 @@ impl SkyClusters {
 
 /// The cosmos of one world: what there is, where it sits, and the pictures drawn of it so far.
 pub struct Cosmos {
-    pub(super) universe: Universe,
-    pub(super) shapes: Shapes,
+    /// Shared with its siblings, which draw a level apart from it.
+    pub(super) universe: Arc<Universe>,
+    pub(super) shapes: Arc<Shapes>,
     /// Tells this cosmos's pictures from another's.
     pub(super) identity: u64,
     pub(super) paint: Paint,
@@ -133,8 +147,8 @@ impl Cosmos {
         let shapes = Shapes::new(&universe, &facts.models);
         let identity = identity_of(&universe, &shapes);
         Cosmos {
-            universe,
-            shapes,
+            universe: Arc::new(universe),
+            shapes: Arc::new(shapes),
             identity,
             paint: Paint::default(),
             skies: HashMap::new(),
@@ -159,6 +173,49 @@ impl Cosmos {
 
     pub fn universe(&self) -> &Universe {
         &self.universe
+    }
+
+    /// A cosmos of the same world with nothing drawn yet, to draw a level apart from this one,
+    /// so drawing it holds nothing this one draws from. [`Cosmos::adopt`] takes its pictures.
+    pub fn sibling(&self) -> Cosmos {
+        Cosmos {
+            universe: Arc::clone(&self.universe),
+            shapes: Arc::clone(&self.shapes),
+            identity: self.identity,
+            paint: Paint::default(),
+            skies: HashMap::new(),
+            sky_pictures: HashMap::new(),
+            layers: HashMap::new(),
+            frames: HashMap::new(),
+            bares: Default::default(),
+            layouts: Mutex::default(),
+        }
+    }
+
+    /// Keeps the pictures `sibling` drew that this one hasn't drawn meanwhile.
+    pub fn adopt(&mut self, sibling: Cosmos) {
+        if sibling.identity != self.identity {
+            return;
+        }
+        for (key, drawn) in sibling.layers {
+            self.layers.entry(key).or_default().fill_from(drawn);
+        }
+        for (key, sky) in sibling.skies {
+            self.skies.entry(key).or_insert(sky);
+        }
+        for (key, frame) in sibling.frames {
+            if self.frames.len() < FRAMES_KEPT {
+                self.frames.entry(key).or_insert(frame);
+            }
+        }
+    }
+
+    /// Whether a picture of `level` at `width` × `height` px is drawn and kept.
+    #[cfg(test)]
+    pub fn has_drawn(&self, level: Level, width: usize, height: usize) -> bool {
+        self.layers
+            .get(&(level, width, height))
+            .is_some_and(|kept| kept.still.is_some() || kept.moving.is_some())
     }
 
     /// The scene of one level at `t` seconds since the world opened.

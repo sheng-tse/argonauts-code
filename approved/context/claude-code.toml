@@ -1,7 +1,7 @@
 # The main agent answers one question, then answers every get_context_usage with the count
-# context/claude-code draws: Opus 5.5's 1M window, 32.3k in it, 237 MCP tools that load on
-# demand, one memory file and 33 skills, as claude-code-count.jsonl holds it. These rules
-# come before the default fake agents'.
+# context/claude-code draws: Opus 5.5's 1M window, 28.8k in it, 9 MCP tools on 2 servers, one
+# memory file and 18 skills (Claude Code's 14 and 4 of its own), as claude-code-count.jsonl
+# holds it. These rules come before the default fake agents'.
 
 [[rule]]
 argv0 = "claude"

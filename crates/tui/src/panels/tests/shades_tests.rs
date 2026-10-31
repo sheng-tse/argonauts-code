@@ -353,7 +353,8 @@ fn mark_before(buf: &Buffer, name: &str) -> Option<(String, Color)> {
                 continue;
             };
             let mark = buf[(x as u16, y)].symbol();
-            if after.starts_with([' ', '(']) && mark != " " {
+            // Tokens per Day's legend keys a line, not a model's swatch.
+            if after.starts_with([' ', '(']) && mark != " " && mark != "─" {
                 return Some((mark.to_owned(), buf[(x as u16, y)].fg));
             }
         }

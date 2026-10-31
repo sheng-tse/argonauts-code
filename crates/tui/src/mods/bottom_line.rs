@@ -8,9 +8,10 @@
 //! file has it, with the live line's own drawer ([`preview_line`]).
 
 use argonauts_core::app::UiCommand;
+use argonauts_core::input::{LineChange, SlashCommand};
 use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::settings::SettingScope;
-use argonauts_core::settings::bottom_line::BottomLineSettings;
+use argonauts_core::settings::bottom_line::{BottomLineSettings, PlanUsageShow};
 use argonauts_core::settings::mods::bottom_line::{
     Choice, LEFT_OFFERS, PageEdits as _, RIGHT_OFFERS, part_label, read,
 };
@@ -23,6 +24,7 @@ use ratatui::style::Modifier;
 use ratatui::text::Span;
 
 use crate::base::draw::panes::Footer;
+use crate::base::kit::logo::{ModelLabel, NoPicture};
 use crate::base::kit::{Drawn, Frame, Kit, spread};
 use crate::base::text::marks::decorative;
 use crate::base::theme::{AgentColor, Role, Theme};
@@ -51,6 +53,9 @@ const RESETS_ROW: usize = 8;
 const GIVES_UP_ROW: usize = 9;
 const ROWS: usize = 10;
 
+/// The CLIs row's last choice: the list `/bottom-line`'s picker saves, in its order.
+const OWN_PICK: &str = "the ones you pick";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct LinePage {
     /// What the file in use holds.
@@ -75,6 +80,9 @@ pub struct LinePage {
     colour_cursor: usize,
     /// `r` was pressed once on a file of yours, and again deletes it.
     reset_armed: bool,
+    /// The keys are on the CLIs row's last choice before any list is saved, so enter opens
+    /// the picker that saves one.
+    own_pick: bool,
 }
 
 impl LinePage {
@@ -108,6 +116,7 @@ impl LinePage {
             given_up_cursor: 0,
             colour_cursor: 0,
             reset_armed: false,
+            own_pick: false,
         }
     }
 
@@ -258,7 +267,7 @@ impl LinePage {
             Group {
                 title: "Plan usage",
                 rows: vec![
-                    self.choice("CLIs", plan.show, built_plan.show),
+                    self.clis_row(kit),
                     self.choice("Windows", plan.windows, built_plan.windows),
                     self.choice("Shows", plan.r#as, built_plan.r#as),
                     self.choice("Resets", plan.resets, built_plan.resets),
@@ -273,6 +282,121 @@ impl LinePage {
                 }],
             },
         ]
+    }
+
+    /// Where the CLIs row stands: one of the automatic choices, or the last once a list is
+    /// saved or the keys are on it.
+    fn clis_choice(&self) -> usize {
+        let plan = &self.file.plan_usage;
+        let automatic = <PlanUsageShow as Choice>::ALL;
+        if plan.clis.is_some() || self.own_pick {
+            automatic.len()
+        } else {
+            automatic
+                .iter()
+                .position(|show| *show == plan.show)
+                .unwrap_or(0)
+        }
+    }
+
+    /// The automatic choices and the list's. On the list, the line under it names the CLIs
+    /// with their logos, in order.
+    fn clis_row(&self, kit: &Kit<'_>) -> Row {
+        let (plan, built) = (&self.file.plan_usage, &self.built_in.plan_usage);
+        let mut options: Vec<String> = <PlanUsageShow as Choice>::ALL
+            .iter()
+            .map(|show| show.label().to_owned())
+            .collect();
+        options.push(OWN_PICK.to_owned());
+        let current = self.clis_choice();
+        let origin = self.origin_of(plan.show == built.show && plan.clis == built.clis);
+        let line = match &plan.clis {
+            Some(clis) => {
+                let mut line = Vec::new();
+                for cli in clis {
+                    let name = self.cli_name(&cli.cli);
+                    let label = ModelLabel::cli_named(&cli.cli, &name, kit.theme, NoPicture::Dot);
+                    line.extend(label.spans(kit.style(Role::Text)));
+                    line.push(Span::raw("   "));
+                }
+                line.pop();
+                let words = if clis.is_empty() {
+                    "none yet · enter picks them"
+                } else {
+                    " · in this order · enter changes them"
+                };
+                line.push(kit.dim(words));
+                line
+            }
+            None if self.own_pick => vec![kit.dim("enter picks them and their order")],
+            None => {
+                return Row {
+                    label: "CLIs",
+                    cells: Cells::Choice { options, current },
+                    origin,
+                };
+            }
+        };
+        Row {
+            label: "CLIs",
+            cells: Cells::ChoiceAndLine {
+                options,
+                current,
+                line,
+            },
+            origin,
+        }
+    }
+
+    /// A CLI's name as the numbers have it, else as the app names it.
+    fn cli_name(&self, id: &str) -> String {
+        self.numbers
+            .clis
+            .iter()
+            .find(|cli| cli.id == id)
+            .map_or_else(|| DisplayNames::default().cli(id), |cli| cli.label.clone())
+    }
+
+    /// ←→ on the CLIs row. An automatic choice clears the list, and the last choice brings
+    /// back what the file holds.
+    fn step_clis(&mut self, forward: bool) {
+        let automatic = <PlanUsageShow as Choice>::ALL;
+        let at = rows::step(self.clis_choice(), automatic.len() + 1, forward);
+        let plan = &mut self.file.plan_usage;
+        match automatic.get(at) {
+            Some(show) => {
+                plan.show = *show;
+                plan.clis = None;
+                self.own_pick = false;
+            }
+            None => {
+                // The list replaces `show`, which goes back to the file's.
+                plan.show = self.saved.plan_usage.show;
+                plan.clis.clone_from(&self.saved.plan_usage.clis);
+                self.own_pick = plan.clis.is_none();
+            }
+        }
+    }
+
+    /// Enter on the list's choice: `/bottom-line`'s picker, which saves where this page does.
+    /// It leaves the page for the picker, as Config's rows that open a command's picker do, so
+    /// what isn't saved here yet would be lost.
+    fn open_picker(&self) -> ViewOutcome {
+        if self.changed() {
+            return ViewOutcome::Notice(
+                "s saves your changes first, then enter opens the picker".to_owned(),
+            );
+        }
+        let scope = match self.origin {
+            ModOrigin::Project => SettingScope::Project,
+            _ => SettingScope::Global,
+        };
+        ViewOutcome::SendToConversation(UiCommand::Slash {
+            command: SlashCommand::BottomLine {
+                change: LineChange::Open,
+                scope: Some(scope),
+            },
+        })
     }
 
     /// `■ Claude Code  ■ Codex  ■ agy`, each square in the CLI's color, then what the keys do, and
@@ -392,11 +516,13 @@ impl LinePage {
                 .unwrap_or(0);
             T::ALL[rows::step(at, T::ALL.len(), forward)]
         }
+        if self.selected == CLIS_ROW {
+            return self.step_clis(forward);
+        }
         let file = &mut self.file;
         let plan = &mut file.plan_usage;
         match self.selected {
             FORM_ROW => file.form = next(file.form, forward),
-            CLIS_ROW => plan.show = next(plan.show, forward),
             WINDOWS_ROW => plan.windows = next(plan.windows, forward),
             SHOWS_ROW => plan.r#as = next(plan.r#as, forward),
             RESETS_ROW => plan.resets = next(plan.resets, forward),
@@ -433,6 +559,9 @@ impl LinePage {
     fn tick(&mut self, theme: &Theme) -> ViewOutcome {
         if self.selected == COLOURS_ROW {
             return self.pick_colour(theme, true);
+        }
+        if self.selected == CLIS_ROW && self.clis_choice() == <PlanUsageShow as Choice>::ALL.len() {
+            return self.open_picker();
         }
         let Some((left, part)) = self.part_at_cursor() else {
             self.step(true);
@@ -495,6 +624,7 @@ impl LinePage {
     /// `r`: what's unsaved goes first. With nothing unsaved, a second `r` deletes your file,
     /// which brings the built-in line back.
     fn reset(&mut self) -> ViewOutcome {
+        self.own_pick = false;
         if self.changed() {
             self.file = self.saved.clone();
             return ViewOutcome::Notice("Back to what the file holds".to_owned());
@@ -996,6 +1126,106 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(!page.changed());
+    }
+
+    /// The page at 120 columns without colour, so the choice in use reads in brackets.
+    fn screen(page: &LinePage) -> Vec<String> {
+        let theme = Theme::dark().with_level(ColorLevel::None);
+        let area = Rect::new(0, 0, 120, 38);
+        let mut buf = Buffer::empty(area);
+        page.render(area, &mut buf, &theme);
+        (0..area.height)
+            .map(|y| {
+                let line: String = (0..area.width)
+                    .map(|x| buf[(x, y)].symbol().to_owned())
+                    .collect();
+                line.trim_end().to_owned()
+            })
+            .collect()
+    }
+
+    fn opens_the_picker(outcome: &ViewOutcome, to: SettingScope) -> bool {
+        matches!(
+            outcome,
+            ViewOutcome::SendToConversation(UiCommand::Slash {
+                command: SlashCommand::BottomLine {
+                    change: LineChange::Open,
+                    scope: Some(scope),
+                },
+            }) if *scope == to
+        )
+    }
+
+    #[test]
+    fn a_saved_list_is_the_last_choice_and_names_its_clis_in_order() {
+        let built_in = builtin::builtin(builtin::BOTTOM_LINE).unwrap().text;
+        let mut page = LinePage::new(
+            "[plan-usage]\nclis = [{ cli = \"codex\" }, { cli = \"claude-code\" }]\n",
+            built_in,
+            ModOrigin::Project,
+            ".argonauts/mods/bottom-line.toml".to_owned(),
+            LineNumbers::default(),
+            Vec::new(),
+        );
+        page.selected = CLIS_ROW;
+        let lines = screen(&page);
+        let row = lines.iter().position(|line| line.contains("CLIs")).unwrap();
+        assert!(
+            lines[row].contains(
+                "in use and most used  all in the crew  in use  near a limit  [the ones you pick]"
+            ),
+            "{}",
+            lines[row]
+        );
+        let under = &lines[row + 1];
+        let codex = under.find("Codex").unwrap();
+        let claude = under.find("Claude Code").unwrap();
+        assert!(codex < claude, "{under}");
+        assert!(
+            under.ends_with("· in this order · enter changes them"),
+            "{under}"
+        );
+        assert!(lines[row + 2].contains("Windows"), "{}", lines[row + 2]);
+        // Enter opens the picker, which saves where this page does.
+        let outcome = press(&mut page, key(KeyCode::Enter));
+        assert!(
+            opens_the_picker(&outcome, SettingScope::Project),
+            "{outcome:?}"
+        );
+        // An automatic choice clears the list, and the last choice brings it back.
+        press(&mut page, key(KeyCode::Left));
+        assert_eq!(page.file.plan_usage.show, PlanUsageShow::NearLimit);
+        assert_eq!(page.file.plan_usage.clis, None);
+        assert!(page.changed());
+        press(&mut page, key(KeyCode::Right));
+        assert!(!page.changed());
+    }
+
+    #[test]
+    fn without_a_list_the_last_choice_waits_for_enter() {
+        let mut page = page();
+        page.selected = CLIS_ROW;
+        for _ in 0..4 {
+            press(&mut page, key(KeyCode::Right));
+        }
+        assert!(!page.changed());
+        let lines = screen(&page);
+        let row = lines.iter().position(|line| line.contains("CLIs")).unwrap();
+        assert!(lines[row].contains("[the ones you pick]"), "{}", lines[row]);
+        assert!(lines[row + 1].ends_with("enter picks them and their order"));
+        let outcome = press(&mut page, key(KeyCode::Enter));
+        assert!(
+            opens_the_picker(&outcome, SettingScope::Global),
+            "{outcome:?}"
+        );
+        // A change not saved yet would be lost on the way, so enter asks for s first.
+        page.selected = WINDOWS_ROW;
+        press(&mut page, key(KeyCode::Right));
+        page.selected = CLIS_ROW;
+        assert!(matches!(
+            press(&mut page, key(KeyCode::Enter)),
+            ViewOutcome::Notice(_)
+        ));
     }
 
     #[test]

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use argonauts_core::RunId;
+use argonauts_core::base::clock;
 use argonauts_core::base::layout::run_files as names;
 use argonauts_core::base::paths::create_private_dir_all;
 use argonauts_core::runs::api::{ApiError, RunHandle, StartRun};
@@ -16,7 +17,6 @@ use argonauts_core::runs::journal::RunLock;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_registry::clis::agents_turned_on;
 use argonauts_registry::{LearnedWorkflowOverlay, ResolvedSettings, resolve};
-use time::OffsetDateTime;
 
 use super::Client;
 use super::journal_ends;
@@ -90,7 +90,7 @@ pub(crate) async fn start_resolved(
         interactive: client.interactive,
         replay: learned_workflow.is_some_and(|learned_workflow| learned_workflow.replay.is_some()),
         repo_root: client.env.repo_root.clone(),
-        created: OffsetDateTime::now_utc(),
+        created: clock::now_utc(),
     };
     run_files::write_start(&run_dir, &record).map_err(run_host_error)?;
     let settings = SettingsRecord {

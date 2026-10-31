@@ -102,7 +102,7 @@ fn a_new_look_replaces_the_picture_and_frees_the_old_one() {
     ui.frame(next).unwrap();
     let swapped = written(&mut ui);
     assert!(
-        swapped.contains("\x1b_Ga=p,q=2,C=1,c=9,r=3,i="),
+        swapped.contains("\x1b_Ga=p,q=2,C=1,c=9,r=4,i="),
         "{swapped:?}"
     );
     assert!(swapped.contains("a=d,d=i,q=2"), "the frame before leaves");
@@ -171,6 +171,31 @@ fn placed_at(sent: &str) -> Option<&str> {
     let start = sent[..at].rfind("\x1b[")?;
     let end = start + sent[start..].find('H')? + 1;
     Some(&sent[start..end])
+}
+
+/// An ultra look's picture is a row taller and starts in the blank row over the header, so its
+/// mark rises there and the mascot keeps its place and size, inline and on the full screen.
+#[test]
+fn an_ultra_look_starts_its_picture_in_the_blank_row_above() {
+    let (mut ui, t0) = ui();
+    ui.use_pictures(Some(Graphics::Kitty), Some((9, 21)));
+    ui.model_mut()
+        .history
+        .push(header("captain", Some(UltraColour::Purple)));
+    ui.frame(t0).unwrap();
+    let sent = written(&mut ui);
+    assert_eq!(placed_at(&sent), Some("\x1b[1;2H"), "{sent:?}");
+    assert!(sent.contains("\x1b_Ga=p,q=2,C=1,c=9,r=4,i="), "{sent:?}");
+
+    let (mut ui, t0) = full_screen();
+    ui.use_pictures(Some(Graphics::Kitty), Some((9, 21)));
+    ui.model_mut()
+        .history
+        .push(header("captain", Some(UltraColour::Purple)));
+    ui.frame(t0).unwrap();
+    let sent = written(&mut ui);
+    assert_eq!(placed_at(&sent), Some("\x1b[1;2H"), "{sent:?}");
+    assert!(sent.contains("\x1b_Ga=p,q=2,C=1,c=9,r=4,i="), "{sent:?}");
 }
 
 /// The full screen draws its history again each frame, so it places the picture in the
@@ -248,7 +273,7 @@ fn on_the_full_screen_an_ultra_look_moves_picture_or_blocks() {
     let swapped = written(&mut ui);
     assert!(
         swapped
-            .contains("\x1b_Ga=d,d=i,q=2,i=1296105472\x1b\\\x1b_Ga=p,q=2,C=1,c=9,r=3,i=1296105473"),
+            .contains("\x1b_Ga=d,d=i,q=2,i=1296105472\x1b\\\x1b_Ga=p,q=2,C=1,c=9,r=4,i=1296105473"),
         "{swapped:?}"
     );
 

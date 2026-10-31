@@ -30,7 +30,7 @@ The keys in effect, and every command by category                               
 │ ctrl+x tab                    move to the mods and the notice above the input                    │
 │ ctrl+x ctrl+a                 hide or show everything above the input                            │
 │ ctrl+s                        in a settings picker, keep the pick for this session only          │
+│ ctrl+z                        suspend Argonauts Code; fg brings it back                          │
 │ ctrl+x c                      show or hide context above the input                               │
-│ ctrl+x q                      show or hide plan usage above the input                            │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-↑↓  scroll · esc back                                                                  1-26 of 150 ↓
+↑↓  scroll · esc back                                                                  1-26 of 151 ↓

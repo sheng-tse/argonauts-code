@@ -1,9 +1,11 @@
-//! A galaxy's light in its own plane: a bulge, two arms broken into clumps (none for a dwarf),
-//! pink knots where this week's actions gather, as where a real galaxy is forming stars, and dark
+//! A galaxy's light in its own plane: a bulge, two arms broken into clumps (none for a dwarf) or
+//! a glow along its maker's logo, pink knots where this week's actions gather, as where a real galaxy is forming stars, and dark
 //! dust along the arms where its actions failed, so many failures in one stretch join into the
 //! dust lanes a real galaxy has and a clean model's arm stays bright.
 
-use super::shapes::Point;
+use super::logo_shape::LogoShape;
+use super::model::step_colour;
+use super::shapes::{LOGO_REACH, Point};
 use crate::world::raster::Canvas;
 use crate::world::raster::noise::{fbm3_shifted, mix, smooth};
 
@@ -16,6 +18,16 @@ pub(super) struct Disc<'a> {
     pub strength: f64,
     /// Its own clumps, the same every time it is drawn.
     pub seed: f64,
+    /// The logo its light follows instead of two arms.
+    pub logo: Option<&'a LogoShape>,
+    /// Its colours from the core out, where its maker's logo has them.
+    pub steps: Option<&'a [(f64, [u8; 3])]>,
+}
+
+/// How many pixels across a disc's picture is for a galaxy of radius `radius` pixels drawn at
+/// 1/`down` of that size.
+pub(super) fn side(radius: f64, down: u32) -> u32 {
+    ((radius / f64::from(down) * 1.3).ceil() as u32) * 2 + 2
 }
 
 /// How steeply the arms wind, as the points were laid along them.
@@ -27,7 +39,7 @@ impl Disc<'_> {
     /// `radius * 2.6 + 2` pixels across at full size.
     pub fn picture(&self, radius: f64, down: u32) -> Canvas {
         let r = radius / f64::from(down);
-        let size = ((r * 1.3).ceil() as usize) * 2 + 2;
+        let size = side(radius, down) as usize;
         let half = size as f64 / 2.0;
         let mut light = vec![[0.0f64; 3]; size * size];
         let mut dust = vec![0.0f64; size * size];
@@ -101,26 +113,38 @@ impl Disc<'_> {
                 // Arms broken into clumps, as real arms are; the clumps are the disc's own
                 // stars, no data.
                 let clump = 0.5 + 0.5 * fbm3_shifted(u * 7.0, v * 7.0, self.seed, 9.0, octaves);
-                let arm = if self.dwarf {
-                    0.3 + 0.5 * clump
-                } else {
-                    (0.5 + 0.5 * (2.0 * (th - (rr / 0.08 + 1.0).ln() / winding)).cos()).powf(3.4)
-                        * (0.3 + 1.3 * clump * clump)
+                let arm = match self.logo {
+                    // A soft glow that follows the logo's strokes.
+                    Some(logo) => {
+                        0.35 * logo.glow_at(u / LOGO_REACH, v / LOGO_REACH) * (0.6 + 0.8 * clump)
+                    }
+                    None if self.dwarf => 0.3 + 0.5 * clump,
+                    None => {
+                        (0.5 + 0.5 * (2.0 * (th - (rr / 0.08 + 1.0).ln() / winding)).cos())
+                            .powf(3.4)
+                            * (0.3 + 1.3 * clump * clump)
+                    }
                 };
-                let (bulge_strength, bulge_width, falloff) = if self.dwarf {
-                    (0.55, 0.2, 0.3)
-                } else {
-                    (0.85, 0.075, 0.36)
+                let (bulge_strength, bulge_width, falloff, halo) = match (self.logo, self.dwarf) {
+                    (Some(_), _) => (0.85, 0.075, 0.75, 0.01),
+                    (None, true) => (0.55, 0.2, 0.3, 0.06),
+                    (None, false) => (0.85, 0.075, 0.36, 0.06),
                 };
                 let bulge = bulge_strength * (-(rr / bulge_width).powi(2)).exp()
                     + 0.16 * (-rr / 0.18).exp();
                 let disc =
-                    (-rr / falloff).exp() * (0.06 + 1.45 * arm) * 0.95 * smooth(1.18, 0.7, rr);
+                    (-rr / falloff).exp() * (halo + 1.45 * arm) * 0.95 * smooth(1.18, 0.7, rr);
                 let heart = (-rr / 0.08).exp();
                 let outer = smooth(0.4, 1.0, rr) * 0.3;
+                let stepped = self
+                    .steps
+                    .map(|steps| step_colour(steps, rr.min(1.0)).map(|c| f64::from(c) / 255.0));
                 let at = j * size + i;
                 for k in 0..3 {
-                    let arm_colour = mix(mix(colour[k], young[k], outer), core[k], heart);
+                    let arm_colour = match stepped {
+                        Some(step) => step[k],
+                        None => mix(mix(colour[k], young[k], outer), core[k], heart),
+                    };
                     light[at][k] += self.strength * (bulge * core[k] + disc * arm_colour);
                 }
             }

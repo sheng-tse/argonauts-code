@@ -38,7 +38,7 @@ fn the_first_start_greets_as_the_picture_draws_it() {
         picture: false,
     };
     let lines = cell.lines(&RenderCtx::new(118, &theme, Clock::still(Instant::now())));
-    assert_rows_match("first_start", &lines, FIRST_START, 2..10, &theme, &[]);
+    assert_rows_match("first_start", &lines, FIRST_START, 2..10, &theme);
 }
 
 /// The usage line shows only once, so at any width its way out is on screen: it wraps under
@@ -140,7 +140,7 @@ fn the_argonaut_is_drawn_unless_a_picture_covers_it() {
 fn the_curl_install_ends_with_the_greeting_as_the_picture_draws_it() {
     let theme = theme();
     let lines = greeting("0.1.0", Some(NEXT_STEP), &theme);
-    assert_rows_match("curl_end", &lines, CURL_END, 9..15, &theme, &[]);
+    assert_rows_match("curl_end", &lines, CURL_END, 9..15, &theme);
 }
 
 /// On a plain terminal the greeting is the same characters in its colours; without colour, the

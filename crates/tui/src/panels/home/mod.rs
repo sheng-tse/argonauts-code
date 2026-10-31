@@ -162,6 +162,9 @@ impl HomeTab {
     /// it opens.
     pub fn step_sub_tab(&mut self, by: isize) -> HomeKey {
         let at = (self.sub_index() as isize + by).rem_euclid(SubTab::ALL.len() as isize);
+        if self.sub == SubTab::Behaviors {
+            self.behaviors.deep.leave();
+        }
         self.sub = SubTab::ALL[at as usize];
         self.picked = 0;
         self.turn_page();
@@ -189,6 +192,22 @@ impl HomeTab {
         }
     }
 
+    /// The sub-tab shows rows the keys move through: Models' list of models, and Behaviors'
+    /// groupings and map. Overview's year and figures have none to pick.
+    pub fn has_rows(&self) -> bool {
+        match self.sub {
+            SubTab::Overview => false,
+            SubTab::Models => self.lists_models(),
+            SubTab::Behaviors => true,
+        }
+    }
+
+    fn lists_models(&self) -> bool {
+        self.data
+            .as_ref()
+            .is_some_and(|data| !nothing_counted(data) && !data.models.is_empty())
+    }
+
     /// ↑ from the rows goes back to the sub-tabs.
     pub fn on_first(&self) -> bool {
         match self.sub {
@@ -202,7 +221,9 @@ impl HomeTab {
     pub fn claims(&self, code: KeyCode) -> bool {
         let anywhere = matches!(
             code,
-            KeyCode::Char('s' | 'd' | 'x' | '1' | '2' | '3' | '+' | '=' | '-' | 't' | 'n' | 'm')
+            KeyCode::Char(
+                's' | 'd' | 'u' | 'x' | '1' | '2' | '3' | '+' | '=' | '-' | 't' | 'n' | 'm'
+            )
         );
         self.sub == SubTab::Behaviors
             && (anywhere || self.level != Level::Tabs)
@@ -226,8 +247,8 @@ impl HomeTab {
     /// ` Overview    Models `, the one shown filled while Tab moves them.
     pub fn about(&self, kit: &Kit<'_>, _names: &DisplayNames, width: usize) -> Vec<Span<'static>> {
         let titles = SubTab::ALL.map(SubTab::title);
-        // On Behaviors the row filled is the one with the keys: the sub-tabs only while they
-        // have them, since below them Tab steps the groupings.
+        // On Behaviors the sub-tabs are orange only while they have the keys, since the
+        // groupings under them are the nearest row to what's below.
         let filled = match self.sub {
             SubTab::Behaviors => self.level == Level::SubTabs,
             _ => self.level.moves_sub_tabs(),
@@ -252,7 +273,7 @@ impl HomeTab {
         if data.import == ImportStatus::Unasked {
             blocks.push(self.question(kit, width));
         }
-        let empty = data.total.total() == 0 && data.import != ImportStatus::Unasked;
+        let empty = nothing_counted(data);
         let shades = &model_colors(data, names);
         match self.sub {
             SubTab::Overview => {
@@ -281,7 +302,7 @@ impl HomeTab {
                     names,
                     shades,
                 };
-                if empty || data.models.is_empty() {
+                if !self.lists_models() {
                     blocks.push(note(kit, self.nothing_yet(data)));
                     let last = blocks.len() - 1;
                     return (blocks, last);
@@ -307,8 +328,9 @@ impl HomeTab {
         }
     }
 
-    /// `Stats from the last 365 days · imported: Claude Code since Oct 2025, Codex since Feb`,
-    /// or how far the import is, or what it found.
+    /// `Stats from the last 365 days · imported: Claude Code since Oct 2025, Codex since Feb ·
+    /// ran here: agy, OpenCode`, or how far the import is, or what it found. A CLI that ran
+    /// here is counted only from what ran through the app.
     fn source(&self, data: &OverviewData, names: &DisplayNames) -> String {
         let mut parts = vec![match data.span_days {
             1 => "Stats from the last day".to_owned(),
@@ -348,7 +370,11 @@ impl HomeTab {
                     parts.push(format!("imported: {}", listed(&imported)));
                 }
                 if !through.is_empty() {
-                    parts.push(format!("through Argonauts Code: {}", listed(&through)));
+                    let ran: Vec<String> = through
+                        .iter()
+                        .map(|source| cli_word(names, &source.agent))
+                        .collect();
+                    parts.push(format!("ran here: {}", ran.join(", ")));
                 }
             }
         }
@@ -598,6 +624,11 @@ const PROMISE: &str = "What was said is skipped as each line is read and never k
 
 fn owned(keys: &[&str]) -> Vec<String> {
     keys.iter().map(|key| (*key).to_owned()).collect()
+}
+
+/// The period has nothing counted yet, once the import's question is answered.
+fn nothing_counted(data: &OverviewData) -> bool {
+    data.total.total() == 0 && data.import != ImportStatus::Unasked
 }
 
 fn note(kit: &Kit<'_>, words: &str) -> Drawn {

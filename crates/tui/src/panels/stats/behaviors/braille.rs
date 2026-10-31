@@ -1,6 +1,8 @@
-//! The map in braille, for a terminal that draws no pictures: two dots across and four down in
-//! each cell, each cell in the colour of the group with the most dots in it, and behind them the
-//! comparison, red where the compared group acts more and blue where less.
+//! The map in braille, for a terminal that draws no pictures, as close to the map's picture as
+//! cells allow: the picture's paper behind every cell, the comparison on it in the picture's red
+//! and blue at the picture's strength, and each action a round dot of two braille dots across
+//! and two down, the compared group's three down and in its colour, the rest faded into what's
+//! behind them.
 
 use argonauts_core::behaviors::behavior_map::{BehaviorMap, GRID};
 use ratatui::style::{Color, Modifier, Style};
@@ -22,39 +24,74 @@ const BITS: [(usize, usize, u32); 8] = [
     (3, 0, 0x40),
     (3, 1, 0x80),
 ];
-/// A cell is shaded where the difference is more than this share of its largest.
-const SHADED: f32 = 0.25;
-const MORE: (u8, u8, u8) = (0x4a, 0x2a, 0x33);
-const LESS: (u8, u8, u8) = (0x2a, 0x35, 0x50);
+/// The map picture's paper, red and blue.
+const PAPER: Rgb = (31, 32, 47);
+const MORE: Rgb = (226, 85, 98);
+const LESS: Rgb = (86, 132, 214);
+/// The comparison shows where the difference is more than this share of its largest, mixed over
+/// the paper by the difference times [`STRENGTH`], as the picture paints it.
+const SHOWN: f32 = 0.08;
+const STRENGTH: f32 = 150.0 / 255.0;
+/// The difference is shown in this many steps each way, so neighbouring cells share their
+/// shade and the fields read as soft blocks, as the picture's did.
+const STEPS: f32 = 6.0;
+/// How much of its own colour a dot of a group not compared keeps over what's behind it: the
+/// picture's 110/255, a little more, as a braille dot is thinner than the picture's disc.
+const FADED: f32 = 110.0 / 255.0 + 0.25;
 
-fn fill(kit: &Kit<'_>, (r, g, b): (u8, u8, u8)) -> Style {
+type Rgb = (u8, u8, u8);
+
+fn mix(from: Rgb, to: Rgb, share: f32) -> Rgb {
+    let part = |a: u8, b: u8| (f32::from(a) + (f32::from(b) - f32::from(a)) * share).round() as u8;
+    (part(from.0, to.0), part(from.1, to.1), part(from.2, to.2))
+}
+
+/// `rgb` as the terminal can show it; `None` on one with sixteen colours.
+fn colour(kit: &Kit<'_>, rgb: Rgb) -> Option<Color> {
     match kit.theme.level {
-        ColorLevel::TrueColor => Style::new().bg(Color::Rgb(r, g, b)),
-        ColorLevel::Ansi256 => Style::new().bg(Color::Indexed(nearest_ansi256((r, g, b)))),
-        _ => Style::new(),
+        ColorLevel::TrueColor => Some(Color::Rgb(rgb.0, rgb.1, rgb.2)),
+        ColorLevel::Ansi256 => Some(Color::Indexed(nearest_ansi256(rgb))),
+        _ => None,
     }
 }
 
-/// Behind a cell where the compared group acts more.
-pub(super) fn more_style(kit: &Kit<'_>) -> Style {
-    fill(kit, MORE)
+/// What's behind a cell whose comparison reads `difference`: the paper, with red where the
+/// compared group acts more and blue where less.
+fn behind(difference: f32) -> Rgb {
+    if difference.abs() <= SHOWN {
+        return PAPER;
+    }
+    let toward = if difference > 0.0 { MORE } else { LESS };
+    let stepped = (difference.abs().min(1.0) * STEPS).ceil() / STEPS;
+    mix(PAPER, toward, stepped * STRENGTH)
 }
 
-/// Behind a cell where the compared group acts less.
-pub(super) fn less_style(kit: &Kit<'_>) -> Style {
-    fill(kit, LESS)
+fn fill(kit: &Kit<'_>, rgb: Rgb) -> Style {
+    colour(kit, rgb).map_or_else(Style::new, |bg| Style::new().bg(bg))
 }
 
-/// One braille cell: its dots, the group whose colour it takes, and whether it holds something lit or
-/// ringed.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// What stands out among the dots: the behavior the list lights, the action it rings, and the
+/// action the pointer rests on, by their places in the map's actions.
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct Marks<'a> {
+    pub lit: &'a [usize],
+    pub ringed: Option<usize>,
+    pub pointer: Option<usize>,
+}
+
+/// One braille cell: its dots, the group whose colour it takes, and whether it holds something lit,
+/// ringed or under the pointer.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(super) struct Cell {
     pub dots: u32,
     pub group: Option<usize>,
+    /// It holds one of the compared group's actions.
+    pub compared: bool,
     pub lit: bool,
     pub ringed: bool,
-    /// `Some(true)` where the compared group acts more, `Some(false)` where less.
-    pub shade: Option<bool>,
+    pub pointer: bool,
+    /// The comparison here, from -1 where the compared group acts least to 1 where most.
+    pub difference: f32,
 }
 
 impl Cell {
@@ -66,29 +103,65 @@ impl Cell {
     }
 }
 
+/// The dots an action lights, down and across from its own: two across and two down, the
+/// compared group's three down, round dots about the size of the picture's.
+fn spread(compared: bool) -> &'static [(isize, isize)] {
+    if compared {
+        &[(-1, 0), (-1, 1), (0, 0), (0, 1), (1, 0), (1, 1)]
+    } else {
+        &[(0, 0), (0, 1), (1, 0), (1, 1)]
+    }
+}
+
+/// The braille dot at `(row, column)`, in dots from the top left, as its cell and its bit there.
+fn dot_at(row: usize, column: usize) -> (usize, usize, u32) {
+    let bit = BITS
+        .iter()
+        .find(|(r, c, _)| *r == row % 4 && *c == column % 2)
+        .map_or(0, |(_, _, bit)| *bit);
+    (row / 4, column / 2, bit)
+}
+
 /// The map's cells, `fit`'s rows from the top.
 pub(super) fn cells(
     map: &BehaviorMap,
     fit: Fit,
     overlay: Option<&[f32]>,
-    lit: &[usize],
-    ringed: Option<usize>,
+    compared: Option<usize>,
+    marks: Marks<'_>,
 ) -> Vec<Vec<Cell>> {
     let (columns, rows) = (fit.columns, fit.rows);
     let mut cells = vec![vec![Cell::default(); columns]; rows];
-    // Each cell's groups by their dots, in the order met, so a tie goes to the first.
+    // Each cell's groups by the actions in it, in the order met, so a tie goes to the first.
     let mut counts: Vec<Vec<Vec<(usize, usize)>>> = vec![vec![Vec::new(); columns]; rows];
+    // A cell only an action's round dot reaches takes that action's group, the compared one
+    // first.
+    let mut reached: Vec<Vec<Option<usize>>> = vec![vec![None; columns]; rows];
     for (at, action) in map.actions.iter().enumerate() {
         let column = ((action.x * (columns * 2) as f32) as usize).min(columns * 2 - 1);
         let row = (((1.0 - action.y) * (rows * 4) as f32) as usize).min(rows * 4 - 1);
+        let is_compared = compared == Some(action.group);
+        for (down, across) in spread(is_compared) {
+            let (Some(r), Some(c)) = (
+                row.checked_add_signed(*down).filter(|r| *r < rows * 4),
+                column
+                    .checked_add_signed(*across)
+                    .filter(|c| *c < columns * 2),
+            ) else {
+                continue;
+            };
+            let (r, c, bit) = dot_at(r, c);
+            cells[r][c].dots |= bit;
+            let reach = &mut reached[r][c];
+            if reach.is_none() || is_compared {
+                *reach = Some(action.group);
+            }
+        }
         let cell = &mut cells[row / 4][column / 2];
-        let bit = BITS
-            .iter()
-            .find(|(r, c, _)| *r == row % 4 && *c == column % 2)
-            .map_or(0, |(_, _, bit)| *bit);
-        cell.dots |= bit;
-        cell.lit |= lit.contains(&at);
-        cell.ringed |= ringed == Some(at);
+        cell.lit |= marks.lit.contains(&at);
+        cell.ringed |= marks.ringed == Some(at);
+        cell.pointer |= marks.pointer == Some(at);
+        cell.compared |= is_compared;
         let seen = &mut counts[row / 4][column / 2];
         match seen.iter_mut().find(|(group, _)| *group == action.group) {
             Some((_, count)) => *count += 1,
@@ -102,7 +175,10 @@ pub(super) fn cells(
             cell.group = seen
                 .iter()
                 .find(|(_, count)| *count == most)
-                .map(|(g, _)| *g);
+                .map(|(g, _)| *g)
+                .or(reached[row][column]);
+            cell.compared |=
+                seen.is_empty() && compared.is_some() && reached[row][column] == compared;
             if let Some(grid) = overlay {
                 let x = ((column as f32 + 0.5) / columns as f32 * GRID as f32) as usize;
                 let y = ((1.0 - (row as f32 + 0.5) / rows as f32) * GRID as f32) as usize;
@@ -110,7 +186,7 @@ pub(super) fn cells(
                     .get(y.min(GRID - 1) * GRID + x.min(GRID - 1))
                     .copied()
                     .unwrap_or(0.0);
-                cell.shade = (value.abs() > SHADED).then_some(value > 0.0);
+                cell.difference = value;
             }
         }
     }
@@ -119,9 +195,9 @@ pub(super) fn cells(
 
 /// The braille rows with the legend beside them, where the screen holds it there, or under
 /// them.
-pub(super) fn block(look: &Look<'_>, lit: &[usize], ringed: Option<usize>, beside: bool) -> Drawn {
+pub(super) fn block(look: &Look<'_>, marks: Marks<'_>, beside: bool) -> Drawn {
     use super::level::Level;
-    let rows = map_rows(look, lit, ringed);
+    let rows = map_rows(look, marks);
     let mut out = Drawn::new();
     if beside {
         let legend = legend_beside(look);
@@ -156,15 +232,11 @@ pub(super) fn block(look: &Look<'_>, lit: &[usize], ringed: Option<usize>, besid
 }
 
 /// The level's braille rows: the map, the planet or the universe in the map's cells.
-pub(super) fn map_rows(
-    look: &Look<'_>,
-    lit: &[usize],
-    ringed: Option<usize>,
-) -> Vec<Vec<Span<'static>>> {
+pub(super) fn map_rows(look: &Look<'_>, marks: Marks<'_>) -> Vec<Vec<Span<'static>>> {
     use super::level::Level;
     match look.level {
-        Level::Map => rows(look, lit, ringed),
-        Level::Planet => planet_rows(look, lit, ringed),
+        Level::Map => rows(look, marks),
+        Level::Planet => planet_rows(look, marks),
         _ => cosmos_rows(look),
     }
 }
@@ -180,28 +252,38 @@ pub(super) fn legend_beside(look: &Look<'_>) -> Vec<Vec<Span<'static>>> {
 }
 
 /// The map's braille rows, each the map's inset and its cells across.
-fn rows(look: &Look<'_>, lit: &[usize], ringed: Option<usize>) -> Vec<Vec<Span<'static>>> {
+fn rows(look: &Look<'_>, marks: Marks<'_>) -> Vec<Vec<Span<'static>>> {
     let kit = look.kit;
     let overlay = look
         .compared
         .and_then(|group| look.map.comparisons.get(group))
         .and_then(|c| c.overlay.as_deref());
     let mut out = Vec::new();
-    for line in cells(look.map, look.fit, overlay, lit, ringed) {
+    let compared = look.compared.filter(|_| overlay.is_some());
+    for line in cells(look.map, look.fit, overlay, compared, marks) {
         let mut spans = vec![Span::raw(" ".repeat(MAP_INSET))];
         for cell in line {
-            let mut style = match cell.shade {
-                Some(true) => more_style(kit),
-                Some(false) => fill(kit, LESS),
-                None => Style::new(),
-            };
+            let back = behind(cell.difference);
+            let mut style = fill(kit, back);
             if cell.dots != 0 {
-                let dim = !lit.is_empty() && !cell.lit && !cell.ringed;
+                let dim = !marks.lit.is_empty() && !cell.lit && !cell.ringed && !cell.pointer;
+                let faded = compared.is_some() && !cell.compared;
                 style = match (cell.ringed, dim, cell.group) {
+                    _ if cell.pointer => pointer_style(kit),
                     (true, _, _) => style
                         .patch(kit.fg(Role::Bright))
                         .add_modifier(Modifier::BOLD),
                     (_, true, _) => style.patch(kit.fg(Role::Faint)),
+                    (_, _, Some(group)) if faded => {
+                        let rgb = mix(back, look.colours.rgb(group), FADED);
+                        match colour(kit, rgb) {
+                            Some(fg) => style.fg(fg),
+                            None => style.patch(kit.fg(Role::Faint)),
+                        }
+                    }
+                    (_, _, Some(group)) if cell.compared => style
+                        .patch(look.colours.style(group))
+                        .add_modifier(Modifier::BOLD),
                     (_, _, Some(group)) => style.patch(look.colours.style(group)),
                     _ => style,
                 };
@@ -211,6 +293,16 @@ fn rows(look: &Look<'_>, lit: &[usize], ringed: Option<usize>) -> Vec<Vec<Span<'
         out.push(merge(spans));
     }
     out
+}
+
+/// The cell the pointer rests on, lit: dark dots on white, so it shows among the dots where a
+/// ring of white dots alone is too faint. Without colour it is drawn reversed.
+fn pointer_style(kit: &Kit<'_>) -> Style {
+    let style = match kit.has_color() {
+        true => kit.cell(Role::BadgeText, Role::Bright),
+        false => Style::new().add_modifier(Modifier::REVERSED),
+    };
+    style.add_modifier(Modifier::BOLD)
 }
 
 /// Neighbouring cells of one style as one span.
@@ -339,11 +431,7 @@ pub(super) fn planet_radius(fit: Fit) -> f64 {
 
 /// The planet in braille: its rim, and each action on its near side where the map wraps round
 /// it, turned to face the map's middle.
-pub(super) fn planet_rows(
-    look: &Look<'_>,
-    lit: &[usize],
-    ringed: Option<usize>,
-) -> Vec<Vec<Span<'static>>> {
+pub(super) fn planet_rows(look: &Look<'_>, marks: Marks<'_>) -> Vec<Vec<Span<'static>>> {
     let kit = look.kit;
     let mut grid = DotGrid::new(look.fit);
     let middle = middle(look.fit);
@@ -359,9 +447,11 @@ pub(super) fn planet_rows(
         let Some((x, y)) = planet_dot(action.x, action.y, look.planet, look.fit) else {
             continue;
         };
-        let (rank, style) = if ringed == Some(at) {
+        let (rank, style) = if marks.pointer == Some(at) {
+            (5, pointer_style(kit))
+        } else if marks.ringed == Some(at) {
             (4, kit.fg(Role::Bright).add_modifier(Modifier::BOLD))
-        } else if !lit.is_empty() && !lit.contains(&at) {
+        } else if !marks.lit.is_empty() && !marks.lit.contains(&at) {
             (2, kit.fg(Role::Faint))
         } else {
             (3, look.colours.style(action.group))

@@ -1065,6 +1065,7 @@ async fn continuing_puts_the_conversations_runs_back_in_the_panel() {
                     uncommitted: Vec::new(),
                     settings_sha256: None,
                     continues: false,
+                    opens_a_talk: false,
                 })
                 .unwrap();
             conversation
@@ -1253,6 +1254,7 @@ fn asked(text: &str) -> ConversationEvent {
         uncommitted: Vec::new(),
         settings_sha256: None,
         continues: false,
+        opens_a_talk: false,
     }
 }
 

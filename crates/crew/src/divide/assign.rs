@@ -176,15 +176,13 @@ pub fn assign(mut tasks: Vec<TaskSpec>, crew: &Crew, rng: &mut StdRng) -> Assign
                 let candidates: Vec<Candidate> = (crew.workers)("acceptance_tests")
                     .into_iter()
                     .filter(|candidate| {
-                        build_worker.as_ref().is_none_or(|worker| {
-                            roles::conflict(
-                                RoleName::Reviewer,
-                                &candidate.worker,
-                                Some(worker),
-                                crew.provider,
-                            )
-                            .is_none()
-                        })
+                        roles::conflict(
+                            RoleName::Reviewer,
+                            &candidate.worker,
+                            build_worker.as_ref(),
+                            crew.provider,
+                        )
+                        .is_none()
                     })
                     .collect();
                 route(settings.routing.algorithm, &candidates, crew, rng, routed)

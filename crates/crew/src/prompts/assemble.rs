@@ -10,7 +10,6 @@ use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::settings::prompts::Writer;
 
 use crate::engine::host::Host;
-use crate::roles;
 
 use super::instructions::{self, Agent, StepWords, Written};
 use super::{catalog, files, frame, warnings, writer};
@@ -169,7 +168,7 @@ pub fn assemble(sources: Sources<'_>, task: Vec<InputPart>) -> Vec<InputPart> {
 }
 
 fn from_orchestrator(written: Written) -> InputPart {
-    parts::from_orchestrator(written.text, Some(roles::short_name(&written.by)))
+    parts::from_orchestrator(written.text, Some(written.by))
 }
 
 /// The role's frame: your template for the role itself, then for the crew role it follows,
@@ -230,7 +229,7 @@ fn author(host: &Host, agent: &Agent<'_>) -> Option<String> {
         let record = state.tasks.get(agent.task?)?;
         record.worker.clone().or_else(|| record.spec.worker.clone())
     })?;
-    Some(roles::display_name(&worker))
+    Some(host.names().worker(&worker))
 }
 
 #[cfg(test)]
@@ -297,7 +296,7 @@ mod tests {
             Sources {
                 written: Some(Written {
                     text: "Review the due-date change against docs/due.md.".to_owned(),
-                    by: "claude-code/claude-opus-5-5".parse().unwrap(),
+                    by: "Opus 5.5".to_owned(),
                 }),
                 request: vec!["focus on date parsing".to_owned()],
                 ..sources(&dirs, RoleName::Reviewer, &writer)
@@ -341,7 +340,7 @@ mod tests {
             Sources {
                 written: Some(Written {
                     text: "Review it my way.".to_owned(),
-                    by: "codex".parse().unwrap(),
+                    by: "Codex".to_owned(),
                 }),
                 ..sources(&dirs, RoleName::Reviewer, &writer)
             },

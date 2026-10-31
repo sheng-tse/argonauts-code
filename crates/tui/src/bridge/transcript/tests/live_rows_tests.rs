@@ -86,6 +86,7 @@ impl Screen {
             uncommitted: vec![],
             settings_sha256: None,
             continues: false,
+            opens_a_talk: false,
         });
     }
 
@@ -285,6 +286,7 @@ fn paths_show_from_the_folder_then_home_and_whole_outside_both() {
         ("/Users/me/code/captain", "."),
         ("/Users/me/code/captain-two/a.py", "~/code/captain-two/a.py"),
         ("/Users/me/.zshrc", "~/.zshrc"),
+        ("/Users/me", "/Users/me"),
         ("/etc/hosts", "/etc/hosts"),
         ("file:///Users/me/code/captain/README.md", "README.md"),
         (

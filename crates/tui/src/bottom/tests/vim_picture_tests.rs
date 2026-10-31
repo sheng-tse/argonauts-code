@@ -82,7 +82,6 @@ fn vim_label_nothing_in_normal_and_insert_dim_first() {
             (&picture, html),
             rows,
             &theme(),
-            &[],
         );
     }
 }
@@ -105,6 +104,6 @@ fn vim_jk_history_then_the_list_and_back() {
         (normal("", None), 10..16),
         (normal("", Some(0)), 19..25),
     ] {
-        assert_rows_match("vim_jk", &lines, (&picture, html), rows, &theme(), &[]);
+        assert_rows_match("vim_jk", &lines, (&picture, html), rows, &theme());
     }
 }

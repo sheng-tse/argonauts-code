@@ -9,30 +9,30 @@ text
  What fills each session's context                                                                                                                                     none open
 
      Context Usage
-     ⛁ ⛁ ⛁ ⛁ ⛀ ⛀ ⛀ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ￼￼ Opus 5.5
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛀ ⛀ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ￼￼ Opus 5.5
      ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   claude-opus-5-5
-     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~30.6k/1m tokens (3%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~56.9k/1m tokens (6%)
      ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
      ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   Estimated usage by category
      ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System prompt: ~6.9k tokens (0.7%)
      ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System tools: ~15.1k tokens (1.5%)
-     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ MCP tools: ~705 tokens (0.1%)
-     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ MCP server instructions: ~960 tokens (0.1%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ MCP tools: ~31.8k tokens (3.2%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ MCP server instructions: ~889 tokens (0.1%)
      ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝   ⛁ Memory files: ~503 tokens (0.1%)
-                                               ⛁ Skills: ~6.4k tokens (0.6%)
-                                               ⛶ Free space: ~936.4k (93.6%)
+                                               ⛁ Skills: ~1.7k tokens (0.2%)
+                                               ⛶ Free space: ~910.1k (91.0%)
                                                ⛝ Autocompact buffer: ~33k tokens (3.3%)
 
                                                ~ from our recording of Claude Code 2.1.289 and from this machine
                                                Claude Code's own count replaces it when its first answer ends.
 
  ╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
- │ ◆ context                                                                                                               ~30.6k of 1M · compacts at ~967k · estimated   ~3%  │
- │  ▏ ▊▊▊▊▉                                                                                                                                                             ▏      │
+ │ ◆ context                                                                                                               ~56.9k of 1M · compacts at ~967k · estimated   ~6%  │
+ │  ▏ ▊     ▎▎▎▎                                                                                                                                                        ▏      │
  │                                                                                                                                                                             │
- │ ▌ System prompt             ~6.9k   0.7%      ▌ System tools   ~15.1k  1.5%      ▌ MCP tools    ~705  0.1%                                                                  │
- │ ▌ MCP server instructions    ~960   0.1%      ▌ Memory files     ~503  0.1%      ▌ Skills      ~6.4k  0.6%                                                                  │
- │ ▌ Free space                ~936k  93.6%                                                                                                                                    │
+ │ ▌ System prompt             ~6.9k   0.7%      ▌ System tools   ~15.1k  1.5%      ▌ MCP tools   ~31.8k  3.2%                                                                 │
+ │ ▌ MCP server instructions    ~889   0.1%      ▌ Memory files     ~503  0.1%      ▌ Skills       ~1.7k  0.2%                                                                 │
+ │ ▌ Free space                ~910k  91.0%                                                                                                                                    │
  ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
  tab · ←  →  tabs · ↓  into the list · enter opens one · esc closes
@@ -42,14 +42,14 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 .ffff.fffff.ffff.fffffffff.fffffff.....................................................................................................................................ffff.ffff
 
 .....bbbbbbb.bbbbb
-.....g.f.f.f.h.i.j.k.f.f.f.f.f.f.f.f.f.f.f.f...ll.cccc.ccc
+.....g.f.f.f.h.h.h.h.h.h.i.j.k.f.f.f.f.f.f.f...ll.cccc.ccc
 .....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...fffffffffffffff
 .....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...fffffffff.ffffff.ffff
 .....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f
 .....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...mmmmmmmmm.mmmmm.mm.mmmmmmmm
 .....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...g.cccccc.ccccccc.fffff.ffffff.ffffff
 .....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...f.cccccc.cccccc.ffffff.ffffff.ffffff
-.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...h.ccc.cccccc.ffff.ffffff.ffffff
+.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...h.ccc.cccccc.ffffff.ffffff.ffffff
 .....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...i.ccc.cccccc.ccccccccccccc.ffff.ffffff.ffffff
 .....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...j.cccccc.cccccc.ffff.ffffff.ffffff
 ...............................................k.ccccccc.fffff.ffffff.ffffff
@@ -61,43 +61,44 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 .nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 .n.o.ppppppp...............................................................................................................pppppp.ff.ff.f.ffffffff.ff.fffff.f.fffffffff..qrrrq.n
-.n.stuvwxyzAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABCCCCC.n
+.n.stuvwwwwwxyzABBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBCDDDDD.n
 .n.............................................................................................................................................................................n
-.n.g.cccccc.cccccc.............ppppp...ffff......f.cccccc.ccccc...pppppp..ffff......h.ccc.ccccc....pppp..ffff..................................................................n
-.n.i.ccc.cccccc.cccccccccccc....pppp...ffff......j.cccccc.ccccc.....pppp..ffff......k.cccccc......ppppp..ffff..................................................................n
-.n.D.cccc.ccccc................ppppp..fffff....................................................................................................................................n
+.n.g.cccccc.cccccc.............ppppp...ffff......f.cccccc.ccccc...pppppp..ffff......h.ccc.ccccc...pppppp..ffff.................................................................n
+.n.i.ccc.cccccc.cccccccccccc....pppp...ffff......j.cccccc.ccccc.....pppp..ffff......k.cccccc.......ppppp..ffff.................................................................n
+.n.E.cccc.ccccc................ppppp..fffff....................................................................................................................................n
 .nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 
 .fff.f.f..f..ffff.f.f..ffff.fff.ffff.f.fffff.fffff.fff.f.fff.ffffff
 key
 . blank
-a fg=#b1b9f9  ; Code, Question, BarFill, CatMcp
+a fg=#b1b9f9  ; Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp
 b fg=#c8d3f5 bold  ; the terminal's own
 c fg=#c8d3f5  ; the terminal's own
-d bg=#b1b9f9  ; Code, Question, BarFill, CatMcp
-e fg=#14161f bg=#b1b9f9 bold  ; BadgeText, on Code, on Question, on BarFill, on CatMcp
-f fg=#999999  ; Dim, ModeSupervised, SyntaxComment
+d bg=#fb923c
+e fg=#14161f bg=#fb923c bold  ; BadgeText
+f fg=#999999  ; Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment
 g fg=#888888  ; Rule
 h fg=#0a91b3
 i fg=#17a34a
 j fg=#d77757
 k fg=#ffc109
 l logo=claudecode
-m fg=#999999 italic  ; Dim, ModeSupervised, SyntaxComment
+m fg=#999999 italic  ; Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment
 n fg=#4f5468  ; ModBorder
 o fg=#e6a23c  ; Accent, CatBrief
 p fg=#ffffff bold  ; Bright
-q bg=#4eba65  ; Success, CatAgents
-r fg=#14161f bg=#4eba65 bold  ; BadgeText, on Success, on CatAgents
+q bg=#4eba65  ; Success, CatAgents, Success, CatAgents
+r fg=#14161f bg=#4eba65 bold  ; BadgeText, on Success, on CatAgents, on Success, on CatAgents
 s bg=#888888  ; Rule
-t fg=#888888 bg=#999999  ; Rule, on Dim, on ModeSupervised, on SyntaxComment
-u bg=#999999  ; Dim, ModeSupervised, SyntaxComment
-v fg=#999999 bg=#0a91b3  ; Dim, ModeSupervised, SyntaxComment
-w fg=#0a91b3 bg=#17a34a
-x fg=#17a34a bg=#d77757
-y fg=#d77757 bg=#ffc109
-z fg=#ffc109 bg=#3a3f55  ; on CatFree
-A bg=#3a3f55  ; CatFree
-B fg=#ffc107 bg=#262a3a  ; Warn, ModeAuto, Tick, on Held
-C bg=#262a3a  ; Held
-D fg=#3a3f55  ; CatFree
+t fg=#888888 bg=#999999  ; Rule, on Dim, on ModeSupervised, on SyntaxComment, on Dim, on ModeSupervised, on SyntaxComment, on Dim, on ModeSupervised, on SyntaxComment, on Dim, on ModeSupervised, on SyntaxComment, on Dim, on ModeSupervised, on SyntaxComment
+u bg=#999999  ; Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment
+v fg=#999999 bg=#0a91b3  ; Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment
+w bg=#0a91b3
+x fg=#0a91b3 bg=#17a34a
+y fg=#17a34a bg=#d77757
+z fg=#d77757 bg=#ffc109
+A fg=#ffc109 bg=#3a3f55  ; on CatFree
+B bg=#3a3f55  ; CatFree
+C fg=#ffc107 bg=#262a3a  ; Warn, ModeAuto, Tick, on Held
+D bg=#262a3a  ; Held
+E fg=#3a3f55  ; CatFree

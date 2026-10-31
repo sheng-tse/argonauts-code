@@ -2,4 +2,4 @@
 source: crates/tui/tests/it/snap_live.rs
 expression: styled(&render(width))
 ---
-  [fg=#999999]ǁ supervised[/]   [fg=#f7a07f]●[/] [fg=#ffffff b]Claude[/] [fg=#999999]5h[/] [fg=#f7a07f]▄▄▄▄[/][fg=#505050]▁▁[/]  [fg=#ffffff b]71%[/]   [fg=#6a9ee6]○[/] [fg=#999999]Codex[/] [fg=#999999]5h[/] [fg=#ffc107]▄▄▄▄▄▄[/]  [fg=#ffc107]92%[/]   [fg=#6cd1cf]○[/] [fg=#999999]agy[/] [fg=#ff6b80]out[/]   [fg=#c27cb4]○[/] [fg=#999999]OpenCode[/]   [fg=#8a8fa8]○[/] [fg=#999999]OpenRouter[/] [fg=#ff6b80]down[/]   [fg=#8a8fa8]○[/] [fg=#999999]Local[/]
+  [fg=#999999]ǁ supervised[/]   [fg=#f7a07f]●[/] [fg=#ffffff b]Claude[/] [fg=#999999]5h[/] [fg=#f7a07f]▄▄▄▄[/][fg=#505050]▁▁[/]  [fg=#ffffff b]71%[/]   [fg=#6a9ee6]○[/] [fg=#999999]Codex[/] [fg=#999999]5h[/] [fg=#ffc107]▄▄▄▄▄[/][fg=#505050]▁[/]  [fg=#ffc107]92%[/]   [fg=#6cd1cf]○[/] [fg=#999999]agy[/] [fg=#ff6b80]out[/]   [fg=#c27cb4]○[/] [fg=#999999]OpenCode[/]   [fg=#8a8fa8]○[/] [fg=#999999]OpenRouter[/] [fg=#ff6b80]down[/]   [fg=#8a8fa8]○[/] [fg=#999999]Local[/]

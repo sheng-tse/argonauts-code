@@ -1294,13 +1294,13 @@ async fn with_no_checks_set_you_are_asked_and_may_keep_its_work() -> anyhow::Res
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bare_cli_set_to_the_stuck_model_is_no_other_model() -> anyhow::Result<()> {
     // The fake registry tells Qwen's provider by its model id, and a bare CLI's by nothing.
-    const QWEN: &str = "opencode/qwen3-coder:30b-64k";
+    const QWEN: &str = "opencode/qwen3-coder:30b";
     let mut crew = Crew::new()?;
     crew.settings
         .agents
         .entry("opencode".to_owned())
         .or_default()
-        .model = Some("qwen3-coder:30b-64k".to_owned());
+        .model = Some("qwen3-coder:30b".to_owned());
     crew.services.workers.add(stuck_worker(
         QWEN,
         &[("slug.py", "def slugify(title): ...\n")],
@@ -1347,7 +1347,7 @@ async fn a_bare_cli_set_to_the_stuck_model_is_no_other_model() -> anyhow::Result
 /// the bare `opencode` is that Qwen too, and the question names it.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bare_cli_that_runs_the_stuck_model_is_no_other_model() -> anyhow::Result<()> {
-    const QWEN: &str = "opencode/qwen3-coder:30b-64k";
+    const QWEN: &str = "opencode/qwen3-coder:30b";
     let crew = Crew::new()?;
     crew.services.workers.add(stuck_worker(
         QWEN,

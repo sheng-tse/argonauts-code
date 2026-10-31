@@ -18,7 +18,7 @@ use crate::base::theme::{Glyphs, Role, Theme};
 use crate::bottom::{ApprovalMode, VimMode};
 use crate::bridge::Bridge;
 use crate::cells::cell::{AssistantMessage, UserMessage};
-use crate::testing::pictures::picture_check::{Unlike, assert_rows_match};
+use crate::testing::pictures::picture_check::assert_rows_match;
 
 const WIDTH: u16 = 118;
 
@@ -229,18 +229,7 @@ fn an_issue_read_back_and_waiting_on_its_plan_is_its_picture() {
         (&txt, &html),
         2..29,
         &screen.theme,
-        &[report_glyph(2)],
     );
-}
-
-/// On macOS a report starts with `⏺`, as the answer under it does. The picture takes the
-/// report's `●` from `update_after`, drawn with the plain Unicode glyphs.
-fn report_glyph(row: usize) -> Unlike {
-    Unlike {
-        row,
-        cols: (0, 0),
-        why: "a report starts with ⏺ on macOS, where the picture keeps update_after's ●",
-    }
 }
 
 /// The draft question's words as the run writes them, from the picture's example.
@@ -324,7 +313,7 @@ fn the_draft_a_run_on_an_issue_ends_with_is_its_picture() {
     let ctx = RenderCtx::new(WIDTH, &theme, Clock::still(Instant::now()));
     let lines = question.lines(&ctx);
     let (txt, html) = picture("issue_draft");
-    assert_rows_match("issue_draft", &lines, (&txt, &html), 2..19, &theme, &[]);
+    assert_rows_match("issue_draft", &lines, (&txt, &html), 2..19, &theme);
 }
 
 /// The draft pull request #57 whose check failed, followed in a Pull request phase after the

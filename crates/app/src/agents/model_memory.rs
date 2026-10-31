@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use argonauts_core::Paths;
 use argonauts_core::agents::runtimes::{Runtime, RuntimeKind, runtime};
+use argonauts_core::base::clock;
 use argonauts_core::base::future::BoxFuture;
 use argonauts_core::base::names::ModelRef;
 use argonauts_core::base::paths::create_private_dir_all;
@@ -229,7 +230,7 @@ pub(crate) async fn app_closing(home: &Paths) {
     }
 }
 
-/// `Freed Qwen3 Coder 30B (64k) from Ollama (25 GB of RAM)`, naming the model as the screens
+/// `Freed Sample Coder 30B (64k) from Ollama (25 GB of RAM)`, naming the model as the screens
 /// do: by its endpoint's entry, else by OpenCode's route to it, else by its id.
 pub(crate) fn freed_line(names: &DisplayNames, freed: &Freed) -> String {
     let endpoint = freed.server.endpoint.as_str();
@@ -281,7 +282,7 @@ async fn free_if_unused(entry: &Entry) -> Option<Freed> {
         .into_iter()
         .find(|held| same_model(&entry.server, &held.model, &entry.model))?;
     if let Some(expires) = found.expires_at {
-        let pinned = expires - OffsetDateTime::now_utc() > PINNED_AFTER;
+        let pinned = expires - clock::now_utc() > PINNED_AFTER;
         let used_since = entry
             .expires_at
             .and_then(|seen| OffsetDateTime::from_unix_timestamp(seen).ok())
@@ -440,7 +441,7 @@ mod tests {
 
     use super::*;
 
-    const QWEN: &str = "qwen3-coder:30b-64k";
+    const QWEN: &str = "sample-coder:30b-64k";
 
     fn ollama(fake: &FakeModelServer) -> Server {
         Server {
@@ -487,8 +488,8 @@ mod tests {
         let freed = memory.release(&second).await;
         assert_eq!(freed.len(), 1);
         assert_eq!(
-            freed[0].words(Some("Qwen3 Coder 30B (64k)")),
-            "Freed Qwen3 Coder 30B (64k) from Ollama (25 GB of RAM)"
+            freed[0].words(Some("Sample Coder 30B (64k)")),
+            "Freed Sample Coder 30B (64k) from Ollama (25 GB of RAM)"
         );
         assert!(fake.loaded().is_empty());
         let unload = fake.requests().pop().unwrap();
@@ -500,7 +501,7 @@ mod tests {
         let fake = qwen_server();
         let (_home, memory) = memory();
         let server = ollama(&fake);
-        let at = OffsetDateTime::now_utc() + time::Duration::minutes(5);
+        let at = clock::now_utc() + time::Duration::minutes(5);
         fake.hold("llama3.2:latest", 23_779_979_264, at);
         let holder = run("r-0003");
         // Named without its tag, as a route may.
@@ -521,7 +522,7 @@ mod tests {
         memory.load(&server, QWEN).await;
         memory.touch(&server, QWEN).await;
         // Someone asked it something after Argonauts' last session: its expiry moved on.
-        let later = OffsetDateTime::now_utc() + time::Duration::minutes(9);
+        let later = clock::now_utc() + time::Duration::minutes(9);
         fake.hold(QWEN, 25_311_000_000, later);
         assert!(memory.release(&holder).await.is_empty());
         assert_eq!(fake.loaded().len(), 1);
@@ -531,7 +532,7 @@ mod tests {
         let holder = run("r-0005");
         memory.hold(&server, QWEN, &holder).await;
         memory.load(&server, QWEN).await;
-        let pinned = OffsetDateTime::now_utc() + time::Duration::days(100_000);
+        let pinned = clock::now_utc() + time::Duration::days(100_000);
         fake.hold(QWEN, 25_311_000_000, pinned);
         assert!(memory.release(&holder).await.is_empty());
     }
@@ -547,7 +548,7 @@ mod tests {
             let holder = run("r-0006");
             memory.hold(&server, QWEN, &holder).await;
             memory.load(&server, QWEN).await;
-            let noted = OffsetDateTime::now_utc() + time::Duration::minutes(5);
+            let noted = clock::now_utc() + time::Duration::minutes(5);
             fake.hold(QWEN, 25_311_000_000, noted);
             memory.touch(&server, QWEN).await;
             fake.hold(QWEN, 25_311_000_000, noted + moved);
@@ -618,8 +619,8 @@ mod tests {
     fn the_freed_line_names_the_model_as_opencode_lists_it() {
         use argonauts_core::models::model_catalog::{CatalogEntry, ModelCatalog};
 
-        let mut named = CatalogEntry::new("opencode/ollama/qwen3-coder:30b-64k".parse().unwrap());
-        named.name = Some("Qwen3 Coder 30B (64k)".to_owned());
+        let mut named = CatalogEntry::new("opencode/ollama/sample-coder:30b-64k".parse().unwrap());
+        named.name = Some("Sample Coder 30B (64k)".to_owned());
         let names = DisplayNames {
             catalog: ModelCatalog {
                 models: vec![named],
@@ -639,11 +640,11 @@ mod tests {
         };
         assert_eq!(
             freed_line(&names, &freed(QWEN)),
-            "Freed Qwen3 Coder 30B (64k) from Ollama (25 GB of RAM)"
+            "Freed Sample Coder 30B (64k) from Ollama (25 GB of RAM)"
         );
         assert_eq!(
-            freed_line(&names, &freed("gemma3:12b-32k")),
-            "Freed Gemma3 12B 32K from Ollama (25 GB of RAM)"
+            freed_line(&names, &freed("sample-gemma:12b-32k")),
+            "Freed Sample Gemma 12B 32K from Ollama (25 GB of RAM)"
         );
     }
 

@@ -1,0 +1,27 @@
+# The main agent of a Council you chose looks around and writes a whole plan before its verdict,
+# as a model may however it's asked. The rule plays only when the prompt asks for the verdict
+# first. These rules come before the default fake agents' rules, which play the Council.
+
+[[rule]]
+argv0 = "claude"
+args_contain = ["dontAsk"]
+prompt_contains = 'Decide this first, before you read or search anything'
+stdin_prompt = "line"
+[[rule.step]]
+emit = '{"type":"system","subtype":"init","session_id":"sess-plans","cwd":".","tools":["Read","Grep","Glob","Bash"],"model":"claude-haiku-4-5"}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-plans","message":{"id":"msg-plans-look","content":[{"type":"text","text":"Let me look at how the limiter works first."}]}}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-plans","message":{"id":"msg-plans-read","content":[{"type":"tool_use","id":"toolu_plans_read","name":"Read","input":{"file_path":"ratelimit/api.py"}}]}}'
+[[rule.step]]
+emit = '{"type":"user","parent_tool_use_id":null,"session_id":"sess-plans","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_plans_read","content":"     1→from .bucket import Bucket\n     2→\n     3→bucket = Bucket(10, 20)\n"}]}}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-plans","message":{"id":"msg-plans-grep","content":[{"type":"tool_use","id":"toolu_plans_grep","name":"Grep","input":{"pattern":"bucket","path":"tests"}}]}}'
+[[rule.step]]
+emit = '{"type":"user","parent_tool_use_id":null,"session_id":"sess-plans","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_plans_grep","content":"tests/test_api.py"}]}}'
+[[rule.step]]
+emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-plans","message":{"id":"msg-plans","content":[{"type":"text","text":"Plan: keep one bucket per API key in ratelimit/bucket.py, made the first time a key is seen, and look the key up in allow().\n\nOpen questions: how long an idle key keeps its bucket."}]}}'
+[[rule.step]]
+emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-plans","result":"Plan: keep one bucket per API key.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":40},"structured_output":{"kind":"change","answer_markdown":"Let me look at how the limiter works first.\n\nPlan: keep one bucket per API key in ratelimit/bucket.py, made the first time a key is seen, and look the key up in allow().\n\nOpen questions: how long an idle key keeps its bucket.","estimate":{"task_type":"bugfix","summary":"One bucket per API key","files_likely":["ratelimit/bucket.py","ratelimit/api.py"],"file_count":2,"risk_labels":[],"tests_exist":true,"unknowns":["how long an idle key keeps its bucket"]}}}'
+[[rule.step]]
+exit = 0

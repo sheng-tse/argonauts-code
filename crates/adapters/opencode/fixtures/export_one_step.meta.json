@@ -1,7 +1,7 @@
 {
   "adapter": "opencode",
   "synthetic": true,
-  "derived_from": "OpenCode 2.0.26 on ollama/qwen3-coder:30b-64k, recorded by hand on 2026-10-18 (opencode run --format json, then the session's export)",
+  "derived_from": "OpenCode 2.0.26 on ollama/qwen3-coder:30b, recorded by hand on 2026-10-18 (opencode run --format json, then the session's export)",
   "also_matches": [],
   "program": "opencode",
   "args": [
@@ -9,10 +9,11 @@
     "--format",
     "json",
     "--model",
-    "ollama/qwen3-coder:30b-64k"
+    "ollama/qwen3-coder:30b"
   ],
-  "model": "ollama/qwen3-coder:30b-64k",
+  "model": "ollama/qwen3-coder:30b",
   "note": "A one-step answer on OpenCode 2.0.26: one step begun and none finished on stdout, so stdout carries no tokens at all; the export has them.",
   "trimmed": "location written as /tmp/repo, the title neutral, texts cut to their first line and tool calls to their names and status, since only the tokens are read",
-  "recorded": "2026-10-18"
+  "recorded": "2026-10-18",
+  "sanitized": "the model written as qwen3-coder:30b"
 }

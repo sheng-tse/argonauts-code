@@ -319,7 +319,22 @@ impl Crew {
     /// the engine until it waits or finishes.
     pub async fn start(&self, mode: RunMode, request: &str) -> anyhow::Result<Outcome> {
         let started = self.run_started(mode, request)?;
-        self.drive(mode, vec![started], Vec::new(), false).await
+        self.drive(mode, vec![started], Vec::new(), |_| {}).await
+    }
+
+    /// [`Crew::start`] for a request that asked the run's approvals to wait for you, as every
+    /// run started from a supervised session does.
+    pub async fn start_supervised(&self, mode: RunMode, request: &str) -> anyhow::Result<Outcome> {
+        let started = self.run_started(mode, request)?;
+        self.drive(mode, vec![started], Vec::new(), supervised)
+            .await
+    }
+
+    /// [`Crew::resume`] for a run whose request asked it to start supervised, which its run host
+    /// tells every engine it starts for the run.
+    pub async fn resume_supervised(&self, history: Vec<RunEvent>) -> anyhow::Result<Outcome> {
+        self.drive(mode_of(&history), history, Vec::new(), supervised)
+            .await
     }
 
     /// Wakes a waiting run with `commands` queued in its inbox, as the run host does after an
@@ -329,14 +344,15 @@ impl Crew {
         history: Vec<RunEvent>,
         commands: Vec<EngineCommand>,
     ) -> anyhow::Result<Outcome> {
-        self.drive(mode_of(&history), history, commands, false)
+        self.drive(mode_of(&history), history, commands, |_| {})
             .await
     }
 
     /// Reopens a stopped run, as `/resume` asks its next run host to, and drives it until it
     /// waits or finishes again.
     pub async fn reopen(&self, history: Vec<RunEvent>) -> anyhow::Result<Outcome> {
-        self.drive(mode_of(&history), history, Vec::new(), true)
+        let reopen = |context: &mut EngineContext| context.reopen = true;
+        self.drive(mode_of(&history), history, Vec::new(), reopen)
             .await
     }
 
@@ -387,10 +403,10 @@ impl Crew {
         mode: RunMode,
         history: Vec<RunEvent>,
         commands: Vec<EngineCommand>,
-        reopen: bool,
+        asked: impl FnOnce(&mut EngineContext),
     ) -> anyhow::Result<Outcome> {
         let (mut context, sink, sender) = self.context(history)?;
-        context.reopen = reopen;
+        asked(&mut context);
         for command in commands {
             if sender.send(command).await.is_err() {
                 bail!("the engine's inbox closed before it started");
@@ -405,6 +421,10 @@ impl Crew {
             events: sink.events(),
         })
     }
+}
+
+fn supervised(context: &mut EngineContext) {
+    context.starts_supervised = true;
 }
 
 /// How the `gh` a scenario installs answers `gh pr create`.

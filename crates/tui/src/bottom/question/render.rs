@@ -119,7 +119,9 @@ impl QuestionPrompt {
         let mut lines = Vec::new();
         match place {
             Place::Alone => {
-                lines.push(Line::from(decorative(glyphs.rule.repeat(width), question)));
+                if !self.above_input {
+                    lines.push(Line::from(decorative(glyphs.rule.repeat(width), question)));
+                }
                 // A warning reads in the warning colour from its mark to its last word.
                 let title = if self.warns {
                     warning
@@ -191,7 +193,9 @@ impl QuestionPrompt {
             }
         }
         if self.body.is_empty() {
-            lines.push(Line::default());
+            if !self.above_input {
+                lines.push(Line::default());
+            }
         } else {
             // Dashed rules, as Claude Code frames the diff it asks about. Around a warning's
             // words they step back further, so the words stand out.
@@ -234,7 +238,9 @@ impl QuestionPrompt {
         let (cursor, options) = self.push_options(&mut lines, ctx, place);
 
         let tail_start = lines.len();
-        lines.push(Line::default());
+        if !self.above_input {
+            lines.push(Line::default());
+        }
         lines.push(self.hint_line(ctx, place, ""));
         if let Some(footer) = self.footer.as_deref().map(sanitize_line) {
             let footer = Line::from(vec![
@@ -820,9 +826,8 @@ fn editor_rows(
         &inner,
         ComposerState {
             focused,
-            busy: false,
-            offer_example: false,
             placeholder: Some(placeholder),
+            ..ComposerState::default()
         },
     );
     // The first and last lines are the input's rules.

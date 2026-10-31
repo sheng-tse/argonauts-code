@@ -91,7 +91,7 @@ fn the_line_at_120_columns_is_its_picture() {
     assert_eq!(
         row(held_up(), 3, true, 120),
         (
-            "  ǁ supervised mode on · ←  3 agents       ◧◨ 5h ▄▄▄▄▁▁  71%  7d ▄  59%   ◧◨ 5h ▄▄▄▄▄▄  92% 4:40pm   ◧◨ out · Tue 3:45pm".to_owned(),
+            "  ǁ supervised mode on · ←  3 agents       ◧◨ 5h ▄▄▄▄▁▁  71%  7d ▄  59%   ◧◨ 5h ▄▄▄▄▄▁  92% 4:40pm   ◧◨ out · Tue 3:45pm".to_owned(),
             3
         )
     );

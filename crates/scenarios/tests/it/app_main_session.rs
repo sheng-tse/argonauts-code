@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use app_support::*;
 use argonauts_core::runs::events::run::RunMode;
-use argonauts_scenarios::{as_set_up, scenario_file};
+use argonauts_scenarios::{as_set_up, on_the_default_workflow, scenario_file};
 use argonauts_testkit::fake_clis::scenario::StdinPrompt;
 use argonauts_testkit::{FakeRule, FakeScenario, FakeStep};
 use serde_json::json;
@@ -73,7 +73,10 @@ fn fakes_file(dir: &Path) -> anyhow::Result<PathBuf> {
 fn app_main_session_answers_and_hands_real_work_over() -> anyhow::Result<()> {
     let fakes = tempfile::tempdir()?;
     let scenario = scenario_playing(&fakes_file(fakes.path())?)?;
-    std::fs::write(scenario.repo.global_config(), as_set_up(&config()))?;
+    // On the default nobody chose, the session answers a question and hands work over through
+    // its tool. A workflow you chose takes every change instead.
+    let config = on_the_default_workflow(&config());
+    std::fs::write(scenario.repo.global_config(), as_set_up(&config))?;
     let mut pty = start(&scenario)?;
 
     // A question: the session answers it, and nothing starts.

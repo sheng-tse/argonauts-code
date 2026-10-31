@@ -357,7 +357,7 @@ mod tests {
     /// another folder; a second build in the same worktree carries on the first.
     #[test]
     fn a_task_session_is_carried_on_only_in_the_folder_it_worked_in() {
-        let worker = ModelRef::new("opencode", Some("ollama/qwen3-coder:30b-64k".to_owned()));
+        let worker = ModelRef::new("opencode", Some("ollama/qwen3-coder:30b".to_owned()));
         let task = TaskId::numbered(1);
         let tree = Path::new("/worktrees/run-1/task-001");
         let ended = |key: &str, access: Access, workdir: &Path| {

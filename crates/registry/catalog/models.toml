@@ -9,12 +9,16 @@
 #
 # Names come from the id ("claude-opus-5-5" reads "Opus 5.5"), so an entry sets `name` only
 # when that rule reads wrong. `rank` is the order within a CLI's models, and `efforts` lists
-# the levels a model takes, lowest first; an empty list means it takes none.
+# the levels a model takes, lowest first; an empty list means it takes none. `window` is the
+# most tokens a session holds, so the Context tab has it before a session or a model list says;
+# a CLI's own figure and the lists read each day win over it. Claude's from Anthropic's model
+# pages on 2026-10-30, Codex's from `codex debug models` (`max_context_window`, Codex 0.158.0),
+# and agy's from Google's model pages ("Input token limit") and the other makers' own.
 
 version = 1
 # The day this copy is published, inside what its signature covers. Move it on with every edit:
 # an install refuses a served copy published before the one it ships or fetched last.
-published = "2026-10-26"
+published = "2026-10-30"
 
 # Claude Code, as its own picker shows it on 2026-10-09 (2.1.295).
 
@@ -31,6 +35,7 @@ efforts = ["low", "medium", "high", "xhigh", "max"]
 default_effort = "xhigh"
 aliases = ["opus"]
 rank = 1
+window = 1000000
 
 [[model]]
 id = "claude-code/claude-fable-5-1"
@@ -39,6 +44,7 @@ efforts = ["low", "medium", "high", "xhigh", "max"]
 default_effort = "high"
 aliases = ["fable"]
 rank = 2
+window = 1000000
 
 [[model]]
 id = "claude-code/claude-sonnet-5-5"
@@ -47,6 +53,7 @@ efforts = ["low", "medium", "high", "xhigh", "max"]
 default_effort = "high"
 aliases = ["sonnet"]
 rank = 3
+window = 1000000
 
 [[model]]
 id = "claude-code/claude-haiku-5-5"
@@ -55,6 +62,7 @@ efforts = ["low", "medium", "high", "xhigh", "max"]
 default_effort = "medium"
 aliases = ["haiku"]
 rank = 4
+window = 1000000
 
 [[model]]
 id = "claude-code/claude-haiku-4-5-20251001"
@@ -62,6 +70,7 @@ description = "Fastest for quick answers"
 efforts = []
 aliases = ["claude-haiku-4-5"]
 rank = 5
+window = 200000
 
 [[model]]
 id = "claude-code/claude-sonnet-5"
@@ -69,6 +78,7 @@ description = "Efficient for routine tasks"
 efforts = ["low", "medium", "high", "xhigh", "max"]
 default_effort = "high"
 rank = 6
+window = 1000000
 
 [[model]]
 id = "claude-code/claude-opus-5"
@@ -76,6 +86,7 @@ description = "Best for everyday, complex tasks"
 efforts = ["low", "medium", "high", "xhigh", "max"]
 default_effort = "high"
 rank = 7
+window = 1000000
 
 [[model]]
 id = "claude-code/claude-fable-5"
@@ -83,6 +94,7 @@ description = "Most capable for your hardest and longest-running tasks"
 efforts = ["low", "medium", "high", "xhigh", "max"]
 default_effort = "high"
 rank = 8
+window = 1000000
 
 [[model]]
 id = "claude-code/claude-opus-4-8"
@@ -90,6 +102,7 @@ description = "Best for everyday, complex tasks"
 efforts = ["low", "medium", "high", "xhigh", "max"]
 default_effort = "high"
 rank = 9
+window = 1000000
 
 [[model]]
 id = "claude-code/claude-opus-4-7"
@@ -97,6 +110,7 @@ description = "Best for everyday, complex tasks"
 efforts = ["low", "medium", "high", "xhigh", "max"]
 default_effort = "high"
 rank = 10
+window = 1000000
 
 # xhigh arrived with Opus 4.7, so the 4.6 models stop at high, then max.
 
@@ -106,6 +120,7 @@ description = "Best for everyday, complex tasks"
 efforts = ["low", "medium", "high", "max"]
 default_effort = "high"
 rank = 11
+window = 1000000
 
 [[model]]
 id = "claude-code/claude-sonnet-4-6"
@@ -113,6 +128,7 @@ description = "Efficient for routine tasks"
 efforts = ["low", "medium", "high", "max"]
 default_effort = "high"
 rank = 12
+window = 1000000
 
 # Models Anthropic still serves that Claude Code's picker leaves out. Listing them keeps them
 # from reading "new".
@@ -120,22 +136,127 @@ rank = 12
 [[model]]
 id = "claude-code/claude-mythos-5-1"
 rank = 13
+window = 1000000
 
 [[model]]
 id = "claude-code/claude-mythos-5"
 rank = 14
+window = 1000000
 
 [[model]]
 id = "claude-code/claude-opus-4-5-20251101"
 rank = 15
+window = 200000
 
 [[model]]
 id = "claude-code/claude-sonnet-4-5-20250929"
 rank = 16
+window = 200000
 
 [[model]]
 id = "claude-code/claude-mythos-preview"
 rank = 17
+
+# Codex's models as `codex debug models` lists them (0.158.0). Codex's own window wins over
+# OpenAI's pages, which say 1,050,000.
+
+[[model]]
+id = "codex"
+# Codex doesn't say which model its default runs before its list is read; every model it lists
+# but GPT-5.5 holds this.
+window = 872000
+
+[[model]]
+id = "codex/gpt-6-astra"
+window = 872000
+
+[[model]]
+id = "codex/gpt-6-sol"
+window = 872000
+
+[[model]]
+id = "codex/gpt-6-luna"
+window = 872000
+
+[[model]]
+id = "codex/gpt-5.6-sol"
+window = 872000
+
+[[model]]
+id = "codex/gpt-5.6-terra"
+window = 872000
+
+[[model]]
+id = "codex/gpt-5.6-luna"
+window = 872000
+
+[[model]]
+id = "codex/gpt-5.5"
+window = 272000
+
+# agy's models as `agy models` lists them (1.2.13), one id for each thinking level. agy never
+# says a window. Gemini 3.6 Pro has none here: Google's page for it is gone (2026-10-30).
+
+[[model]]
+id = "antigravity-cli"
+# agy runs a Gemini model when you name none, and every Gemini model it lists holds this.
+window = 1048576
+
+[[model]]
+id = "antigravity-cli/gemini-3.8-flash-high"
+window = 1048576
+
+[[model]]
+id = "antigravity-cli/gemini-3.8-flash-medium"
+window = 1048576
+
+[[model]]
+id = "antigravity-cli/gemini-3.8-flash-low"
+window = 1048576
+
+[[model]]
+id = "antigravity-cli/gemini-3.7-flash-high"
+window = 1048576
+
+[[model]]
+id = "antigravity-cli/gemini-3.7-flash-medium"
+window = 1048576
+
+[[model]]
+id = "antigravity-cli/gemini-3.7-flash-low"
+window = 1048576
+
+[[model]]
+id = "antigravity-cli/gemini-3.6-flash-high"
+window = 1048576
+
+[[model]]
+id = "antigravity-cli/gemini-3.6-flash-medium"
+window = 1048576
+
+[[model]]
+id = "antigravity-cli/gemini-3.6-flash-low"
+window = 1048576
+
+[[model]]
+id = "antigravity-cli/gemini-3.1-pro-high"
+window = 1048576
+
+[[model]]
+id = "antigravity-cli/gemini-3.1-pro-low"
+window = 1048576
+
+[[model]]
+id = "antigravity-cli/claude-sonnet-4-6"
+window = 1000000
+
+[[model]]
+id = "antigravity-cli/claude-opus-4-6-thinking"
+window = 1000000
+
+[[model]]
+id = "antigravity-cli/gpt-oss-120b-medium"
+window = 131072
 
 # List prices in dollars per million tokens, for the API value the Overview gives each model.
 # A model's dated snapshots share its price. Cache reads and writes cost the input price when

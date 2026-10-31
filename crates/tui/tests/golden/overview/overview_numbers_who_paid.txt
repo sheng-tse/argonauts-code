@@ -1,14 +1,17 @@
 Tokens                                          Days                                   Sessions
 
-Claude Code      60.6b     as /stats counts     Active       122       of 147          Sessions     384
-Argonauts Code   69.1b     + workflow agents    Streak       20 days   longest 41      Longest      57d 23h
-API value        ~$32,540                       Busiest      Aug 28    peak 9pm        Favorite     Opus 5.5  61%
+Claude Code   60.8b     /stats says 60.6b       Active       122       of 147          Sessions     384
+Codex         8.0b      from its own files      Streak       20 days   longest 41      Longest      57d 23h
+agy           0.3b      only what ran here      Busiest      Aug 28    peak 9pm        Favorite     Opus 5.5  61%
+OpenCode      0.1b      only what ran here
+All CLIs      69.2b     the four added up
+API value     ~$32,540
 
-By kind    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━    By CLI   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+By kind    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━    By CLI   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-           ▌ Cache read    97%      ▌ Write     2%                    ▌ ◧◨ Claude Code    88%      ▌ ◧◨ Codex    12%
-           ▌ Output        <1%      ▌ Input    <1%                    ▌ ◧◨ agy            <1%
+           ▌ Cache read    97%      ▌ Write     2%                 ▌ ◧◨ Claude Code    88%      ▌ ◧◨ Codex       12%
+           ▌ Output        <1%      ▌ Input    <1%                 ▌ ◧◨ agy            <1%      ▌ ◧◨ OpenCode    <1%
 
-Who paid   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Who paid   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
            ▌ Plan    91%      ▌ Free     7%      ▌ Paid     2% · ~$41.20

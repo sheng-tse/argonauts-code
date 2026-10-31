@@ -6,6 +6,7 @@ mod launch;
 mod parser;
 mod plan_usage;
 mod sessions;
+pub mod tokens;
 mod workflows;
 
 pub use commands::BUILTIN_COMMANDS;

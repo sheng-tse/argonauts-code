@@ -1,6 +1,6 @@
 """Checks that CI stops a test that hangs only after the longest wait a scenario may take on the
 slowest runner, and that every try of it still fits in the test job's time with room for the
-build and the steps after it. Run from the repository root:
+build, the steps after it and the drawings step's own limit. Run from the repository root:
 
     python3 -m unittest discover -s packaging/tests
 """
@@ -12,9 +12,13 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
-# Room in a test job for all but the tries of one hung test: a cold build, the doc tests and
-# the world's timed tests.
+# Room in a test job for all but the tries of one hung test and the drawings step: a cold
+# build, the doc tests and the world's timed tests.
 ROOM_MINUTES = 30
+
+# The scenarios shard's step that builds the release binaries and compares every approved
+# drawing with them, under a limit of its own.
+DRAWINGS_STEP = "The approved drawings on the release build"
 
 
 def ci_profile():
@@ -39,7 +43,15 @@ def ci_test_job():
 
 
 def job_minutes(lines):
-    return next(int(m.group(1)) for line in lines if (m := re.match(r"\s+timeout-minutes: (\d+)$", line)))
+    """The job's own limit, not a step's."""
+    return next(int(m.group(1)) for line in lines if (m := re.fullmatch(r"    timeout-minutes: (\d+)", line)))
+
+
+def step_minutes(lines, name):
+    """The limit of the step called `name`, which must have one."""
+    start = lines.index(f"      - name: {name}")
+    end = next((at for at in range(start + 1, len(lines)) if lines[at].startswith("      - ")), len(lines))
+    return next(int(m.group(1)) for line in lines[start:end] if (m := re.fullmatch(r"        timeout-minutes: (\d+)", line)))
 
 
 def largest_scale(lines):
@@ -66,8 +78,9 @@ class HungTests(unittest.TestCase):
     def test_every_try_of_a_hung_test_fits_in_the_job(self):
         profile = ci_profile()
         tries = profile["retries"] + 1
-        needed = tries * stopped_after(profile) / 60 + ROOM_MINUTES
-        self.assertLessEqual(needed, job_minutes(ci_test_job()))
+        job = ci_test_job()
+        needed = tries * stopped_after(profile) / 60 + ROOM_MINUTES + step_minutes(job, DRAWINGS_STEP)
+        self.assertLessEqual(needed, job_minutes(job))
 
 
 if __name__ == "__main__":

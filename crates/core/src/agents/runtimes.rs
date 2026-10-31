@@ -133,8 +133,8 @@ mod tests {
 
     #[test]
     fn a_route_names_its_runtime_and_model() {
-        let (ollama, model) = local_route("ollama/qwen3-coder:30b-64k").unwrap();
-        assert_eq!((ollama.id, model), ("ollama", "qwen3-coder:30b-64k"));
+        let (ollama, model) = local_route("ollama/qwen3-coder:30b").unwrap();
+        assert_eq!((ollama.id, model), ("ollama", "qwen3-coder:30b"));
         let (vllm, model) = local_route("vllm/Qwen/Qwen3-8B").unwrap();
         assert_eq!((vllm.id, model), ("vllm", "Qwen/Qwen3-8B"));
         assert!(local_route("ollama/").is_none());

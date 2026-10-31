@@ -70,6 +70,7 @@ impl Transcript {
                 self.items.print_header(cx);
             }
         }
+        self.conversation.on_the_way_to_the_talk(event, cx);
         match event {
             AppEvent::Welcome { .. } => self.items.welcome(event, cx),
             AppEvent::ConversationCleared { way_back } => {

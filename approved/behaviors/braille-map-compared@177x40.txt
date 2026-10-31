@@ -1,0 +1,125 @@
+Behaviors on a terminal without pictures, Haiku 5.5 compared: the braille map in 0.1.0's picture look
+screen 177x40
+at 6,0
+size 177x34
+terminal fg=#c8d3f5 bg=#222436
+text
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats                                                              All time  Last 7 days  Last 30 days
+
+  Overview    Models    Behaviors                                                                      By model    By CLI    By role    By workflow    By project    By outcome
+
+              ⢀⡀ ⢀⣶⣀                ⣀⣀  ⣀  ⣤                                                Comparing Haiku 5.5                                                         Actions
+           ⢠⣶ ⠘⣿⣿⣿⣿⠿ ⠛⠛⢳⡆⢀⣶⡿        ⠛⣿⣿⣿⣿⣿ ⢹⣦⣴⣾⣧⣶⣶⡀                ⢀⡀      ⠘⠃               With the other models
+         ⢰⡆⠈⠁⠰⠆  ⠉⣽⣷⣾⣷⡆  ⠈⠁       ⣀⡀  ⠛⠉⠈⠉ ⠾⠙⠻⠿⠿⣿⠿⠃              ⢠⣿⣮⣿⣦⣿⣶⣤⠶                  red: Haiku 5.5 does this more
+                  ⠉⠸⠟⠿         ⣶⣶⣶⣿⣿⣿⣿⣷⣦  ⢀⡀ ⣶                    ⠉⠛⠿⠛⣿⣿⠉  ⢰⣦⣴⣦⣶⣦⣀          blue: Haiku 5.5 does this less
+            ⠛                   ⠉⠙⠛⠋⠿⠛⢡⡄  ⠘⠃⠶⠶                        ⠉    ⠘⠻⣿⡿⠿⠟⠋⠿
+                                                                             ⠉              ● Haiku 5.5                                                                     636
+         ⢠⡄⣰⣦⣾⡇⣤                         ⢀⡀ ⣶ ⠿ ⣤⣶⠸⠿                      ⢀⡀                ○ GPT 6.1 Sol                                                                    74
+          ⢰⡏⠛⠉ ⠉    ⢀⡀                 ⢀⣸⡟⠿⠿⠸⠟  ⠛⠛⠃                       ⠈⠁       ⢠⣶       ○ GPT 6 Luna                                                                     64
+                    ⠘⠃                 ⠈⠉⠁⠰⠆                 ⢀⡀                ⢀⡀⢀⣤⢀⡀ ⣤     ○ Opus 5.5                                                                       53
+                                          ⢀⣰⡆⣶⣤⡄⠶⣴⣶⣤⣄ ⣀    ⢠⣤⣾⣿⣷⣶⣿⣶⡄           ⠘⠳⠾⠟⠛⠃ ⠶     ○ Qwen3 Coder 30B                                                                45
+      ⢀⣀⢀⡀             ⢀⣀⡀          ⠸⠇⢰⣶⣶⣿⣼⣷⣿⢠⡄ ⠿⠛⠉⠛⠿ ⠉⢀⣀⢀⡀⠈⠙⠻⣿⡿⠿⣿⠿⠁⠿   ⢀⡀⣀⣀⣀⣀              ○ GPT 6 Astra                                                                    36
+    ⠸⢧⣾⡿⣾⠿⣤⡀⠻⠆      ⢠⡄ ⠿⢻⡿⣿⡆          ⠘⠋⠉⠙⠛⠛⠛⣀         ⠿⠿⣾⠷ ⠶          ⣶⣾⣿⣿⣿⣿⣿⣿⣷⣿⡀⢀⡀        ○ Gemini 3.8 Flash                                                               18
+    ⣀⣈⢉⡁  ⠉⠁        ⠈⠁  ⠈⠁⠉               ⣴⣾⣿⣿⣾⣿⣶             ⠘⠃       ⠈⠛⠻⠿⠛⠿⠋⠻⠿⣛⢻⣿⣿⣶⣴⡆⣀    ↓  4 more below
+    ⠉⠛⣼⣿⣧ ⢻⡄                              ⠉⠛⠻⠿⠟⠛⠿ ⣠⡄⣀ ⣀             ⣤⣴⣆⡀        ⠛ ⠈⣉⠘⠃ ⠛
+      ⠿ ⠉ ⠈⠁                   ⣀⣿⣶⣶⡆⠛     ⣀⢠⡄    ⢿⣿⣿⡿⣶⠛ ⠿           ⠙⠿⠛⣷ ⢀⡀    ⢀⡀⠸⣿⠟⣿⣷⣶     Distinctive to Haiku 5.5 · 636 actions; the others 325
+                               ⠉⠉        ⠰⠟⠛⠁    ⠈⠹⠇                     ⠘⠃    ⠘⠃ ⠉ ⠉⠉⠁       Wrote a workflow script                        13   (2.0%)   others   0   (0.0%)
+                                                                                              Gave a structured answer that didn't fit       20   (3.1%)   others   1   (0.3%)
+  Point at a dot to see the action under it                                                   Used an MCP tool                               16   (2.5%)   others   1   (0.3%)
+                                                                                              Asked another agent to review or judge          8   (1.3%)   others   0   (0.0%)
+                                                                                              Edited a test file: added tests                12   (1.9%)   others   1   (0.3%)
+  Label map · 961 actions in 41 runs and 27 conversations across 6 projects                   Wrote a doc                                    99  (15.6%)   others  16   (4.9%)
+                                                                                              Ran the test suite, then checked git stat…     11   (1.7%)   others   1   (0.3%)
+                                                                                              Returned its structured answer                148  (23.3%)   others  35  (10.8%)
+                                                                                              Tried an edit that didn't apply                78  (12.3%)   others  27   (8.3%)
+                                                                                              Edited a source file                           25   (3.9%)   others   8   (2.5%)
+                                                                                              Moved, copied or removed files                  7   (1.1%)   others   2   (0.6%)
+                                                                                            ↓  15 more below
+
+   r to cycle dates · s this project · d summaries · tab grouping · h  l  compare a model · j  into the list, which lights each behavior · esc back
+paint
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+.bbbbbbbb..cddddddddc...eeeeee....eeeeee....eeeee....eeeeeee....eeeeee....eeeee..............................................................fff.ffff..eeee.e.eeee..eeee.ee.eeee
+
+..eeeeeeee....eeeeee...cdddddddddc....................................................................ghhghhhhhg...ee.eee....ee.eeee....ee.eeeeeeee....ee.eeeeeee....ee.eeeeeee
+
+..iiiiiiiiiiiijjijjjiiiiikkkkkkkkiiijjiiliijiiiiiikkkkkkkkkkkkiiiiiiiiiiiiiiiiiiiiiiiiiiii..mmmmmmmmm.bbbbb.bbb.........................................................mmmmmmm
+..iiiiiiiiijjijjjjjjilljjnookkkkkkkkjjjjjjijjjjjjjjikkkkkkkkkkkkkiilliiiiiilliiiiiiiiiiiii..mmmm.mmm.mmmmm.mmmmmm
+..iiiiiiijjjjppiiqjjjjjiinnkkkkkkkookkooookrojjjpjokkkkkkkkkkkkkillljjsjjpiiiiiiiiiiiiiiii..mmmm.eeeee.eee.eeee.eeee.eeee
+..iiiiiiiiiiiiiiiijjjjikkkkkkktuuuuuuuvwttuututttkkkkkkkkkkkkkkkkiljjljjjiiljjjjjsiiiiiiii..mmmmm.eeeee.eee.eeee.eeee.eeee
+..iiiiiiiiiisiikkkkkkkkkkkkkttttuvvuuxvvttuuyvttttttttttttkkkkkkkkkiiijiiiijjjjjzsjiiiiiii
+..iiiiiiiiiiiiiiikkkkkkkkkkktttttttttttttttttttttttttttttttttkkkkkkkkkkiiiiiijiiiiiiiiiiii..A.eeeee.eee.....................................................................mmm
+..iiiiiiippjljjjiiiiiiikkkkkkkkkkkkkkkkktuutututywuutkkkkkkkkkkkkkkkkkkkkknsiiiiiiiiiiiiii..B.mmm.mmm.mmm....................................................................mm
+..iiiiiiiijjjjijiiiijjiiiiiikkkkkkkkkkkCooooorkkoCCkkiiiiiiiiiiiiiiikkkkkknnkkkkkkkljiiiii..B.mmm.m.mmmm.....................................................................mm
+..iiiiiiiiiiiiiiiiiijjiiiiiiiiiiiikkkkkCoorrkkkkkiiiiiiiDDDEEFFEDDDDiiiiiiiiiikooCrojiGiii..A.mmmm.mmm.......................................................................mm
+..iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiijjjjssqjzjlDHEEEIJJJKKKKKKIIIIEEEEEDijqspjjisiii..L.mmmmm.mmmmm.mmm................................................................mm
+..iiiiljjjiiiiiiiiiiiiijjjiiiiiiiiiijMMMMMjjjllijsjljisNFOOJJJKKKPPPPQQQPPPPPKIIIEEEDDiiii..B.mmm.m.mmmmm....................................................................mm
+..iijjjjjljllliiiiiijjijjjjjiiiiiDDDDEFFFFFFFFEDDDiiiiijjjlDNEEEIIIRSSSTTTTTTTTTPKKJIIEDDD..U.mmmmmm.mmm.mmmmm...............................................................mm
+..iiljjjiijliiiiiiiijjiijjjiiiiiiiDDDEEEEEJJJJJFFEEEDiiiiiiiiiHHDEEEIRRKPPPVTTPPPKKKJJFFED..m..m.mmmm.mmmmm
+..iiljjjjijjiiiiiiiiiiiiiiiiiiiiiiiiiDDDEEFFFFJJJEFFFEFDiiiiiiiiiiiDMFFFEEIIIIIIJIJJJJEFED
+..iiiisijijjiiiiiiiiiiiiiiiiiiisjjjjliiiiijMMDDEEFFFMMMDMDiiiiiiiiiijjjjDMMDDDDMFFFFMMMDDD..bbbbbbbbbbb.bb.bbbbb.bbb.m.mmm.mmmmmmmm.mmm.mmmmmm.mmm
+..iiiiiiiiiiiiiiiiiiiiiiiiiiiiissiiiiiiiisjljiiiijjjiiiiiiiiiiiiiiiiiiiiijjiiiijjijijjjiii....eeeee.e.eeeeeeee.eeeeee........................bb...mmmmmm...mmmmmm...m...mmmmmm
+..............................................................................................eeee.e.eeeeeeeeee.eeeeee.eeee.eeeeee.eee.......bb...mmmmmm...mmmmmm...m...mmmmmm
+..mmmmm.mm.m.mmm.mm.mmm.mmm.mmmmmm.mmmmm.mm...................................................eeee.ee.eee.eeee...............................bb...mmmmmm...mmmmmm...m...mmmmmm
+..............................................................................................eeeee.eeeeeee.eeeee.ee.eeeeee.ee.eeeee..........b...mmmmmm...mmmmmm...m...mmmmmm
+..............................................................................................eeeeee.e.eeee.eeeee.eeeee.eeeee................bb...mmmmmm...mmmmmm...m...mmmmmm
+..mmmmm.mmm.m.mmm.mmmmmmm.mm.mm.mmmm.mmm.mm.mmmmmmmmmmmmm.mmmmmm.m.mmmmmmmm...................eeeee.e.eee....................................bb..mmmmmmm...mmmmmm..mm...mmmmmm
+..............................................................................................eee.eee.eeee.eeeeee.eeee.eeeeeee.eee.eeeee.....bb...mmmmmm...mmmmmm...m...mmmmmm
+..............................................................................................eeeeeeee.eee.eeeeeeeeee.eeeeee................bbb..mmmmmmm...mmmmmm..mm..mmmmmmm
+..............................................................................................eeeee.ee.eeee.eeee.eeeeee.eeeee................bb..mmmmmmm...mmmmmm..mm...mmmmmm
+..............................................................................................eeeeee.e.eeeeee.eeee...........................bb...mmmmmm...mmmmmm...m...mmmmmm
+..............................................................................................eeeeee.eeeeee.ee.eeeeeee.eeeee..................b...mmmmmm...mmmmmm...m...mmmmmm
+............................................................................................m..mm.mmmm.mmmmm
+
+...m.mm.mmmmm.mmmmm.m.m.mmmm.mmmmmmm.m.m.mmmmmmmmm.m.mmm.mmmmmmmm.m.m..m..mmmmmmm.m.mmmmm.m.m..mmmm.mmm.mmmmm.mmmmm.mmmmmm.mmmm.mmmmmmmm.m.mmm.mmmm
+key
+. blank
+a fg=#b1b9f9
+b fg=#c8d3f5 bold  ; the terminal's own
+c bg=#b1b9f9
+d fg=#14161f bg=#b1b9f9 bold
+e fg=#c8d3f5  ; the terminal's own
+f fg=#b1b9f9 bold
+g bg=#fb923c
+h fg=#14161f bg=#fb923c bold
+i bg=#1f202f
+j fg=#f7a07f bg=#1f202f bold
+k bg=#242a3f
+l fg=#5276ac bg=#1f202f
+m fg=#999999
+n fg=#b47a6b bg=#242a3f
+o fg=#f7a07f bg=#242a3f bold
+p fg=#8e5f8a bg=#1f202f
+q fg=#53999c bg=#1f202f
+r fg=#90628f bg=#242a3f
+s fg=#b27766 bg=#1f202f
+t bg=#2a3450
+u fg=#f7a07f bg=#2a3450 bold
+v fg=#567cb6 bg=#2a3450
+w fg=#926594 bg=#2a3450
+x fg=#6b728c bg=#2a3450
+y fg=#b67e70 bg=#2a3450
+z fg=#c27cb4 bg=#1f202f bold
+A fg=#f7a07f
+B fg=#6a9ee6
+C fg=#5479b1 bg=#242a3f
+D bg=#322534
+E bg=#452a39
+F fg=#f7a07f bg=#452a39 bold
+G fg=#686c81 bg=#1f202f
+H fg=#b87967 bg=#322534
+I bg=#58303e
+J fg=#f7a07f bg=#58303e bold
+K fg=#f7a07f bg=#6b3543 bold
+L fg=#c27cb4
+M fg=#f7a07f bg=#322534 bold
+N fg=#5877ad bg=#322534
+O fg=#be7a69 bg=#452a39
+P fg=#f7a07f bg=#7f3a48 bold
+Q bg=#923f4d
+R bg=#6b3543
+S bg=#7f3a48
+T fg=#f7a07f bg=#923f4d bold
+U fg=#6cd1cf
+V fg=#6a9ee6 bg=#923f4d bold

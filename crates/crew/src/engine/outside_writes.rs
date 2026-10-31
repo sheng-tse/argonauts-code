@@ -9,6 +9,9 @@ use argonauts_core::AgentEvent;
 use argonauts_core::base::names::SessionKey;
 use argonauts_core::safety::outside::{BeforeWrites, KeptOut, Never, both};
 
+use crate::engine::host::Host;
+use crate::engine::shared::lock;
+
 #[derive(Debug, Default)]
 pub struct OutsideWrites {
     /// Each running session's own folder, where a relative path points.
@@ -55,11 +58,39 @@ impl OutsideWrites {
         both(kept_out.follow(never, folder, event, home), wrote)
     }
 
+    /// The folder a running session works in.
+    pub fn folder(&self, key: &SessionKey) -> Option<&Path> {
+        self.folders.get(key).map(PathBuf::as_path)
+    }
+
     /// Forgets a session that ended.
     pub fn ended(&mut self, key: &SessionKey) {
         self.folders.remove(key);
         self.kept_out.remove(key);
         self.before_writes.remove(key);
+    }
+}
+
+impl Host {
+    /// The line a worker's write outside the project leaves once it's done. Its own folder,
+    /// your checkout, the run's worktrees, and Argonauts Code's state are the project's.
+    pub(super) fn outside_note(
+        &self,
+        key: &SessionKey,
+        event: &argonauts_core::AgentEvent,
+    ) -> Option<String> {
+        let repo = &self.shared().repo;
+        let state = repo.run_dir.ancestors().nth(3);
+        let project: Vec<&Path> = [
+            Some(repo.root.as_path()),
+            Some(repo.worktrees.as_path()),
+            state,
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        lock(&self.shared().outside_writes).follow(key, event, &project, home.as_deref())
     }
 }
 

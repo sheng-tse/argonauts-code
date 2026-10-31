@@ -10,7 +10,8 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use argonauts_core::behaviors::behavior_world::{ModelFacts, WorldFacts};
-use argonauts_core::look::logos::{Logo, LogoMark, logo_for};
+use argonauts_core::look::display_names;
+use argonauts_core::look::logos::{self, Logo};
 use time::Date;
 
 use super::rules;
@@ -558,15 +559,11 @@ impl Universe {
         u32::try_from(at).ok()
     }
 
-    /// Something in the universe moves: a star breathes or goes round its partner, a
-    /// protostar's cloud turns, a comet or a meteor flies. A galaxy's own turn is told, not
-    /// drawn, so its disc stays one picture.
+    /// Something in the universe moves, which it always does while it has a galaxy: each
+    /// galaxy's glow breathes and its stars twinkle, whatever happened lately. A galaxy's own
+    /// turn is told, not drawn, so its disc stays one picture.
     pub fn moves(&self) -> bool {
-        self.stars
-            .iter()
-            .any(|s| s.pulse.is_some() || s.binary.is_some() || s.kind == StarKind::Protostar)
-            || !self.comets.is_empty()
-            || !self.meteors.is_empty()
+        !self.makers.is_empty()
     }
 
     /// Something in a maker's galaxy moves: its stars breathe, a binary goes round, a
@@ -640,10 +637,10 @@ fn makers_of(models: &[ModelFacts]) -> Vec<Maker> {
     makers
 }
 
-/// A maker's galaxy colour.
+/// A maker's galaxy colour: its logo's own where it has one, as Claude's terracotta.
 pub fn maker_rgb(maker: &str) -> [u8; 3] {
     match maker {
-        "anthropic" => [0xe0, 0x8a, 0x66],
+        "anthropic" => [0xd9, 0x77, 0x57],
         "openai" => [0x6a, 0xa6, 0xff],
         "google" => [0x36, 0xcf, 0xe6],
         "alibaba" | "qwen" => [0xff, 0x7a, 0xc6],
@@ -655,32 +652,55 @@ pub fn maker_rgb(maker: &str) -> [u8; 3] {
     }
 }
 
-/// The logo a maker's galaxy carries: its own where the brand folder has one, its own CLI's
-/// where it makes one and has no logo of its own, else its colour dot.
-pub fn maker_logo(maker: &str) -> Logo {
-    let mark = match maker {
-        "anthropic" => Some(LogoMark::ClaudeCode),
-        "openai" => Some(LogoMark::OpenAi),
-        "google" => Some(LogoMark::Antigravity),
-        "alibaba" | "qwen" => Some(LogoMark::Qwen),
-        "moonshot" | "moonshotai" => Some(LogoMark::Kimi),
-        "mistral" => Some(LogoMark::Mistral),
-        "meta" => Some(LogoMark::Meta),
+/// A maker's galaxy colours from its core out to its rim, where its logo has them: Claude's
+/// terracotta, lighter toward the core and deeper toward the rays' tips.
+pub(super) fn maker_steps(maker: &str) -> Option<&'static [(f64, [u8; 3])]> {
+    match maker {
+        "anthropic" => Some(&[
+            (0.0, [0xfd, 0xe6, 0xd8]),
+            (0.1, [0xf4, 0xb3, 0x96]),
+            (0.3, [0xe6, 0x8c, 0x69]),
+            (0.55, [0xd9, 0x77, 0x57]),
+            (1.0, [0xb0, 0x52, 0x36]),
+        ]),
         _ => None,
+    }
+}
+
+/// The colour `t` of the way from the core (0) to the rim (1) along `steps`.
+pub(super) fn step_colour(steps: &[(f64, [u8; 3])], t: f64) -> [u8; 3] {
+    for pair in steps.windows(2) {
+        let ((a, from), (b, to)) = (pair[0], pair[1]);
+        if t <= b {
+            let k = ((t - a) / (b - a)).clamp(0.0, 1.0);
+            return [0, 1, 2].map(|i| {
+                let (from, to) = (f64::from(from[i]), f64::from(to[i]));
+                (from + (to - from) * k).round() as u8
+            });
+        }
+    }
+    steps.last().map_or([255; 3], |(_, c)| *c)
+}
+
+/// The logo a maker's galaxy carries: its own where the app ships one, else its colour dot.
+pub fn maker_logo(maker: &str) -> Logo {
+    let known = match maker {
+        "qwen" => "alibaba",
+        "moonshotai" => "moonshot",
+        other => other,
     };
     Logo {
-        mark,
+        mark: display_names::maker(known).and_then(|maker| maker.logo),
         ..Logo::dot(maker)
     }
 }
 
-/// The logo of whoever serves a model: its CLI for Claude Code, Codex and agy; for a model
-/// OpenCode runs, the provider behind it, such as Ollama for a local model or Kimi, with its
-/// colour dot where that provider has no logo. A model the facts know only by its CLI is the
-/// CLI's own default, so OpenCode's frame stands for it.
-pub fn served_logo(facts: &ModelFacts) -> Logo {
+/// The logo before a model's row: its line's, as Claude's starburst before Opus 5.5 wherever
+/// it runs; where its line has none, whoever serves it, as Ollama's llama. A model the facts
+/// know only by its CLI is the CLI's own default, so the CLI's icon stands for it.
+pub fn model_logo(facts: &ModelFacts) -> Logo {
     let model = (facts.model != facts.agent).then_some(facts.model.as_str());
-    logo_for(&facts.agent, model)
+    logos::model_logo(&facts.agent, model)
 }
 
 const GREY: [u8; 3] = [150, 152, 170];
@@ -721,7 +741,7 @@ fn star_of(models: &[ModelFacts], model: usize, maker: usize, colours: &[[u8; 3]
         maker,
         kind,
         rgb: colours.get(model).copied().unwrap_or(GREY),
-        logo: served_logo(facts),
+        logo: model_logo(facts),
         actions: facts.actions,
         failed: facts.failed,
         last_7_days: facts.last_7_days,

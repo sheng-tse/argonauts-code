@@ -10,13 +10,13 @@
      2. Gemma4 E2B                      128k  tools                                                                   
      3. Llama3.2                        128k  tools                                                                   
      4. Qwen3 Coder 30B                 256k  tools                                                                   
-  ❯  5. Qwen3 Coder 30B (64k)            64k  tools                                                                   
+  ❯  5. Sample Coder 30B (64k)           64k  tools                                                                   
      6. Gemma2 9B                         8k  no tools                                                                
      7. Gemma3 12B                      128k  no tools                                                                
-  ↓  8. Gemma3 12B 32K                   32k  no tools                                                                
+  ↓  8. Sample Gemma 12B 32K             32k  no tools                                                                
     … +11 more                                                                                                        
                                                                                                                       
-  ○ Effort not supported for Qwen3 Coder 30B (64k)                                                                    
+  ○ Effort not supported for Sample Coder 30B (64k)                                                                   
                                                                                                                       
   Enter to save · ctrl+s for this session only · j/k to move · / to filter · Esc to go back                           
                                                                                                                       

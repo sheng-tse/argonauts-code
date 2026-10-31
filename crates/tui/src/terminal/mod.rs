@@ -64,6 +64,9 @@ pub struct InlineTerminal<W: Write> {
     marked: Option<Marked>,
     /// Rows to print over the marked ones on the next frame.
     pending_redraw: Option<Vec<Line<'static>>>,
+    /// Rows a redraw had beyond the marked ones, printed under the history since, so a header
+    /// that grew taller says its new rows once.
+    spilled: Vec<Line<'static>>,
     /// Escapes to send at a cell of the marked rows on the next frame, such as a picture, by
     /// the row among them and the column.
     pending_on_marked: Option<(u16, u16, Vec<u8>)>,
@@ -199,6 +202,7 @@ impl<W: Write> InlineTerminal<W> {
             pending_mark: None,
             marked: None,
             pending_redraw: None,
+            spilled: Vec::new(),
             pending_on_marked: None,
             pending_on_rows: Vec::new(),
             buffers: [Buffer::empty(viewport), Buffer::empty(viewport)],
@@ -267,6 +271,7 @@ impl<W: Write> InlineTerminal<W> {
         let offset = self.pending_history.len();
         self.pending_mark = Some(offset + marked.start..offset + marked.end);
         self.pending_history.extend(lines);
+        self.spilled.clear();
     }
 
     /// Prints `lines` over the marked history rows on the next frame, while every one of them is
@@ -491,6 +496,13 @@ impl<W: Write> InlineTerminal<W> {
             self.scroll_history_away(out)?;
             cleared = true;
             pending = fresh;
+        }
+        let marked_rows = match &mark {
+            Some(mark) => Some(mark.len()),
+            None => self.marked.as_ref().map(|marked| usize::from(marked.rows)),
+        };
+        if let Some(rows) = marked_rows {
+            self.spill_taller_redraw(&mut pending, rows);
         }
         cleared |= self.insert_pending(out, &pending, live, mark)?;
         if self.history_end > screen.height - live {
@@ -997,6 +1009,25 @@ impl<W: Write> InlineTerminal<W> {
             }
         }
         Ok(())
+    }
+
+    /// A redraw with more rows than the `rows` marked, such as a header that names a CLI not
+    /// ready once the checks answer, can't push the history under the marked rows down, so its
+    /// rows past them print as history now. Each prints once, however often the header is
+    /// drawn again.
+    fn spill_taller_redraw(&mut self, pending: &mut Vec<Line<'static>>, rows: usize) {
+        let Some(lines) = self.pending_redraw.as_mut() else {
+            return;
+        };
+        if lines.len() <= rows {
+            return;
+        }
+        for line in lines.split_off(rows) {
+            if !self.spilled.contains(&line) {
+                pending.push(line.clone());
+                self.spilled.push(line);
+            }
+        }
     }
 
     /// Writes `lines` over the marked rows, one row each, padded with blank rows or cut to

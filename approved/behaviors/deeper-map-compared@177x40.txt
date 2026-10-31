@@ -21,8 +21,8 @@ text
   ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼     Untinted  About the same, or too few
   ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼
   ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  ↑  5 more above
-  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  ○  ￼￼ 3.8 Flash (Low)          19
-  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  ●  ￼￼ Opus 5.5                  9
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  ○  ￼￼ 3.8 Flash (Low)    19
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  ●  ￼￼ Opus 5.5            9
   ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  ↓  2 more below
   ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼
   ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  Distinctive to Opus 5.5 · 8 of its 9 actions ·  new  says more than its label
@@ -30,66 +30,68 @@ text
                                                                                                new  No change made
   Point at anything on the map to see what it is.                                                   Listing project files to understand structure
                                                                                                     Checking repository status and local environment setup
-  Summaries · 650 of 823 summarized by Qwen3 Coder 30B (64k) · 173 newer not yet               new  Responded with a greeting
+  Summaries · 650 of 823 summarized by Qwen3 Coder 30B · 173 newer not yet                     new  Responded with a greeting
                                                                                                new  Drafting the retry handler notes
                                                                                                new  Measuring each test suite before a merge
                                                                                                     Reading the token bucket config values
 
 
 
-   r to cycle dates · s this project · d labels or update · tab groupings · h  l  compare · j  the list · t top view · esc back
+   r to cycle dates · s this project · d labels · u update · tab groupings · h  l  compare · j  the list · t top view · esc back
 paint
 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-.bbbbbbbb..cddddddddc...eeeeee....eeeeee....eeeee....eeeeeee....eeeeee....eeeee..............................................................fff.ffff..gggg.g.gggg..gggg.gg.gggg
+.bbbbbbbb..cddddddddc...eeeeee....eeeeee....eeeee....eeeeeee....eeeeee....eeeee..............................................................fff.ffff..eeee.e.eeee..eeee.ee.eeee
 
-..gggggggg....gggggg...cdddddddddc....................................................................cddcdddddc...gg.ggg....gg.gggg....gg.gggggggg....gg.ggggggg....gg.ggggggg
+..eeeeeeee....eeeeee...cdddddddddc....................................................................ghhghhhhhg...ee.eee....ee.eeee....ee.eeeeeeee....ee.eeeeeee....ee.eeeeeee
 
-..f.fff.g.g.gggggg.g.g.gggggggg..............................................................................................................................gggggg.g.fffffffff
+..f.fff.i.e.eeeeee.i.e.eeeeeeee..............................................................................................................................eeeeee.i.fffffffff
 
-..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..ggggggggg.ii.eeee.eee
-..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..gggg.ggg.ggggg.gg.ggg.ggggg
-..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..ggg.ggggg.gg.gggg.ggggg.gggg.ggggg.gggg
-..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..jj.eeee.eeee.gg.gg.ggggg.gg.gggg
-..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..kk.eeee......ggggg.gg.gg
-..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..ll.eeee......gggg.gg.gggg
-..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..mm.eeee.eeee.gggg.gg.gggg
-..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..nn.eeeeeeee..ggggg.ggg.ggggg.gg.ggg.ggg
-..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh
-..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..g..g.gggg.ggggg
-..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..g..oo.ggg.ggggg.ggggg..........gg
-..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..p..ii.eeee.eee..................g
-..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..g..g.gggg.ggggg
-..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh
-..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..bbbbbbbbbbb.bb.bbbb.bbb.g.g.gg.ggg.g.ggggggg.g.qrrrq.gggg.gggg.gggg.ggg.ggggg
-..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..........eeeee.eeeeee.eee.eeeee.eeeeeeeeeeee
-..............................................................................................qrrrq.ee.eeeeee.eeee
-..ggggg.gg.gggggggg.gg.ggg.ggg.gg.ggg.gggg.gg.ggg...................................................eeeeeee.eeeeeee.eeeee.ee.eeeeeeeeee.eeeeeeeee
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..iiiiiiiii.kk.eeee.eee
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..iiii.iii.iiiii.ii.iii.iiiii
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..iii.iiiii.ii.iiii.iiiii.iiii.iiiii.iiii
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..ll.eeee.eeee.ii.ii.iiiii.ii.iiii
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..mm.eeee......iiiii.ii.ii
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..nn.eeee......iiii.ii.iiii
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..oo.eeee.eeee.iiii.ii.iiii
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..pp.eeeeeeee..iiiii.iii.iiiii.ii.iii.iii
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..i..i.iiii.iiiii
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..i..qq.iii.iiiii.iiiii....ii
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..r..kk.eeee.eee............i
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..i..i.iiii.iiiii
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..bbbbbbbbbbb.bb.bbbb.bbb.i.i.ii.iii.i.iiiiiii.i.sttts.iiii.iiii.iiii.iii.iiiii
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..........eeeee.eeeeee.eee.eeeee.eeeeeeeeeeee
+..............................................................................................sttts.ee.eeeeee.eeee
+..iiiii.ii.iiiiiiii.ii.iii.iii.ii.iii.iiii.ii.iii...................................................eeeeeee.eeeeeee.eeeee.ee.eeeeeeeeee.eeeeeeeee
 ....................................................................................................eeeeeeee.eeeeeeeeee.eeeeee.eee.eeeee.eeeeeeeeeee.eeeee
-..ggggggggg.g.ggg.gg.ggg.gggggggggg.gg.ggggg.ggggg.ggg.ggggg.g.ggg.ggggg.ggg.ggg..............qrrrq.eeeeeeeee.eeee.e.eeeeeeee
-..............................................................................................qrrrq.eeeeeeee.eee.eeeee.eeeeeee.eeeee
-..............................................................................................qrrrq.eeeeeeeee.eeee.eeee.eeeee.eeeeee.e.eeeee
+..iiiiiiiii.i.iii.ii.iii.iiiiiiiiii.ii.iiiii.iiiii.iii.i.iii.iiiii.iii.iii....................sttts.eeeeeeeee.eeee.e.eeeeeeee
+..............................................................................................sttts.eeeeeeee.eee.eeeee.eeeeeee.eeeee
+..............................................................................................sttts.eeeeeeeee.eeee.eeee.eeeee.eeeeee.e.eeeee
 ....................................................................................................eeeeeee.eee.eeeee.eeeeee.eeeeee.eeeeee
 
 
 
-...g.gg.ggggg.ggggg.g.g.gggg.ggggggg.g.g.gggggg.gg.gggggg.g.ggg.ggggggggg.g.g..g..ggggggg.g.g..ggg.gggg.g.g.ggg.gggg.g.ggg.gggg
+...i.ii.iiiii.iiiii.i.i.iiii.iiiiiii.i.i.iiiiii.i.i.iiiiii.i.iii.iiiiiiiii.i.i..i..iiiiiii.i.i..iii.iiii.i.i.iii.iiii.i.iii.iiii
 key
 . blank
-a fg=#b1b9f9  ; Code, Question, BarFill, CatMcp
+a fg=#b1b9f9  ; Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp
 b fg=#c8d3f5 bold  ; the terminal's own
-c bg=#373737  ; UserBand
-d fg=#c8d3f5 bg=#373737 bold  ; the terminal's own, on UserBand
+c bg=#b1b9f9  ; Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp
+d fg=#14161f bg=#b1b9f9 bold  ; BadgeText, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp
 e fg=#c8d3f5  ; the terminal's own
-f fg=#b1b9f9 bold  ; Code, Question, BarFill, CatMcp
-g fg=#999999  ; Dim, ModeSupervised, SyntaxComment
-h picture=deeper-map
-i logo=claudecode
-j bg=#b44a4e
-k bg=#8c5a4c
-l bg=#4a627c
-m bg=#3e5a9a
-n bg=#4e5e48
-o logo=antigravity
-p fg=#f7a07f  ; CliClaude
-q bg=#ffc107  ; Warn, ModeAuto, Tick
-r fg=#1f202f bg=#ffc107 bold  ; on Warn, on ModeAuto, on Tick
+f fg=#b1b9f9 bold  ; Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp
+g bg=#fb923c  ; AgentOrange
+h fg=#14161f bg=#fb923c bold  ; BadgeText, on AgentOrange
+i fg=#999999  ; Dim, ModeSupervised, SyntaxComment
+j picture=000001
+k logo=claude
+l bg=#b44a4e
+m bg=#8c5a4c
+n bg=#4a627c
+o bg=#3e5a9a
+p bg=#4e5e48
+q logo=gemini
+r fg=#f7a07f  ; CliClaude
+s bg=#ffc107  ; Warn, ModeAuto, Tick, Warn, ModeAuto, Tick
+t fg=#1f202f bg=#ffc107 bold  ; on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick

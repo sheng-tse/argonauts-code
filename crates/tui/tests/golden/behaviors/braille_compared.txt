@@ -3,19 +3,19 @@
 
   Overview    Models    Behaviors             By model    By CLI    By role    By workflow    By project    By outcome
 
-                                     ⠈⠉                             Comparing GPT 6 Luna                       Actions
-                                           ⡀ ⣀ ⡀                    With the other models
-    ⣀⡄ ⢀                                ⡨⣸⣼⣕⣿⣶⣧⣔⢅                      Behind the dots: GPT 6 Luna does this more
-  ⠆          ⠐  ⣠⣦⣶⣦⡆⠄                   ⠁⠊⠓⠙⠉⠝⠈  ⡀                    Behind the dots: GPT 6 Luna does this less
-              ⡀ ⠈⠙⠙⠉⠃⠈
-          ⢀       ⠈                       ⡀                   ⡀     ○ Haiku 5.5                                    406
-      ⢀⣦⣤⣤⡀                      ⠒                          ⢲⣵⣶⣵⣧⣗  ● GPT 6 Luna                                    66
-       ⠉⠉⠁                                                   ⠈⠙⠈⠈   ○ GPT 5.6 Luna                                  49
+                                     ⠘⠛⠃                            Comparing GPT 6 Luna                       Actions
+                                           ⣀ ⣀⡀⣀                    With the other models
+    ⣀⣤ ⢠⡄                               ⣸⣿⣿⣿⣿⣿⣿⣽⣿⡀                  red: GPT 6 Luna does this more
+  ⣶ ⠉⠉ ⠈⠁    ⠰⠆ ⣠⣶⣶⣶⣶⣤                  ⠉⠛⠿⠿⠿⠟⣿⠟⠋⠁⣀                 blue: GPT 6 Luna does this less
+              ⣀ ⠙⠻⠿⠟⠿⠘⠃                           ⠉               
+          ⢀⡀  ⠉   ⠘⠃                      ⣀                   ⣤ ⣀⣀  ○ Haiku 5.5                                    406
+      ⢀⣶⣤⣤⣌⠁                     ⠶⠆       ⠉                 ⢿⣿⣿⣿⣿⣿  ● GPT 6 Luna                                    66
+      ⠈⠛⠛⠛⠉                                                 ⠈⠙⠻⠟⠛⠋  ○ GPT 5.6 Luna                                  49
                                                                     ○ Haiku 4.5                                     22
-                       ⢀⢀        ⠣ ⠐⠂                               ○ Gemini 3.8 Flash                              19
-                       ⠁⠐⠄⡠⡄⢂    ⣍⢉⡒    
-                        ⠴⠠⢒⠄ ⠐⢀ ⡈                ⠐⠉⠚⠓
-                            ⠒ ⡀⠠⠥⢂⠈
+                       ⣀⣀⡀       ⢿⡄⠰⠶                               ○ Gemini 3.8 Flash                              19
+                       ⠛⠹⣷⣠⣤⢶⡀   ⣿⣛⣷⠆                             
+                        ⣴⣦⣿⣿⠈⠱⢆⡀⣘⠋⠉⠉             ⠰⠟⠿⠿⠆            
+                          ⠈⠁⠶⠆⣬⢡⣿⣶⡘⠃                              
 
   ◉ Reviewed git history and previous implementations · GPT 6 Luna · tie-breaker-2 · label: read git history
     The map stays as it was; move away and the ring goes; click opens its card

@@ -118,7 +118,10 @@ fn the_header_sends_the_pictures_ghostty_draws() {
         let width = page.width / PAGE_FRAMES;
         assert_eq!(
             (width, page.height),
-            (usize::from(cell.0) * 9, usize::from(cell.1) * 3)
+            (
+                usize::from(cell.0) * 9,
+                usize::from(cell.1) * look.picture_rows()
+            )
         );
         let frames = mascot.frames();
         // The moments the page drew that a frame every 50 ms draws too.

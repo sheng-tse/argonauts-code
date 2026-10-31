@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use argonauts_core::NoteLevel;
 use argonauts_core::app::{AppEvent, AwakeHold};
+use argonauts_core::base::clock;
 use argonauts_core::settings::Span;
 use argonauts_core::settings::awake::AwakeSettings;
 use time::OffsetDateTime;
@@ -292,9 +293,7 @@ pub(crate) fn command(ctx: &mut Ctx, time: Option<String>) -> anyhow::Result<Vec
         Some("on") => ctx.awake.until_quit(),
         Some("off") => ctx.awake.back_to_default(&settings),
         Some(time) => match Span::new(time).parse() {
-            Ok(Some(span)) if !span.is_zero() => {
-                ctx.awake.for_a_time(span, time, OffsetDateTime::now_utc())
-            }
+            Ok(Some(span)) if !span.is_zero() => ctx.awake.for_a_time(span, time, clock::now_utc()),
             _ => anyhow::bail!("/awake takes on, off, or a time such as 2h or 45m"),
         },
     };
@@ -616,7 +615,7 @@ mod tests {
         assert_eq!(awake.back_to_default(&on).text, BACK);
         assert_eq!(held.load(Ordering::SeqCst), 0);
         // So is a bare `/awake` while a time runs.
-        awake.for_a_time(Duration::from_secs(60), "1m", OffsetDateTime::now_utc());
+        awake.for_a_time(Duration::from_secs(60), "1m", clock::now_utc());
         assert_eq!(awake.switch(&on).text, BACK);
         assert_eq!(held.load(Ordering::SeqCst), 0);
     }

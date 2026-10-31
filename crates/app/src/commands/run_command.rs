@@ -444,7 +444,9 @@ fn plain_line(event: &RunEvent) -> Option<String> {
 fn note_line(note: &Note) -> String {
     let mut line = match note.level {
         NoteLevel::Info | NoteLevel::Aside | NoteLevel::Quiet => note.line().to_owned(),
-        NoteLevel::Warn | NoteLevel::Caution => format!("warning: {}", note.line()),
+        NoteLevel::Warn | NoteLevel::Caution | NoteLevel::Ask => {
+            format!("warning: {}", note.line())
+        }
         NoteLevel::Error => format!("error: {}", note.line()),
     };
     for detail in note.detail().into_iter().flat_map(str::lines) {

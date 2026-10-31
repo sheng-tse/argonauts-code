@@ -21,7 +21,8 @@ impl BehaviorsTab {
     }
 
     /// The keys every key line of the sub-tab starts with, on its rows and on the tabs alike:
-    /// the period, the projects and what `d` switches to now, or `x` while Summaries are made.
+    /// the period, the projects and what `d` switches to now, then `u` while Summaries wait
+    /// to add actions, or `x` while Summaries are made.
     pub fn own_keys(&self) -> Vec<String> {
         if self.deep.asking() {
             return Vec::new();
@@ -36,6 +37,9 @@ impl BehaviorsTab {
             && let Some(shown) = self.shown()
         {
             keys.push(d_key(shown).to_owned());
+            if self.claims(KeyCode::Char('u'), true) {
+                keys.push("u update".to_owned());
+            }
         }
         keys
     }
@@ -190,12 +194,11 @@ impl BehaviorsTab {
 }
 
 /// What `d` switches to from the map on screen: Summaries from the label map, or their setting
-/// up where none are kept; the labels from Summaries, or an update where actions wait.
+/// up where none are kept; the labels from Summaries.
 fn d_key(shown: Shown) -> &'static str {
     match shown {
         Shown::Labels { kept: true } => "d summaries",
         Shown::Labels { kept: false } => "d set up summaries",
-        Shown::Summaries { unsummarized: 0 } => "d labels",
-        Shown::Summaries { .. } => "d labels or update",
+        Shown::Summaries { .. } => "d labels",
     }
 }

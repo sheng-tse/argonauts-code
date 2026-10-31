@@ -708,6 +708,36 @@ fn marked_rows_print_over_in_place_while_they_show() {
     assert!(scrollback(&mut term).is_empty());
 }
 
+/// A header that grows taller, as it does once the CLI checks find one not ready, prints the
+/// rows it gained under the history, once, and nothing under it moves.
+#[test]
+fn a_taller_redraw_prints_its_new_rows_below_once() {
+    let mut term = terminal(8, 0);
+    term.insert_marked_history(history(&["", "old header", ""]), 0..3);
+    draw(&mut term, &live(&["> "]));
+    term.insert_history(history(&["a notice"]));
+    draw(&mut term, &live(&["> "]));
+    let grown = || history(&["", "new header", "", "Codex: not ready", ""]);
+    term.redraw_marked(grown());
+    draw(&mut term, &live(&["> "]));
+    term.redraw_marked(grown());
+    draw(&mut term, &live(&["> "]));
+
+    assert_eq!(
+        screen(&term),
+        [
+            "",
+            "new header",
+            "",
+            "a notice",
+            "Codex: not ready",
+            "",
+            "",
+            ">"
+        ]
+    );
+}
+
 /// History that scrolled up still finds its marked rows.
 #[test]
 fn marked_rows_are_found_after_history_scrolls_up() {

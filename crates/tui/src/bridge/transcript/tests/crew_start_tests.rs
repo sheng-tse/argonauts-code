@@ -159,6 +159,11 @@ fn started() -> RunStarted {
 }
 
 fn screen() -> Screen {
+    screen_of(false)
+}
+
+/// The crew's start, its workflow seating a council when it `talks`.
+fn screen_of(talks: bool) -> Screen {
     let mut screen = Screen::new();
     let turn = TurnId::numbered(1);
     screen.send(AppEvent::Conversation {
@@ -171,6 +176,7 @@ fn screen() -> Screen {
             uncommitted: Vec::new(),
             settings_sha256: None,
             continues: false,
+            opens_a_talk: false,
         },
     });
     screen.send(AppEvent::Conversation {
@@ -220,6 +226,7 @@ fn screen() -> Screen {
             description: String::new(),
             phases: vec![phase(0, "Build"), phase(1, "Review"), phase(2, "Merge")],
             required: Vec::new(),
+            talks,
         }),
     ))));
     screen
@@ -409,4 +416,22 @@ fn assert_looks(theme: &Theme, lines: &[Line<'_>], picture: &[Vec<(char, Look)>]
             assert_eq!(&got, want, "row {row} column {column} {c:?}");
         }
     }
+}
+
+/// A workflow that seats a council opens straight into the council's conversation: no
+/// Workflow row comes before its heading.
+#[test]
+fn a_council_opens_with_no_workflow_row() {
+    let theme = theme();
+    let printed = |talks| {
+        drawn(screen_of(talks).printed(&theme))
+            .iter()
+            .map(|line| plain_text(std::slice::from_ref(line)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(printed(false).contains("Workflow("));
+    let council = printed(true);
+    assert!(!council.contains("Workflow("), "{council}");
+    assert!(council.starts_with(Glyphs::UNICODE.prompt), "{council}");
 }

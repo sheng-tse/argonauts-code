@@ -145,6 +145,7 @@ pub fn settle(tasks: &mut [TaskSpec], offer: &Offer) -> Vec<String> {
             how: proposed.way,
             asked_by_you: false,
             steps: None,
+            why: None,
         });
     }
     moved
@@ -351,12 +352,14 @@ mod tests {
             how: Way::Agents { count: 2 },
             asked_by_you: true,
             steps: None,
+            why: None,
         });
         assert_eq!(agents_misfit(&routes), None);
         routes.way = Some(TaskWay {
             how: Way::Agents { count: 3 },
             asked_by_you: true,
             steps: None,
+            why: None,
         });
         assert_eq!(
             agents_misfit(&routes).as_deref(),
@@ -411,11 +414,13 @@ mod tests {
             how: best_of_n.clone(),
             asked_by_you: true,
             steps: None,
+            why: None,
         });
         tasks[2].way = Some(TaskWay {
             how: best_of_n.clone(),
             asked_by_you: false,
             steps: None,
+            why: None,
         });
         let moved = settle(&mut tasks, &offer(&ways));
         assert_eq!(

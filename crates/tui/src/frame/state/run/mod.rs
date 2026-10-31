@@ -35,7 +35,7 @@ use super::session::{SessionState, SessionStatus};
 
 mod talk;
 
-pub use talk::{SeatDoing, SeatNow, Talk};
+pub use talk::{SeatDoing, SeatNow, Talk, backs};
 
 #[derive(Debug, Clone)]
 pub struct RunState {

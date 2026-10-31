@@ -1,19 +1,26 @@
-//! How the universe moves in the terminal: stepped 8 times a second, every loop rounded to a
-//! whole number of steps that fits a 30-second cycle, so each moving thing's pictures repeat and
-//! the screen sends each one once. Moving things that overlap are drawn together, over a copy of
-//! what lies still behind them.
+//! How the universe moves in the terminal: stepped at the world's rate, 12 or 16 times a second,
+//! every loop rounded to whole quarter seconds that fit a 30-second cycle. A loop then takes
+//! whole steps at either rate, so each moving thing's pictures repeat and the screen sends each
+//! one once. Moving things that overlap are drawn together, over a copy of what lies still behind
+//! them.
+//!
+//! Time is counted here in ticks, 48 a second, so a step at either rate is a whole number of them
+//! and the same loop comes round on the same tick.
 
-/// Steps a second.
-pub(super) const FPS: f64 = 8.0;
-/// Every loop's steps divide this, 30 seconds of them.
-pub(super) const CYCLE: u32 = 240;
-const LOOPS: [u32; 20] = [
-    1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 16, 20, 24, 30, 40, 48, 60, 80, 120, 240,
+use crate::world::deliver::clock::Rate;
+
+/// Ticks a second.
+pub(super) const TICKS: f64 = 48.0;
+/// Every loop's ticks divide this, 30 seconds of them.
+pub(super) const CYCLE: u32 = 1_440;
+/// The loops that fit the cycle in whole quarter seconds, 12 ticks each.
+const LOOPS: [u32; 16] = [
+    12, 24, 36, 48, 60, 72, 96, 120, 144, 180, 240, 288, 360, 480, 720, 1_440,
 ];
 
-/// The steps a loop of `seconds` takes, rounded to the nearest that divides the cycle.
+/// The ticks a loop of `seconds` takes, rounded to the nearest loop that fits the cycle.
 pub(super) fn steps_for(seconds: f64) -> u32 {
-    let want = (seconds * FPS).max(1.0);
+    let want = (seconds * TICKS).max(1.0);
     LOOPS
         .iter()
         .copied()
@@ -25,14 +32,19 @@ pub(super) fn steps_for(seconds: f64) -> u32 {
         .unwrap_or(CYCLE)
 }
 
-/// The seconds a loop of `seconds` takes once rounded to whole steps.
+/// The seconds a loop of `seconds` takes once rounded to whole quarter seconds.
 pub(super) fn stepped(seconds: f64) -> f64 {
-    f64::from(steps_for(seconds)) / FPS
+    f64::from(steps_for(seconds)) / TICKS
 }
 
-/// The step `t` seconds falls in.
+/// The ticks one step at `rate` takes.
+pub(super) fn ticks_a_step(rate: Rate) -> u64 {
+    (TICKS as u64 / u64::from(rate.per_second().max(1))).max(1)
+}
+
+/// The tick `t` seconds falls in.
 pub(super) fn step_of(t: f64) -> u64 {
-    (t * FPS + 1e-6).floor().max(0.0) as u64
+    (t * TICKS + 1e-6).floor().max(0.0) as u64
 }
 
 fn gcd(a: u32, b: u32) -> u32 {
@@ -101,13 +113,13 @@ pub(super) struct Group {
     pub bounds: Bounds,
     /// Each one's index in the list the groups were made from.
     pub members: Vec<usize>,
-    /// The steps after which its pictures repeat.
+    /// The ticks after which its pictures repeat.
     pub cycle: u32,
 }
 
 /// Where in its loop a group is at `t` seconds, in seconds, so a loop's pictures repeat.
 pub(super) fn looped(group: &Group, t: f64) -> f64 {
-    (step_of(t) % u64::from(group.cycle)) as f64 / FPS
+    (step_of(t) % u64::from(group.cycle)) as f64 / TICKS
 }
 
 /// Gathers moving things into groups, each thing's box and loop given, so no two groups'
@@ -145,4 +157,24 @@ pub(super) fn groups(things: &[(Bounds, u32)]) -> Vec<Group> {
         group.members.sort_unstable();
     }
     out
+}
+
+#[cfg(test)]
+mod rate_tests {
+    use super::*;
+
+    #[test]
+    fn every_loop_comes_round_on_a_whole_step_at_either_rate() {
+        for seconds in [0.1, 0.4, 1.3, 2.0, 7.0, 20.0, 45.0] {
+            let ticks = steps_for(seconds);
+            assert_eq!(CYCLE % ticks, 0, "{seconds}");
+            for rate in [Rate::QUICK, Rate::STEADY] {
+                let steps = stepped(seconds) * f64::from(rate.per_second());
+                assert_eq!(steps.fract(), 0.0, "{seconds} at {rate:?}");
+            }
+        }
+        // A step at 12 a second is 4 ticks, at 16 a second 3.
+        assert_eq!(step_of(Rate::STEADY.seconds(7)), 28);
+        assert_eq!(step_of(Rate::QUICK.seconds(7)), 21);
+    }
 }

@@ -13,7 +13,7 @@ use argonauts_core::runs::engine::{EngineCommand, EngineExit};
 use argonauts_core::runs::events::approval::{
     AnswerAction, ApprovalEvent, ApprovalKind, ApprovalOpened,
 };
-use argonauts_core::runs::events::run::{Party, RunMode, WaitReason};
+use argonauts_core::runs::events::run::{Party, RunLifecycle, RunMode, WaitReason};
 use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::safety::policy::{PolicyOutcome, Verdict};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
@@ -367,5 +367,51 @@ async fn ask_you_about_keeps_a_workflow_change_yours_in_auto() -> anyhow::Result
     assert_eq!(question.kind, ApprovalKind::ChangeRequest);
     assert_eq!(question.mode, ApprovalMode::Supervised);
     assert!(question.needs_you);
+    Ok(())
+}
+
+/// A run started from a supervised session takes that mode before anything opens, so an
+/// approval your settings leave to auto waits for you, and a run woken later keeps it.
+#[tokio::test]
+async fn a_run_asked_to_start_supervised_opens_its_approvals_supervised() -> anyhow::Result<()> {
+    let crew = crew_with_a_change(ApprovalMode::Auto)?;
+    let outcome = crew.start_supervised(RunMode::Crew, "look twice").await?;
+    assert_eq!(outcome.exit, EngineExit::Waiting(WaitReason::Approval));
+    let first_opened = outcome.events.iter().position(|event| {
+        matches!(
+            &event.kind,
+            RunEventKind::Approval(ApprovalEvent::Opened(_))
+        )
+    });
+    let supervised: Vec<usize> = outcome
+        .events
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| {
+            matches!(
+                &event.kind,
+                RunEventKind::Run(RunLifecycle::ApprovalModeChanged {
+                    mode: ApprovalMode::Supervised,
+                    by: Party::User,
+                })
+            )
+        })
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(supervised.len(), 1, "{:?}", outcome.events);
+    assert!(Some(supervised[0]) < first_opened, "{:?}", outcome.events);
+    let question = opened(&outcome.events).unwrap_or_else(|| panic!("no approval opened"));
+    assert_eq!(question.kind, ApprovalKind::ChangeRequest);
+    assert_eq!(question.mode, ApprovalMode::Supervised);
+    assert!(question.needs_you);
+
+    let woken = crew.resume_supervised(outcome.events.clone()).await?;
+    let again = woken.events[outcome.events.len()..].iter().any(|event| {
+        matches!(
+            &event.kind,
+            RunEventKind::Run(RunLifecycle::ApprovalModeChanged { .. })
+        )
+    });
+    assert!(!again, "{:?}", woken.events);
     Ok(())
 }

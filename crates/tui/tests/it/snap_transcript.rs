@@ -180,6 +180,7 @@ fn turn_started(n: u32, text: &str) -> AppEvent {
         uncommitted: vec![],
         settings_sha256: None,
         continues: false,
+        opens_a_talk: false,
     })
 }
 
@@ -1020,6 +1021,7 @@ fn direct_edit_turn(driver: &mut TestDriver, text: Option<&str>) {
         uncommitted: vec![],
         settings_sha256: None,
         continues: false,
+        opens_a_talk: false,
     }));
     let read = serde_json::json!({ "file_path": "greet.txt" });
     driver.send_all(call(1, "t1", "Read", read, true, "1\thello world"));
@@ -1077,6 +1079,7 @@ fn a_direct_turn_fell_back_goes_on_under_one_line() {
                 uncommitted: vec![],
                 settings_sha256: None,
                 continues: false,
+                opens_a_talk: false,
             }));
             let edit = serde_json::json!({
                 "file_path": "invoice/money.py",

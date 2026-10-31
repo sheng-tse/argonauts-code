@@ -549,6 +549,7 @@ mod tasks {
                 how,
                 asked_by_you: false,
                 steps: None,
+                why: None,
             }),
         })))
     }
@@ -904,6 +905,89 @@ mod working_line {
         assert_eq!(line.details, ["0/1 tasks"]);
         assert_eq!(line.note, None);
     }
+
+    fn open_point() -> Point {
+        Point {
+            number: 1,
+            words: "Where counts live".to_owned(),
+            state: PointState::Open,
+            raised_by: None,
+            sides: ["Redis", "memory"]
+                .map(|words| Side {
+                    words: words.to_owned(),
+                    backers: Vec::new(),
+                    reason: String::new(),
+                })
+                .to_vec(),
+        }
+    }
+
+    /// The council's run as the work on screen, with the talk's limits set and one point open.
+    fn talking() -> (Bridge, ViewModel) {
+        let mut bridge = bridge();
+        let mut model = ViewModel::default();
+        seated_three(&mut bridge, &mut model);
+        let mode = AppEvent::Mode {
+            mode: AppMode::Working { run: run() },
+        };
+        bridge.on_event(&mut model, &mode, Instant::now());
+        let limits = CouncilEventKind::Limits {
+            tokens: 200_000,
+            minutes: 15,
+        };
+        send(&mut bridge, &mut model, 2, limits);
+        let points = CouncilEventKind::Points {
+            points: vec![open_point()],
+        };
+        send(&mut bridge, &mut model, 3, points);
+        (bridge, model)
+    }
+
+    /// A general tip that a new stretch of work brings never shows under the council's line,
+    /// so the points still open do; the council's own tip stays.
+    #[test]
+    fn no_general_tip_shows_while_the_council_has_the_line() {
+        let (mut bridge, mut model) = talking();
+        let line = model.bottom.working.as_ref().expect("a working line");
+        assert_eq!(
+            line.tip,
+            Some(crate::council::TIP),
+            "the council's tip stays"
+        );
+
+        let line = model.bottom.working.as_mut().expect("a working line");
+        line.tip = Some("Tip: a general tip");
+        let points = CouncilEventKind::Points {
+            points: vec![open_point()],
+        };
+        send(&mut bridge, &mut model, 4, points);
+        let line = model.bottom.working.as_ref().expect("a working line");
+        assert_eq!(line.tip, None);
+        assert_eq!(line.note.as_deref(), Some("Still open: Redis or memory"));
+    }
+
+    /// Once the seats agree, the line stops parleying: with no limit, count or points open it
+    /// says the plan is being written, and the plan's question takes its place.
+    #[test]
+    fn once_the_talk_ends_the_line_says_the_plan_is_being_written() {
+        let (mut bridge, mut model) = talking();
+        send(
+            &mut bridge,
+            &mut model,
+            4,
+            CouncilEventKind::Agreed { points: 1 },
+        );
+        let line = model.bottom.working.as_ref().expect("a working line");
+        assert_eq!(line.verb, crate::council::WRITING_PLAN);
+        assert_eq!(line.tokens_limit, None);
+        assert!(line.details.is_empty(), "{:?}", line.details);
+        assert_eq!(line.note, None);
+
+        let plan = super::plan::opens(super::plan::packet(Vec::new(), Vec::new()));
+        happen(&mut bridge, &mut model, 5, plan, None, 0);
+        assert!(model.bottom.question.is_some(), "the plan's question");
+        assert_eq!(model.bottom.working, None);
+    }
 }
 
 mod plan {
@@ -977,7 +1061,7 @@ mod plan {
         }
     }
 
-    fn opens(packet: PlanPacket) -> RunEventKind {
+    pub(super) fn opens(packet: PlanPacket) -> RunEventKind {
         RunEventKind::Approval(ApprovalEvent::Opened(Box::new(ApprovalOpened {
             id: ApprovalId::numbered(1),
             kind: ApprovalKind::Plan,
@@ -1006,8 +1090,41 @@ mod plan {
             .unwrap_or_else(|| panic!("a row with {words:?} in {rows:#?}"))
     }
 
+    /// A seat that missed two turns shows under the plan as sitting out, with why, and the
+    /// plan gives it no task.
+    #[test]
+    fn the_plan_says_who_sat_out_and_why() {
+        let mut bridge = bridge();
+        let mut model = ViewModel::default();
+        seated_three(&mut bridge, &mut model);
+        send(
+            &mut bridge,
+            &mut model,
+            2,
+            CouncilEventKind::Missed(argonauts_core::runs::events::council::Missed {
+                seat: SeatId::numbered(3),
+                turn: argonauts_core::runs::events::council::MissedTurn::Message,
+                limit_secs: None,
+                for_good: true,
+            }),
+        );
+        let tasks = vec![
+            spec(1, "Redis bucket", opus(), Way::OwnSession, false),
+            spec(2, "Plan limits", luna(), Way::OwnSession, false),
+        ];
+        happen(&mut bridge, &mut model, 3, plan_opens(tasks), None, 0);
+        let (printed, live) = rows(&mut model);
+        let all: Vec<String> = printed.into_iter().chain(live).collect();
+        let sat = row_with(&all, "sat out after missing two turns");
+        assert!(
+            sat.contains("3.8 Flash") && sat.contains("so it does no task"),
+            "{sat}"
+        );
+    }
+
     /// When the plan opens for your approval, the note keeper's who-does-what lists each task
-    /// with its seat, its way, "You asked" for a way you named, and who checks it.
+    /// with its seat, its way, why that way, and who checks it, under what the keeper says of it
+    /// and over how it gave the tasks out.
     #[test]
     fn the_plan_to_approve_shows_who_does_what() {
         let mut bridge = bridge();
@@ -1023,10 +1140,14 @@ mod plan {
             true,
         );
         bucket.reviewers = vec![luna()];
+        let mut route_tests = spec(4, "Route tests", flash(), Way::Agents { count: 3 }, false);
+        if let Some(way) = route_tests.way.as_mut() {
+            way.why = Some("3 files, none shared".to_owned());
+        }
         let tasks = vec![
             bucket,
             spec(2, "Plan limits", luna(), Way::OwnSession, true),
-            spec(4, "Route tests", flash(), Way::Agents { count: 3 }, false),
+            route_tests,
         ];
         happen(
             &mut bridge,
@@ -1056,7 +1177,12 @@ mod plan {
             tests.contains("3.8 Flash") && tests.contains(" 3 agents       "),
             "{tests}"
         );
-        assert!(!tests.contains("You asked"), "{tests}");
+        assert!(
+            !tests.contains("You asked") && tests.contains("3 files, none shared"),
+            "{tests}"
+        );
+        row_with(&all, "As note keeper I propose who does what");
+        row_with(&all, "Where you said how, that binds");
         row_with(&all, "Only you see Checked by");
 
         // The same plan opened again adds nothing.
@@ -1069,6 +1195,29 @@ mod plan {
                 .any(|row| row.contains("Only you see Checked by")),
             "{printed:?} {live:?}"
         );
+    }
+
+    /// Opened right after the note keeper's plan message, who-does-what is that message's next
+    /// bubble, with no name row of its own.
+    #[test]
+    fn who_does_what_follows_the_keepers_plan_message() {
+        let mut bridge = bridge();
+        let mut model = ViewModel::default();
+        seated_three(&mut bridge, &mut model);
+        let keeper = Speaker::Seat(SeatId::numbered(1));
+        let said = message("m-1", keeper, "The plan limits, in one task.");
+        send(&mut bridge, &mut model, 2, said);
+        let tasks = vec![spec(2, "Plan limits", luna(), Way::OwnSession, true)];
+        happen(&mut bridge, &mut model, 3, plan_opens(tasks), None, 0);
+        let (printed, live) = rows(&mut model);
+        let all: Vec<String> = printed.into_iter().chain(live).collect();
+        assert!(
+            !all.iter().any(|row| row.contains("· keeps the notes")),
+            "{all:#?}"
+        );
+        let at = |words: &str| all.iter().position(|row| row.contains(words));
+        let (said, proposing) = (at("in one task"), at("As note keeper I propose"));
+        assert!(said.is_some() && said < proposing, "{all:#?}");
     }
 
     /// With two seats of one model, the plan names the seat it gives each task, by its number,

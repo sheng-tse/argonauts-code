@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use argonauts_core::agents::session_runner::{RunnerDirectory, SessionLimits, model_run};
+use argonauts_core::base::clock;
 use argonauts_core::base::future::BoxFuture;
 use argonauts_core::base::names::{AgentId, ModelRef, RoleName};
 use argonauts_core::models::limits::{
@@ -373,7 +374,7 @@ impl Limits {
     }
 
     fn retry_at(&self) -> OffsetDateTime {
-        OffsetDateTime::now_utc() + cooldown(&self.settings.health)
+        clock::now_utc() + cooldown(&self.settings.health)
     }
 
     /// A sign-in error. A login is the fix only where the CLI's own check says it's logged out:
@@ -942,7 +943,7 @@ impl LimitsService for Limits {
         if workers.is_empty() {
             return None;
         }
-        let now = OffsetDateTime::now_utc();
+        let now = clock::now_utc();
         let mut agent_ids: Vec<AgentId> = workers.iter().map(ModelRef::agent_id).collect();
         agent_ids.sort();
         agent_ids.dedup();

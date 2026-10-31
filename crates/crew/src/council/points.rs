@@ -9,7 +9,6 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use argonauts_core::base::names::SeatId;
-use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::runs::events::approval::{
     AnswerAction, ApprovalKind, ApprovalPacket, CouncilPacket, CouncilQuestion, FreeText,
 };
@@ -444,12 +443,12 @@ async fn ask_you(
     alone: bool,
 ) -> EngineResult<Answer> {
     // Each side as you read it, with the seats it names by name, beside the words it keeps.
-    let names = DisplayNames::default();
+    let names = host.names();
     let for_you = |words: &str| {
         relay::draw_markers(words, |seat| {
             council
                 .seat(seat)
-                .map_or_else(|| "a seat".to_owned(), |seat| seats::name(seat, &names))
+                .map_or_else(|| "a seat".to_owned(), |seat| seats::name(seat, names))
         })
     };
     let mut sides: Vec<(String, String)> = point
@@ -488,7 +487,7 @@ async fn ask_you(
     let request = ApprovalRequest {
         at: Some(call.at.clone()),
         kind: ApprovalKind::Question,
-        title: format!("{}: which way?", for_you(&point.words)),
+        title: format!("{}: which way?", as_asked(&for_you(&point.words))),
         task: None,
         packet: ApprovalPacket::Council(CouncilPacket {
             talk: council.talk.clone(),
@@ -527,6 +526,15 @@ async fn ask_you(
     }))
 }
 
+/// A point's words as a question asks about them: a point written as a sentence loses its
+/// closing stop, so the question doesn't read "growth.: which way?".
+fn as_asked(words: &str) -> &str {
+    words
+        .trim()
+        .trim_end_matches(['.', ';', ':', ','])
+        .trim_end()
+}
+
 const LEAVE_IT_OUT: &str = "Leave it out";
 
 /// The way a point you leave to the council goes: the side the most seats back, the first of
@@ -551,6 +559,15 @@ mod tests {
 
     fn seat(n: u32) -> SeatId {
         SeatId::numbered(n)
+    }
+
+    #[test]
+    fn a_point_written_as_a_sentence_is_asked_without_its_stop() {
+        assert_eq!(
+            as_asked("Eviction waits, despite per-key map growth."),
+            "Eviction waits, despite per-key map growth"
+        );
+        assert_eq!(as_asked("Redis or memory"), "Redis or memory");
     }
 
     fn stance(point: u32, stance: Stance) -> PointStance {

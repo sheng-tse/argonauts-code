@@ -153,27 +153,42 @@ impl Store {
         fs::rename(next, self.dir.join(LAYOUT))
     }
 
-    /// Drops every entry of a run that's no longer recorded, each run known by its project's
-    /// state folder and its id, and returns how many summaries went. An entry kept before keys
-    /// named the project goes too, since it can't say which project's action it was. The
-    /// vectors stay: they're keyed by words, not by a run.
-    pub fn prune(&self, runs: &HashSet<(String, String)>) -> io::Result<usize> {
-        let recorded =
-            |action: &ActionKey| runs.contains(&(action.repo.clone(), action.run.clone()));
+    /// Every run with a summary or a dot kept, each by its project's state folder and its id.
+    pub fn runs(&self) -> HashSet<(String, String)> {
+        let summarized = self.summary_lines().into_iter().map(|line| line.action);
+        let placed = self
+            .layout()
+            .into_iter()
+            .flat_map(|layout| layout.points)
+            .map(|point| point.action);
+        summarized
+            .chain(placed)
+            .map(|action| (action.repo, action.run))
+            .collect()
+    }
+
+    /// Drops every entry of the runs that are `gone`, each run known by its project's state
+    /// folder and its id, and returns how many summaries went. The vectors stay: they're keyed
+    /// by words, not by a run.
+    pub fn prune(&self, gone: &HashSet<(String, String)>) -> io::Result<usize> {
+        if gone.is_empty() {
+            return Ok(0);
+        }
+        let stays = |action: &ActionKey| !gone.contains(&(action.repo.clone(), action.run.clone()));
         let lines = self.summary_lines();
-        let kept: Vec<&SummaryLine> = lines.iter().filter(|line| recorded(&line.action)).collect();
-        let gone = lines.len() - kept.len();
-        if gone > 0 {
+        let kept: Vec<&SummaryLine> = lines.iter().filter(|line| stays(&line.action)).collect();
+        let dropped = lines.len() - kept.len();
+        if dropped > 0 {
             rewrite(&self.dir, SUMMARIES, &kept)?;
         }
         if let Some(mut layout) = self.layout() {
             let before = layout.points.len();
-            layout.points.retain(|point| recorded(&point.action));
+            layout.points.retain(|point| stays(&point.action));
             if layout.points.len() != before {
                 self.save_layout(&layout)?;
             }
         }
-        Ok(gone)
+        Ok(dropped)
     }
 }
 
@@ -301,15 +316,25 @@ mod tests {
                 points,
             })
             .unwrap();
-        let runs: HashSet<(String, String)> = [(COUNCIL.to_owned(), "run-2".to_owned())].into();
-        assert_eq!(store.prune(&runs).unwrap(), 1);
+        assert_eq!(
+            store.runs(),
+            [
+                (COUNCIL.to_owned(), "run-1".to_owned()),
+                (COUNCIL.to_owned(), "run-2".to_owned())
+            ]
+            .into()
+        );
+        let gone: HashSet<(String, String)> = [(COUNCIL.to_owned(), "run-1".to_owned())].into();
+        assert_eq!(store.prune(&gone).unwrap(), 1);
         let left = store.summary_lines();
         assert_eq!(left.len(), 1);
         assert_eq!(left[0].action.run, "run-2");
         let layout = store.layout().unwrap();
         assert_eq!(layout.points.len(), 1);
         assert_eq!(layout.points[0].action.run, "run-2");
-        assert_eq!(store.prune(&HashSet::new()).unwrap(), 1);
+        assert_eq!(store.prune(&HashSet::new()).unwrap(), 0, "nothing gone");
+        let gone: HashSet<(String, String)> = [(COUNCIL.to_owned(), "run-2".to_owned())].into();
+        assert_eq!(store.prune(&gone).unwrap(), 1);
         assert!(store.summary_lines().is_empty());
     }
 
@@ -324,9 +349,9 @@ mod tests {
         store
             .add_summaries(&[line("run-1", "c2", "ollama/qwen", "Wrote")])
             .unwrap();
-        let runs: HashSet<(String, String)> = [(COUNCIL.to_owned(), "run-1".to_owned())].into();
+        let gone: HashSet<(String, String)> = [(String::new(), "run-1".to_owned())].into();
         assert_eq!(
-            store.prune(&runs).unwrap(),
+            store.prune(&gone).unwrap(),
             1,
             "the line that names no project"
         );

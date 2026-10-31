@@ -117,9 +117,9 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
             }
             Verdict::ApproveWithEdits(note) => {
                 let provider = |worker: &ModelRef| roles::provider(host, worker);
-                let offer = ways::offer_for(host);
+                let (offer, names) = (ways::offer_for(host), host.names());
                 let edited = edits::parse(&note).and_then(|parsed| {
-                    edits::apply(&graph, &limit, &parsed, settings, &provider, &offer)
+                    edits::apply(names, &graph, &limit, &parsed, settings, &provider, &offer)
                 });
                 match edited {
                     Ok(edited) => {
@@ -371,7 +371,7 @@ fn request(host: &Host, call: &StepCall, shown: &Shown) -> ApprovalRequest {
             .is_some_and(|result| result.near_tie),
         judging: review.judging,
         decisions,
-        graph: (*graph).clone(),
+        graph: with_why(host, graph),
         acceptance_tests: test_list(graph),
         limit: (*limit).clone(),
         new_dependencies: division.plan.new_dependencies.clone(),
@@ -503,6 +503,7 @@ fn ways_owed(
         }
     }
     owed.extend(edits::same_maker_checks(
+        host.names(),
         &graph.tasks,
         host.settings(),
         &provider,
@@ -599,6 +600,19 @@ fn how_each_is_done(host: &Host, graph: &TaskGraph) -> Vec<String> {
             ))
         })
         .collect()
+}
+
+/// The tasks with each way's Why, for the plan's Why column.
+fn with_why(host: &Host, graph: &TaskGraph) -> TaskGraph {
+    let offer = ways::offer_for(host);
+    let mut graph = graph.clone();
+    for task in &mut graph.tasks {
+        let why = ways::why(task, &offer, None);
+        if let Some(way) = task.way.as_mut() {
+            way.why = (!why.is_empty()).then_some(why);
+        }
+    }
+    graph
 }
 
 fn dependency_flag(packages: &[String], problem: &str) -> String {

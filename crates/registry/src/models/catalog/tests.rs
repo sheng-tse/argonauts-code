@@ -580,8 +580,9 @@ fn the_shipped_catalog_prices_the_newest_sol() {
     );
 }
 
-/// Every model the shipped catalog lists has a list price in it, and a newer catalog's price
-/// replaces the older one's.
+/// Every model the shipped catalog describes or ranks has a list price in it, and a newer
+/// catalog's price replaces the older one's. A model it gives only a window, as one of agy's,
+/// is listed for the Context tab alone.
 #[test]
 fn every_shipped_model_has_a_list_price() {
     let catalog = shipped_catalog();
@@ -589,6 +590,13 @@ fn every_shipped_model_has_a_list_price() {
         let Some(model) = entry.id.model.as_deref() else {
             continue;
         };
+        let window_only = CatalogEntry {
+            window: entry.window,
+            ..CatalogEntry::new(entry.id.clone())
+        };
+        if *entry == window_only {
+            continue;
+        }
         assert!(
             catalog
                 .prices
@@ -681,5 +689,29 @@ fn a_local_model_with_a_bad_month_score_or_tag_is_refused() {
             error.contains("[[local]]") && error.contains(why),
             "{error}"
         );
+    }
+}
+
+/// A very first start, offline, finds its window in the shipped catalog: on a CLI's default,
+/// by an alias, or by the model's own id. A model no maker's page gives has none.
+#[test]
+fn the_shipped_catalog_gives_each_cli_model_its_window() {
+    let catalog = shipped_catalog();
+    for (worker, window) in [
+        ("claude-code", 1_000_000),
+        ("claude-code/opus", 1_000_000),
+        ("claude-code/claude-haiku-4-5", 200_000),
+        ("codex", 872_000),
+        ("codex/gpt-5.5", 272_000),
+        ("antigravity-cli", 1_048_576),
+        ("antigravity-cli/gpt-oss-120b-medium", 131_072),
+    ] {
+        assert_eq!(catalog.window(&id(worker)), Some(window), "{worker}");
+    }
+    for unknown in [
+        "claude-code/claude-mythos-preview",
+        "antigravity-cli/gemini-3.6-pro",
+    ] {
+        assert_eq!(catalog.window(&id(unknown)), None, "{unknown}");
     }
 }

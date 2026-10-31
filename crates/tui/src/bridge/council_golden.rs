@@ -538,6 +538,5 @@ fn a_councils_agents_print_one_row_each_as_drawn() {
         (&picture, COLOURS),
         ROWS,
         &theme(),
-        &[],
     );
 }

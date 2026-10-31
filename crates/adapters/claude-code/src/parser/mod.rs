@@ -11,9 +11,9 @@ pub(crate) mod usage;
 use std::collections::{HashMap, HashSet};
 
 use argonauts_core::agents::screen::ScreenChange;
+use argonauts_core::base::clock;
 use argonauts_core::{AgentEvent, ErrorCategory, StreamParser};
 use serde_json::Value;
-use time::OffsetDateTime;
 
 use crate::context::ContextTracker;
 use crate::launch::control;
@@ -150,7 +150,7 @@ impl ClaudeStreamParser {
         // message on a hard stop isn't the turn going on.
         let went_on =
             matches!(kind, "assistant" | "user" | "stream_event") && line.get("error").is_none();
-        if went_on && let Some(reading) = self.limits.went_on(OffsetDateTime::now_utc()) {
+        if went_on && let Some(reading) = self.limits.went_on(clock::now_utc()) {
             events.insert(0, AgentEvent::PlanUsage { reading });
         }
         Some(events)
@@ -186,7 +186,7 @@ impl ClaudeStreamParser {
             subtype if plugin_output::QUIET.contains(&subtype) => Vec::new(),
             subtype if let Some(output) = plugin_output::output(subtype, line) => {
                 let wrap_up = plugin_output::says_wrapping_up(subtype, line)
-                    .then(|| self.limits.notice(line, OffsetDateTime::now_utc()))
+                    .then(|| self.limits.notice(line, clock::now_utc()))
                     .flatten();
                 wrap_up
                     .map(|reading| AgentEvent::PlanUsage { reading })
@@ -292,7 +292,7 @@ impl ClaudeStreamParser {
 
     fn on_rate_limit(&mut self, line: &Value) -> Vec<AgentEvent> {
         let info = line.get("rate_limit_info").unwrap_or(line);
-        let Some(reading) = plan_limits::reading(info, OffsetDateTime::now_utc()) else {
+        let Some(reading) = plan_limits::reading(info, clock::now_utc()) else {
             return vec![AgentEvent::PlanUsageSignal {
                 detail: info.clone(),
             }];
@@ -546,7 +546,7 @@ impl ClaudeStreamParser {
         let mut is_error = bool_at(line, "is_error") || subtype != "success";
         let text = string_at(line, "result").filter(|t| !t.is_empty());
         self.result_error = None;
-        let (reading, limit) = self.limits.turn_ended(is_error, OffsetDateTime::now_utc());
+        let (reading, limit) = self.limits.turn_ended(is_error, clock::now_utc());
         events.extend(reading.map(|reading| AgentEvent::PlanUsage { reading }));
         if let Some(message) = limit
             && !self.error_reported

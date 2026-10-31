@@ -91,6 +91,52 @@ pub fn title_words(name: &str) -> String {
     shown_name(&words.join(" "))
 }
 
+/// `2 minutes`, `90 seconds` or `1 hour`: a span of whole seconds as a sentence says it.
+pub fn time_in_words(secs: u64) -> String {
+    let (count, unit) = whole_units(secs);
+    format!("{count} {unit}{}", if count == 1 { "" } else { "s" })
+}
+
+/// `2-minute`, `90-second` or `1-hour`: a span of whole seconds before the word it measures,
+/// as in "its 2-minute limit".
+pub fn time_as_measure(secs: u64) -> String {
+    let (count, unit) = whole_units(secs);
+    format!("{count}-{unit}")
+}
+
+fn whole_units(secs: u64) -> (u64, &'static str) {
+    if secs >= 3600 && secs.is_multiple_of(3600) {
+        (secs / 3600, "hour")
+    } else if secs >= 60 && secs.is_multiple_of(60) {
+        (secs / 60, "minute")
+    } else {
+        (secs, "second")
+    }
+}
+
+/// [`title_words`], with each word the slug lowercased spelled as `spelled` spells it where
+/// that spelling isn't plain lowercase or a capital first letter: `rate-limit-the-api` with
+/// "Rate limit the API" reads `Rate limit the API`.
+pub fn title_words_as(name: &str, spelled: &str) -> String {
+    let words = title_words(name);
+    if words == name.trim() {
+        return words;
+    }
+    let own = |word: &str| {
+        spelled
+            .split(|c: char| !c.is_alphanumeric())
+            .find(|own| {
+                own.eq_ignore_ascii_case(word) && own.chars().skip(1).any(char::is_uppercase)
+            })
+            .map(str::to_owned)
+    };
+    words
+        .split(' ')
+        .map(|word| own(word).unwrap_or_else(|| word.to_owned()))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// `a`, `a and b`, or `a, b and c`, as a sentence lists things.
 pub fn listed(items: &[String]) -> String {
     match items {
@@ -174,6 +220,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_span_reads_in_its_largest_whole_unit() {
+        assert_eq!(time_in_words(120), "2 minutes");
+        assert_eq!(time_in_words(60), "1 minute");
+        assert_eq!(time_in_words(90), "90 seconds");
+        assert_eq!(time_in_words(7200), "2 hours");
+        assert_eq!(time_as_measure(120), "2-minute");
+        assert_eq!(time_as_measure(45), "45-second");
+    }
+
+    #[test]
     fn a_reply_quotes_the_last_sentence() {
         assert_eq!(
             last_sentence("Keep the window. A bucket needs a burst size."),
@@ -193,6 +249,15 @@ mod tests {
         assert_eq!(title_words("Add due dates"), "Add due dates");
         assert_eq!(title_words("council"), "council");
         assert_eq!(title_words("the-"), "The");
+        assert_eq!(
+            title_words_as("rate-limit-the-api", "Add rate limiting to the public API"),
+            "Rate limit the API"
+        );
+        assert_eq!(
+            title_words_as("api-keys-per-user", "API keys"),
+            "API keys per user"
+        );
+        assert_eq!(title_words_as("Rate limit", "RATE"), "Rate limit");
     }
 
     #[test]

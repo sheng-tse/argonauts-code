@@ -63,6 +63,10 @@ pub struct TaskWay {
     /// before they start. `None` for every other way.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub steps: Option<u32>,
+    /// Why this way, as the plan you approve gives it: "You asked · 3 files", "Small, one
+    /// file". Set on the plan's copy of the tasks only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
 }
 
 /// The ways a task can be done, each by the task's worker.
@@ -437,6 +441,7 @@ mod tests {
                 how,
                 asked_by_you: true,
                 steps: None,
+                why: None,
             };
             assert_eq!(spec.way.as_ref(), Some(&asked));
             assert_eq!(serde_json::to_value(&spec).unwrap()["way"], task["way"]);

@@ -135,6 +135,11 @@ impl Stage {
         self.packing.busy()
     }
 
+    /// What the last packing to panic said, once.
+    pub fn take_failure(&self) -> Option<String> {
+        self.packing.take_failure()
+    }
+
     /// Stacks every part under the text, and under cells with a background colour too, so text
     /// drawn over the pictures, selected text included, still shows: for pictures behind words,
     /// such as a conversation's bubbles.

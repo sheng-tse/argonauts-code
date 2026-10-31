@@ -8,6 +8,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
+use crate::base::clock;
 use crate::base::hash::sha256_hex;
 
 /// In bytes.
@@ -126,10 +127,7 @@ id_type!(
 
 impl RunId {
     pub fn generate() -> Self {
-        Self::at(
-            OffsetDateTime::now_utc(),
-            uuid::Uuid::new_v4().as_u128() as u16,
-        )
+        Self::at(clock::now_utc(), uuid::Uuid::new_v4().as_u128() as u16)
     }
 
     /// `suffix` tells apart runs started in the same second.

@@ -43,7 +43,7 @@ pub(crate) struct Held {
 /// What Ollama said of the models on this machine.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Ollama {
-    /// By tag name, such as `qwen3-coder:30b-64k`.
+    /// By tag name, such as `sample-coder:30b-64k`.
     pub tags: BTreeMap<String, Tag>,
     /// The loaded ones, by tag name, with what each holds.
     pub loaded: BTreeMap<String, Held>,
@@ -399,9 +399,9 @@ mod tests {
     fn a_tag_takes_its_weights_and_its_window_until_it_has_loaded() {
         let tags = parse_tags(
             r#"{"models":[{"name":"qwen3-coder:30b","size":18556699283},
-                          {"name":"qwen3-coder:30b-64k","size":18556699283}]}"#,
+                          {"name":"sample-coder:30b-64k","size":18556699283}]}"#,
         );
-        let loaded = parse_ps(r#"{"models":[{"name":"qwen3-coder:30b-64k","size":26843545600}]}"#);
+        let loaded = parse_ps(r#"{"models":[{"name":"sample-coder:30b-64k","size":26843545600}]}"#);
         let mut ollama = Ollama {
             tags,
             loaded,
@@ -417,7 +417,7 @@ mod tests {
             Some(41)
         );
         assert_eq!(
-            ollama.ram("qwen3-coder:30b-64k", Some(65_536)).map(gib),
+            ollama.ram("sample-coder:30b-64k", Some(65_536)).map(gib),
             Some(25),
             "Ollama's own figure once it has loaded"
         );
@@ -431,8 +431,8 @@ mod tests {
         let measured = MeasuredRam::in_home(home.path());
         let server = "http://127.0.0.1:11434";
         let tags = parse_tags(
-            r#"{"models":[{"name":"qwen3-coder:30b-64k","size":18556699283},
-                          {"name":"gemma3:12b-32k","size":8149190253}]}"#,
+            r#"{"models":[{"name":"sample-coder:30b-64k","size":18556699283},
+                          {"name":"sample-gemma:12b-32k","size":8149190253}]}"#,
         );
         let reading = |loaded: &str| Ollama {
             tags: tags.clone(),
@@ -440,7 +440,7 @@ mod tests {
             ..Ollama::default()
         };
         let mut loaded = reading(
-            r#"{"models":[{"name":"qwen3-coder:30b-64k","size":26843545600,
+            r#"{"models":[{"name":"sample-coder:30b-64k","size":26843545600,
                            "context_length":65536}]}"#,
         );
         measured.note(server, &mut loaded);
@@ -448,12 +448,12 @@ mod tests {
         let mut unloaded = reading(r#"{"models":[]}"#);
         measured.note(server, &mut unloaded);
         assert_eq!(
-            unloaded.ram("qwen3-coder:30b-64k", Some(65_536)),
+            unloaded.ram("sample-coder:30b-64k", Some(65_536)),
             Some(26_843_545_600),
             "Ollama's own figure, though it isn't loaded now"
         );
         assert_eq!(
-            unloaded.ram("qwen3-coder:30b-64k", Some(32_768)),
+            unloaded.ram("sample-coder:30b-64k", Some(32_768)),
             Some(18_556_699_283),
             "at another window it's an estimate again"
         );
@@ -464,7 +464,7 @@ mod tests {
         measured.note("http://gpu-box:11434", &mut elsewhere);
         assert!(elsewhere.measured.is_empty());
         let mut removed = Ollama {
-            tags: parse_tags(r#"{"models":[{"name":"gemma3:12b-32k","size":8149190253}]}"#),
+            tags: parse_tags(r#"{"models":[{"name":"sample-gemma:12b-32k","size":8149190253}]}"#),
             ..Ollama::default()
         };
         measured.note(server, &mut removed);
@@ -472,7 +472,7 @@ mod tests {
         let mut again = reading(r#"{"models":[]}"#);
         measured.note(server, &mut again);
         assert_eq!(
-            again.ram("qwen3-coder:30b-64k", Some(65_536)),
+            again.ram("sample-coder:30b-64k", Some(65_536)),
             Some(18_556_699_283)
         );
     }

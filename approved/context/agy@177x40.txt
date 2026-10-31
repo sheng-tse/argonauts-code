@@ -6,18 +6,18 @@ terminal fg=#c8d3f5 bg=#222436
 text
 ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Settings   Overview    Status    Config    Usage    Context    Limits    Stats
- What fills each session's context                                                                                                                  1 session · 38.9k in context
+ What fills each session's context                                                                                                                    1 session · 38k in context
 
      Context Usage
-     ⛁ ⛀ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ￼￼ 3.8 Flash (Low)
+     ⛁ ⛀ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ￼￼ 3.8 Flash (Low)
      ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   gemini-3.8-flash-low
-     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   38.9k/1m tokens (4%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   38k/1M tokens (4%)
      ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
      ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   Estimated usage by category
-     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ agy's own prompt and tools: ~4.2k tokens (0.4%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ agy's own prompt and tools: ~4.1k tokens (0.4%)
      ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Instruction files: ~1.2k tokens (0.1%)
-     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Messages: ~33.5k tokens (3.3%)
-     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Free space: 961.1k (96.1%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Messages: ~32.7k tokens (3.2%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Free space: 986k (96.3%)
      ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
                                                ~ is our count. Used is agy's own; the window is from our list.
 
@@ -30,29 +30,29 @@ text
      /context all to expand
 
  ╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
- │ ◆ context                                                                                                                                                38.9k of 1M    4%  │
- │        ▊                                                                                                                                                                    │
+ │ ◆ context                                                                                                                                                  38k of 1M    4%  │
+ │        ▌                                                                                                                                                                    │
  │                                                                                                                                                                             │
- │ ▌ agy's own prompt and tools   ~4.2k   0.4%      ▌ Instruction files   ~1.2k  0.1%      ▌ Messages   ~33.5k  3.3%                                                           │
- │ ▌ Free space                    961k  96.1%                                                                                                                                 │
+ │ ▌ agy's own prompt and tools   ~4.1k   0.4%      ▌ Instruction files   ~1.2k  0.1%      ▌ Messages   ~32.7k  3.2%                                                           │
+ │ ▌ Free space                    986k  96.3%                                                                                                                                 │
  ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
  tab · ←  →  tabs · ↓  into the list · enter opens one · esc closes
 paint
 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 .bbbbbbbb...cccccccc....cccccc....cccccc....ccccc...deeeeeeed...cccccc....ccccc
-.ffff.fffff.ffff.fffffffff.fffffff..................................................................................................................f.fffffff.f.fffff.ff.fffffff
+.ffff.fffff.ffff.fffffffff.fffffff....................................................................................................................f.fffffff.f.fff.ff.fffffff
 
 .....bbbbbbb.bbbbb
-.....g.h.i.i.i.i.i.i.i.f.f.f.f.f.f.f.f.f.f.f...jj.ccc.ccccc.ccccc
+.....g.h.i.i.i.i.i.i.f.f.f.f.f.f.f.f.f.f.f.f...jj.ccc.ccccc.ccccc
 .....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...ffffffffffffffffffff
-.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...ffffffff.ffffff.ffff
+.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...ffffff.ffffff.ffff
 .....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f
 .....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...kkkkkkkkk.kkkkk.kk.kkkkkkkk
 .....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...g.ccccc.ccc.cccccc.ccc.cccccc.fffff.ffffff.ffffff
 .....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...h.ccccccccccc.cccccc.fffff.ffffff.ffffff
 .....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...i.ccccccccc.ffffff.ffffff.ffffff
-.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...f.cccc.cccccc.ffffff.fffffff
+.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...f.cccc.cccccc.ffff.fffffff
 .....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f
 ...............................................f.ff.fff.ffffff.ffff.ff.fffff.ffff.fff.ffffff.ff.ffff.fff.fffff
 
@@ -65,7 +65,7 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 .....ffffffff.fff.ff.ffffff
 
 .lllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllll
-.l.m.nnnnnnn................................................................................................................................................nnnnn.ff.ff...oppo.l
+.l.m.nnnnnnn..................................................................................................................................................nnn.ff.ff...oppo.l
 .l.qrssssstuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu.l
 .l.............................................................................................................................................................................l
 .l.g.ccccc.ccc.cccccc.ccc.ccccc...nnnnn...ffff......h.ccccccccccc.ccccc...nnnnn..ffff......i.cccccccc...nnnnnn..ffff...........................................................l
@@ -75,22 +75,22 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 .fff.f.f..f..ffff.f.f..ffff.fff.ffff.f.fffff.fffff.fff.f.fff.ffffff
 key
 . blank
-a fg=#b1b9f9  ; Code, Question, BarFill, CatMcp
+a fg=#b1b9f9  ; Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp
 b fg=#c8d3f5 bold  ; the terminal's own
 c fg=#c8d3f5  ; the terminal's own
-d bg=#b1b9f9  ; Code, Question, BarFill, CatMcp
-e fg=#14161f bg=#b1b9f9 bold  ; BadgeText, on Code, on Question, on BarFill, on CatMcp
-f fg=#999999  ; Dim, ModeSupervised, SyntaxComment
+d bg=#fb923c
+e fg=#14161f bg=#fb923c bold  ; BadgeText
+f fg=#999999  ; Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment
 g fg=#888888  ; Rule
 h fg=#d77757
 i fg=#827dbd
 j logo=antigravity
-k fg=#999999 italic  ; Dim, ModeSupervised, SyntaxComment
+k fg=#999999 italic  ; Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment
 l fg=#4f5468  ; ModBorder
 m fg=#e6a23c  ; Accent, CatBrief
 n fg=#ffffff bold  ; Bright
-o bg=#4eba65  ; Success, CatAgents
-p fg=#14161f bg=#4eba65 bold  ; BadgeText, on Success, on CatAgents
+o bg=#4eba65  ; Success, CatAgents, Success, CatAgents
+p fg=#14161f bg=#4eba65 bold  ; BadgeText, on Success, on CatAgents, on Success, on CatAgents
 q bg=#888888  ; Rule
 r bg=#d77757
 s bg=#827dbd

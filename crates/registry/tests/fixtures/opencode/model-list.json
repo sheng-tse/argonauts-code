@@ -660,39 +660,6 @@
    }
   },
   {
-   "id": "gemma3:12b-32k",
-   "modelID": "gemma3:12b-32k",
-   "providerID": "ollama",
-   "name": "gemma3:12b-32k",
-   "package": "@opencode/ai/providers/openai-compatible",
-   "settings": {
-    "apiKey": "",
-    "baseURL": "http://localhost:11434/v1",
-    "provider": "ollama"
-   },
-   "capabilities": {
-    "tools": false,
-    "input": [
-     "text",
-     "image"
-    ],
-    "output": [
-     "text"
-    ]
-   },
-   "variants": [],
-   "time": {
-    "released": 0
-   },
-   "cost": [],
-   "status": "active",
-   "enabled": true,
-   "limit": {
-    "context": 131072,
-    "output": 32000
-   }
-  },
-  {
    "id": "gemma4:e2b",
    "modelID": "gemma4:e2b",
    "providerID": "ollama",
@@ -787,38 +754,6 @@
    "limit": {
     "context": 262144,
     "output": 32000
-   }
-  },
-  {
-   "id": "qwen3-coder:30b-64k",
-   "modelID": "qwen3-coder:30b-64k",
-   "providerID": "ollama",
-   "name": "Qwen3 Coder 30B (64k)",
-   "package": "@opencode/ai/providers/openai-compatible",
-   "settings": {
-    "apiKey": "",
-    "baseURL": "http://localhost:11434/v1",
-    "provider": "ollama"
-   },
-   "capabilities": {
-    "tools": true,
-    "input": [
-     "text"
-    ],
-    "output": [
-     "text"
-    ]
-   },
-   "variants": [],
-   "time": {
-    "released": 0
-   },
-   "cost": [],
-   "status": "active",
-   "enabled": true,
-   "limit": {
-    "context": 65536,
-    "output": 16384
    }
   }
  ]

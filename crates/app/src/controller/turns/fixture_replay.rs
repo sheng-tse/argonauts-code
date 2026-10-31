@@ -257,6 +257,7 @@ fn record_agent(agent_id: &str, live: &Path) {
                 uncommitted_note: None,
             },
             true,
+            None,
         ),
         output_schema::<Estimate>(),
         None,

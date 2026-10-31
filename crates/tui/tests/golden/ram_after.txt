@@ -11,16 +11,16 @@
      1. Default                         1M context · hosted by OpenCode Zen · runs Nemotron 3.5 Super VL Free         
                                                                                                                       
     Installed through Ollama            context  memory  abilities                  fit                               
-  ❯  2. Qwen3 Coder 30B (64k)               64k   25 GB  tools                      loaded · recommended              
+  ❯  2. Sample Coder 30B (64k)              64k   25 GB  tools                      loaded · recommended              
      3. Gemma4 E2B                         128k    8 GB  tools, thinking            fits now                          
      4. Llama3.2                           128k   24 GB  tools                      fits once apps free 6 GB          
      5. Qwen3 Coder 30B                    256k   45 GB  tools                      fits once loaded models unload    
      6. Gemma2 9B                            8k    6 GB  no tools                   fits now                          
      7. Gemma3 12B                         128k   17 GB  no tools                   fits now                          
-  ↓  8. Gemma3 12B 32K                      32k   11 GB  no tools                   fits now                          
+  ↓  8. Sample Gemma 12B 32K                32k   11 GB  no tools                   fits now                          
     … +14 more                                                                                                        
                                                                                                                       
-  ○ Effort not supported for Qwen3 Coder 30B (64k)                                                                    
+  ○ Effort not supported for Sample Coder 30B (64k)                                                                   
                                                                                                                       
   Enter to save · ctrl+s for this session only · j/k to move · / to filter · Esc to go back                           
                                                                                                                       
@@ -34,7 +34,7 @@
                                                                                                                       
     Installed through Ollama            context  memory  abilities                  fit                               
   ↑  7. Gemma3 12B                         128k   17 GB  no tools                   fits now                          
-     8. Gemma3 12B 32K                      32k   11 GB  no tools                   fits now                          
+     8. Sample Gemma 12B 32K                32k   11 GB  no tools                   fits now                          
                                                                                                                       
     Not installed · fits this computer  context  memory  abilities        download  fit                               
   ❯  9. Qwen3.5 27B                         64k   21 GB  tools, thinking     17 GB  fits once apps free 3 GB          
@@ -63,7 +63,7 @@
     1. Default                          1M context · hosted by OpenCode Zen · runs Nemotron 3.5 Super VL Free         
                                                                                                                       
     Installed through Ollama            context  memory  abilities                  fit                               
-  ❯ 2. Qwen3 Coder 30B (64k)                64k   25 GB  tools                      too big here                      
+  ❯ 2. Sample Coder 30B (64k)               64k   25 GB  tools                      too big here                      
     3. Llama3.2                            128k   24 GB  tools                      too big here; fits at 32k (4 GB)  
                                                                                                                       
     Not installed · fits this computer  context  memory  abilities        download  fit                               
@@ -71,6 +71,6 @@
     5. Qwen2.5 Coder 7B                     32k    6 GB  tools                5 GB  fits now                          
     6. Other model…                     type provider/model, or provider/model#variant                                
                                                                                                                       
-  Qwen3 Coder 30B (64k) needs 25 GB of RAM; models may use at most 11 GB here. Try Qwen3 8B, which needs 7 GB.        
+  Sample Coder 30B (64k) needs 25 GB of RAM; models may use at most 11 GB here. Try Qwen3 8B, which needs 7 GB.       
                                                                                                                       
   Enter to save · ctrl+s for this session only · j/k to move · / to filter · Esc to go back                           

@@ -667,9 +667,9 @@ fn entries(row: &[Token]) -> Vec<Entry> {
 }
 
 /// Whether the figure at `at` is a word of a sentence, as Claude Code's `/context` writes its
-/// figures: a label's value one blank after its colon (`Free space: 934.7k`), or a share in
-/// parentheses one blank after the tokens it counts or after such a value (`6.4k tokens
-/// (0.6%)`, `32.3k/1m tokens (3%)`, `934.7k (93.5%)`).
+/// figures: a label's value one blank after its colon (`Free space: 938.2k`), or a share in
+/// parentheses one blank after the tokens it counts or after such a value (`2.1k tokens
+/// (0.2%)`, `28.8k/1m tokens (3%)`, `938.2k (93.8%)`).
 fn in_a_sentence(row: &[Token], at: usize) -> bool {
     let after_one_blank = |at: usize| {
         at.checked_sub(1)

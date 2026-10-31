@@ -6,7 +6,6 @@
 //! back with it, and when the log has no outage on it. Keeping the fallback's work from the
 //! "original is back" question leaves the debt to the merge question.
 
-use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::runs::events::RunEventKind;
 use argonauts_core::runs::events::approval::{AnswerAction, ApprovalKind};
 use argonauts_core::runs::events::run::Party;
@@ -123,10 +122,7 @@ async fn ask(
             .map(|record| record.opened.id.clone())
     });
     if let Some(id) = merge_approval {
-        let reason = format!(
-            "{} is back",
-            DisplayNames::default().cli(&back.original.agent_id().0)
-        );
+        let reason = format!("{} is back", host.names().cli(&back.original.agent_id().0));
         approvals::withdraw(host, &id, &reason)?;
     }
     let request = on_return::request(host, record, &back, debt, Some(at.clone())).await?;

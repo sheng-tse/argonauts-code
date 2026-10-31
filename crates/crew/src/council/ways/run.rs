@@ -497,6 +497,7 @@ mod tests {
                 how: Way::Agents { count: 2 },
                 asked_by_you: false,
                 steps: None,
+                why: None,
             }),
         };
         let once = briefed(spec.clone());

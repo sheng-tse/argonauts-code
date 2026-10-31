@@ -272,20 +272,31 @@ impl Picked {
 }
 
 /// Words of yours that asked for checks to run are followed once the session's checks hold
-/// for the run, which is what they asked for; words asking for fewer stay refused. The
-/// workflow's row names the checks, so the start line needn't say them again.
+/// for the run, which is what they asked for, even with none of yours set. Words asking for
+/// fewer or other checks are refused, since the picked checks run all the same, and no line
+/// says that no checks will run. The workflow's row names the checks, so the start line needn't
+/// say them again.
 fn followed_by_the_checks(instructions: &mut [CheckedInstruction], checks: &Picked) {
-    if !matches!(checks, Picked::ForTheRun(_)) {
+    let Picked::ForTheRun(picked) = checks else {
         return;
-    }
+    };
+    let names: Vec<String> = picked.iter().map(|check| check.name.clone()).collect();
     for instruction in instructions {
-        let refused = matches!(instruction.outcome, InstructionOutcome::NotFollowed { .. });
-        let asks = instructions::asks_for_checks(&instruction.says);
-        if instruction.kind == InstructionKind::Checks && refused && asks {
-            instruction.outcome = InstructionOutcome::Followed {
-                said: String::new(),
-                note: None,
-            };
+        if instruction.kind != InstructionKind::Checks {
+            continue;
+        }
+        let refusal = instructions::checks_refusal(&instruction.says, &names);
+        match (&instruction.outcome, refusal) {
+            (InstructionOutcome::NotFollowed { .. } | InstructionOutcome::Noted { .. }, None) => {
+                instruction.outcome = InstructionOutcome::Followed {
+                    said: String::new(),
+                    note: None,
+                };
+            }
+            (InstructionOutcome::Noted { .. }, Some(why)) => {
+                instruction.outcome = InstructionOutcome::NotFollowed { why };
+            }
+            _ => {}
         }
     }
 }
@@ -597,6 +608,7 @@ fn why_not(applied: &Applied) -> String {
                     format!("followed ({said}), but it asks for nothing this turn can't do")
                 }
                 InstructionOutcome::NotFollowed { why } => format!("not followed: {why}"),
+                InstructionOutcome::Noted { line } => format!("nothing to follow: {line}"),
                 InstructionOutcome::Dropped => {
                     "dropped: these words aren't in the user's message; copy them exactly"
                         .to_owned()
@@ -815,26 +827,72 @@ mod tests {
         );
         assert_eq!(Picked::Nothing.told(), "");
 
-        // Your words that asked for checks are followed by the session's.
+        // Your words that asked for checks are followed by the session's, where none of yours
+        // were set to meet them.
         let refused = |says: &str| CheckedInstruction {
             says: says.to_owned(),
             kind: InstructionKind::Checks,
             outcome: InstructionOutcome::NotFollowed {
-                why: "checks.run is a safety setting".to_owned(),
+                why: "it would stop tests from running".to_owned(),
             },
+        };
+        let none_set = CheckedInstruction {
+            outcome: InstructionOutcome::Noted {
+                line: "No checks will run, since none are set".to_owned(),
+            },
+            ..refused("keep the tests passing")
         };
         let mut instructions = vec![
             refused("make sure the tests pass"),
             refused("skip the tests"),
+            none_set,
         ];
         followed_by_the_checks(&mut instructions, &Picked::ForTheRun(vec![tests]));
         assert_eq!(instructions[1], refused("skip the tests"));
+        for asked in [&instructions[0], &instructions[2]] {
+            assert_eq!(
+                asked.outcome,
+                InstructionOutcome::Followed {
+                    said: String::new(),
+                    note: None,
+                },
+                "{:?}",
+                asked.says
+            );
+        }
+    }
+
+    /// With none of your checks set and the session's picked for the run, words that would stop
+    /// them are refused, and no line says that no checks will run.
+    #[test]
+    fn words_against_the_picked_checks_are_refused() {
+        let settings = Settings::default();
+        let message = "Make the limiter per key, and skip the tests.";
+        let list = [said(InstructionKind::Checks, "skip the tests", "", "")];
+        let mut instructions = checked(&settings, message, &list).instructions;
+        assert!(
+            matches!(instructions[0].outcome, InstructionOutcome::Noted { .. }),
+            "{:?}",
+            instructions[0].outcome
+        );
+        let tests = CheckCommand {
+            name: "tests".to_owned(),
+            command: vec!["cargo".to_owned(), "test".to_owned()],
+        };
+        followed_by_the_checks(&mut instructions, &Picked::ForTheRun(vec![tests]));
         assert_eq!(
             instructions[0].outcome,
-            InstructionOutcome::Followed {
-                said: String::new(),
-                note: None,
+            InstructionOutcome::NotFollowed {
+                why: "it would stop tests from running, and checks.run is a safety setting \
+                      that /config changes"
+                    .to_owned(),
             }
+        );
+        assert!(
+            !instructions
+                .iter()
+                .any(|instruction| matches!(instruction.outcome, InstructionOutcome::Noted { .. })),
+            "{instructions:?}"
         );
     }
 
