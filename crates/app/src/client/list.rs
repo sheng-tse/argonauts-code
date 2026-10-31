@@ -65,7 +65,7 @@ pub(crate) fn summarize(run_dir: &Path, settings: &Settings) -> Option<RunSummar
     let events_path = run_dir.join(names::EVENTS);
     let start = run_files::read_start(run_dir).ok();
     let live = RunLock::is_held(run_dir);
-    let now = OffsetDateTime::now_utc();
+    let now = argonauts_core::base::clock::now_utc();
 
     // A journal another Argonauts Code wrote can't be read, so nothing below is asked of it.
     if matches!(

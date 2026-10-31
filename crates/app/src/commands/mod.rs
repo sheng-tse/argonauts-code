@@ -10,6 +10,7 @@ use std::sync::Arc;
 use anyhow::{Context as _, anyhow, bail};
 use argonauts_conductor::DoctorDetails;
 use argonauts_core::agents::session_runner::{RunnerDirectory, RunnerError, SessionRunner};
+use argonauts_core::base::clock;
 use argonauts_core::base::layout::user_files;
 use argonauts_core::base::names::ModelRef;
 use argonauts_core::base::paths::{create_private_dir_all, write_private_file};
@@ -61,7 +62,7 @@ pub async fn doctor_extras(repo: Option<&Path>) -> anyhow::Result<DoctorExtras> 
     let settings = AppSettings::load(&env, Vec::new(), false)?;
     let runs = crate::conductor(&env.repo_root)?.list().await?;
     let threshold = settings.settings().runs.remind_waiting_days;
-    let waiting = waiting_reminders(&runs, threshold, OffsetDateTime::now_utc(), |run| {
+    let waiting = waiting_reminders(&runs, threshold, clock::now_utc(), |run| {
         worktree_usage(&run_worktrees(&env, run))
     });
     Ok(DoctorExtras { waiting })
@@ -297,7 +298,7 @@ pub fn auto_off() -> anyhow::Result<()> {
     let marker = paths.home().join(user_files::AUTO_OFF);
     if !marker.exists() {
         create_private_dir_all(paths.home())?;
-        let note = format!("auto off since {}\n", OffsetDateTime::now_utc());
+        let note = format!("auto off since {}\n", clock::now_utc());
         write_private_file(&marker, note.as_bytes())
             .with_context(|| format!("writing {}", marker.display()))?;
     }
@@ -982,7 +983,7 @@ mod tests {
             workflow: "council".to_owned(),
             state: RunState::Waiting,
             stopped_at: "the plan approval".to_owned(),
-            updated: OffsetDateTime::now_utc() - time::Duration::days(days_ago),
+            updated: clock::now_utc() - time::Duration::days(days_ago),
             spent: Spend::default(),
             sessions_to_resume: 0,
             waiting: vec![ApprovalId::numbered(1)],
@@ -1003,7 +1004,7 @@ mod tests {
             waiting("run-03", 9, false),
             waiting("run-04", 1, true),
         ];
-        let reminders = waiting_reminders(&runs, 7, OffsetDateTime::now_utc(), |_| (2, 4096));
+        let reminders = waiting_reminders(&runs, 7, clock::now_utc(), |_| (2, 4096));
         let names: Vec<&str> = reminders.iter().map(|r| r.run.as_str()).collect();
         assert_eq!(names, vec!["run-03", "run-04"]);
         assert_eq!(reminders[0].days, 9);

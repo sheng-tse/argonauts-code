@@ -749,7 +749,6 @@ fn app_workflow_view_p_pauses_and_resumes() -> anyhow::Result<()> {
     };
     let before = started(&run_dir)?;
 
-    scenario.clis.signal("worker-may-finish")?;
     pty.press(Key::Char('p'))?;
     wait_journal(&run_dir, "the run to resume", is_resumed)?;
     // While it waited, from its wait to its resume, no session started.
@@ -777,6 +776,9 @@ fn app_workflow_view_p_pauses_and_resumes() -> anyhow::Result<()> {
         "a session started while paused"
     );
     pty.wait_for_visible(r"p pause · esc back", WAIT)?;
+    // Only now may the worker finish: a fast one would otherwise reach the merge question
+    // before the keys go back to `p pause`. The signal waits for the step that reads it.
+    scenario.clis.signal("worker-may-finish")?;
     wait_approval(&scenario, ApprovalKind::Merge)?;
     assert!(
         started(&run_dir)? > before,
@@ -1509,8 +1511,21 @@ fn app_context_command_lists_sessions() -> anyhow::Result<()> {
     // run's crew folded to one line.
     assert!(worker.label.starts_with("build:"), "{worker:?}");
     let text = pty.wait_for(r"\d+ sessions", WAIT)?.text();
+    assert!(text.contains("Context Usage"), "{text}");
+    // At this size the main agent's window fills the screen, so the crew comes into view as
+    // the keys go down past it, a still screen after each.
+    let mut text = String::new();
+    for _ in 0..40 {
+        pty.send("\x1b[B")?;
+        text = pty
+            .wait_until("a still screen", WAIT, |_| true)?
+            .visible_text();
+        if text.contains("Crew agents") {
+            break;
+        }
+    }
     assert!(
-        text.contains("Context Usage") && text.contains("Crew agents") && text.contains("1 agent"),
+        text.contains("Crew agents") && text.contains("1 agent"),
         "{text}"
     );
     // The view is the command's answer, drawn from what it counted, so a session it started

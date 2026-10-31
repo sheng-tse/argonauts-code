@@ -2,7 +2,7 @@
   "antigravity-cli": {
     "agent": "antigravity-cli",
     "model": "gemini-3.8-flash-low",
-    "window": 1000000,
+    "window": 1048576,
     "buffer": 0,
     "parts": [
       {
@@ -34,7 +34,7 @@
   "antigravity-cli gemini-3.8-flash-low": {
     "agent": "antigravity-cli",
     "model": "gemini-3.8-flash-low",
-    "window": 1000000,
+    "window": 1048576,
     "buffer": 0,
     "parts": [
       {

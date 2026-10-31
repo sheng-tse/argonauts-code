@@ -1,0 +1,13 @@
+# The crew's local model as `opencode models --verbose` lists it on Ollama, so the crew's spend
+# names it as OpenCode does.
+
+[[model]]
+id = "opencode/ollama/qwen3-coder:30b"
+provider = "qwen"
+kind = "cli"
+access = "local"
+tools = true
+cost = { unit = "none" }
+launch = { oss = true, local_provider = "ollama" }
+name = "Qwen3 Coder 30B"
+context_window = 262144

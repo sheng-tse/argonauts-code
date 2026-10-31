@@ -319,7 +319,7 @@ fn esc_hands_the_question_on_leaves_the_run_going_and_stops_a_pausing_one_now() 
     driver.wait_visible("Pausing… \\(esc again to stop now\\)");
     // The first Esc gives the list's keys back to the input, and the next stops the run now.
     driver.press(Key::Esc);
-    driver.wait_gone("enter to open its workflow");
+    driver.wait_gone("enter to view");
     driver.press(Key::Esc);
     assert_eq!(driver.wait_command("pause")["now"], true);
     let pauses = driver

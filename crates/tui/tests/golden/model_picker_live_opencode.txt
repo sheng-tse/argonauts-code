@@ -1,4 +1,4 @@
- 1 s after /model, Enter on OpenCode and down to Qwen3 Coder 30B (64k): OpenCode's list from 21:40, while its private 
+ 1 s after /model, Enter on OpenCode and down to Sample Coder 30B (64k): OpenCode's list from 21:40, while its private 
  server starts in the repo (it lists nothing for its first 5 s or so).                                                
                                                                                                                       
 ❯ /model                                                                                                              
@@ -13,18 +13,18 @@
      2. Gemma4 E2B                      128k  tools                                                                   
      3. Llama3.2                        128k  tools                                                                   
      4. Qwen3 Coder 30B                 256k  tools                                                                   
-  ❯  5. Qwen3 Coder 30B (64k)            64k  tools                                                                   
+  ❯  5. Sample Coder 30B (64k)           64k  tools                                                                   
      6. Gemma2 9B                         8k  no tools                                                                
      7. Gemma3 12B                      128k  no tools                                                                
-  ↓  8. Gemma3 12B 32K                   32k  no tools                                                                
+  ↓  8. Sample Gemma 12B 32K             32k  no tools                                                                
     … +11 more                                                                                                        
                                                                                                                       
-  ○ Effort not supported for Qwen3 Coder 30B (64k)                                                                    
+  ○ Effort not supported for Sample Coder 30B (64k)                                                                   
                                                                                                                       
   Enter to save · ctrl+s for this session only · j/k to move · / to filter · Esc to go back                           
                                                                                                                       
  About 6 s after /model, OpenCode has answered: Devstral 24B, pulled since 21:40, takes its place in the Ollama group 
- as new. The pointer stays on Qwen3 Coder 30B (64k), now row 6, and so does its effort line; the window doesn't move. 
+ as new. The pointer stays on Sample Coder 30B (64k), now row 6, and so does its effort line; the window doesn't move. 
                                                                                                                       
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   ◧◨ OpenCode                                                                                                         
@@ -37,12 +37,12 @@
      3. Gemma4 E2B                      128k  tools                                                                   
      4. Llama3.2                        128k  tools                                                                   
      5. Qwen3 Coder 30B                 256k  tools                                                                   
-  ❯  6. Qwen3 Coder 30B (64k)            64k  tools                                                                   
+  ❯  6. Sample Coder 30B (64k)           64k  tools                                                                   
      7. Gemma2 9B                         8k  no tools                                                                
   ↓  8. Gemma3 12B                      128k  no tools                                                                
     … +12 more                                                                                                        
                                                                                                                       
-  ○ Effort not supported for Qwen3 Coder 30B (64k)                                                                    
+  ○ Effort not supported for Sample Coder 30B (64k)                                                                   
                                                                                                                       
   Enter to save · ctrl+s for this session only · j/k to move · / to filter · Esc to go back                           
                                                                                                                       

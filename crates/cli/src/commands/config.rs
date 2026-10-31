@@ -173,7 +173,7 @@ mod tests {
         }));
         let models = vec![
             local(
-                "ollama/qwen3-coder:30b-64k",
+                "ollama/sample-coder:30b-64k",
                 serde_json::json!(65_536),
                 262_144,
             ),
@@ -186,7 +186,7 @@ mod tests {
         ];
         assert_eq!(
             models_text(&listed(models, &skipped), true),
-            "ollama/qwen3-coder:30b-64k · alibaba · endpoint · local · 64k window\n\
+            "ollama/sample-coder:30b-64k · alibaba · endpoint · local · 64k window\n\
              ollama/qwen3-coder:30b · alibaba · endpoint · local · window up to 256k\n\
              codex/gpt-6-luna · openai · CLI · subscription · 872k window\n\
              Skipped\n\

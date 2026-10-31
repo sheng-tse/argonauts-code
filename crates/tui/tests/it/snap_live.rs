@@ -841,6 +841,7 @@ fn the_working_line_steps_aside_while_the_cli_asks_you() {
             uncommitted: Vec::new(),
             settings_sha256: None,
             continues: false,
+            opens_a_talk: false,
         },
     });
     let working = |state: &AppState| synced(state, &ui, NOW).bottom.working.is_some();

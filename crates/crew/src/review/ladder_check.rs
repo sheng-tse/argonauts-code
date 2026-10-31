@@ -60,7 +60,7 @@ pub(crate) async fn take(
     if checker.same_maker {
         let note = Note {
             level: NoteLevel::Info,
-            text: ways::same_maker_line(&checker.model),
+            text: ways::same_maker_line(host.names(), &checker.model),
         };
         host.record(Some(task), None, RunEventKind::Note(note))?;
     }

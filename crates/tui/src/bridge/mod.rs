@@ -143,6 +143,8 @@ pub struct Effects {
     pub open_link: Option<String>,
     /// Open `$VISUAL` or `$EDITOR` on the draft.
     pub edit_draft: bool,
+    /// Stop the app until `fg`, the terminal given back to the shell.
+    pub suspend: bool,
     /// A new palette to use from the next frame.
     pub theme: Option<Theme>,
     /// Applied at once by a `Both` command, before the controller confirms it.
@@ -1149,7 +1151,7 @@ mod awake_tests {
         assert_eq!(
             awake_part(&model),
             Some(PartBody::Words {
-                text: "☕ awake until you quit".into(),
+                text: "☕".into(),
                 tone: Tone::Code,
             })
         );

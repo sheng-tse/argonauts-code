@@ -308,7 +308,7 @@ mod tests {
             for (text, cells) in [
                 ("1 workflow · 1 task · 14 reviews", 26),
                 ("Gemini 3.8 Flash (Low)", 21),
-                ("Qwen3 Coder 30B (64k)", 19),
+                ("Sample Coder 30B (64k)", 20),
                 ("abcdef", 5),
                 ("修复修复修复", 7),
             ] {
@@ -332,7 +332,7 @@ mod tests {
     #[test]
     fn a_char_cut_falls_after_any_character() {
         let cut = by(At::Char);
-        assert_eq!(cut("Qwen3 Coder 30B (64k)", 19), "Qwen3 Coder 30B (…");
+        assert_eq!(cut("Sample Coder 30B (64k)", 20), "Sample Coder 30B (…");
         assert_eq!(cut("abcdef", 5), "abc…");
         assert_eq!(cut("abcdef", 6), "abcdef");
         // A space before the cut goes, so the `…` follows the text.
@@ -342,7 +342,7 @@ mod tests {
     #[test]
     fn a_word_cut_keeps_whole_words() {
         let cut = by(At::Word);
-        assert_eq!(cut("Qwen3 Coder 30B (64k)", 19), "Qwen3 Coder 30B…");
+        assert_eq!(cut("Sample Coder 30B (64k)", 20), "Sample Coder 30B…");
         assert_eq!(cut("GLM 5.3 Flash Free", 17), "GLM 5.3 Flash…");
         assert_eq!(cut("claude-opus-5-5-preview", 14), "claude-opus…");
         // The room ends where a word does.

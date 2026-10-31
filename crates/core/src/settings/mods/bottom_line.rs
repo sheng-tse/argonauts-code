@@ -54,10 +54,10 @@ impl Choice for PlanUsageShow {
 
     fn label(self) -> &'static str {
         match self {
-            Self::MainAndMostUsed => "the one in use and the most used",
+            Self::MainAndMostUsed => "in use and most used",
             Self::All => "all in the crew",
-            Self::Main => "the one in use",
-            Self::NearLimit => "those near a limit",
+            Self::Main => "in use",
+            Self::NearLimit => "near a limit",
         }
     }
 }
@@ -162,12 +162,14 @@ pub trait PageEdits {
     fn shift(&mut self, left: bool, part: &str, earlier: bool) -> bool;
 }
 
+const SHOW: &str = "plan-usage.show";
+
 /// The order the file writes its keys in, which a table's own order (by name) isn't.
 const KEY_ORDER: [&str; 10] = [
     "form",
     "left",
     "right",
-    "plan-usage.show",
+    SHOW,
     "plan-usage.windows",
     "plan-usage.as",
     "plan-usage.resets",
@@ -179,11 +181,19 @@ const KEY_ORDER: [&str; 10] = [
 impl PageEdits for BottomLineSettings {
     fn changes_from(&self, from: &Self) -> Vec<(String, String)> {
         let before = leaves(from);
-        let mut pairs: Vec<(String, String)> = leaves(self)
-            .into_iter()
+        let after = leaves(self);
+        let mut pairs: Vec<(String, String)> = after
+            .iter()
             .filter(|leaf| !before.contains(leaf))
-            .map(|(key, value)| (key, value.to_string()))
+            .map(|(key, value)| (key.clone(), value.to_string()))
             .collect();
+        // An unset list has no leaves to say it went, and the file drops its list when `show`
+        // is written, so a list taken off writes `show` even when that stayed the same.
+        let list_taken_off = from.plan_usage.clis.is_some() && self.plan_usage.clis.is_none();
+        if list_taken_off && !pairs.iter().any(|(key, _)| key == SHOW) {
+            let show = after.iter().find(|(key, _)| key == SHOW);
+            pairs.extend(show.map(|(key, value)| (key.clone(), value.to_string())));
+        }
         let place = |key: &str| KEY_ORDER.iter().position(|have| *have == key);
         pairs.sort_by_key(|(key, _)| place(key).unwrap_or(KEY_ORDER.len()));
         pairs
@@ -419,6 +429,19 @@ mod tests {
                 ),
                 ("plan-usage.as".to_owned(), "\"left\"".to_owned()),
             ]
+        );
+    }
+
+    #[test]
+    fn taking_the_list_of_clis_off_writes_show_even_when_it_stays_the_same() {
+        let mut before = BottomLineSettings::default();
+        before.plan_usage.show = PlanUsageShow::All;
+        before.plan_usage.clis = Some(vec![LineCli::new("codex")]);
+        let mut after = before.clone();
+        after.plan_usage.clis = None;
+        assert_eq!(
+            after.changes_from(&before),
+            [("plan-usage.show".to_owned(), "\"all\"".to_owned())]
         );
     }
 

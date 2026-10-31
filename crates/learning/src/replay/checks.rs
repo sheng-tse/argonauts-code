@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use time::OffsetDateTime;
 
 use argonauts_core::agents::session_runner::{SandboxMode, SandboxProfile};
+use argonauts_core::base::clock;
 use argonauts_core::base::layout::{repo_state, run_files};
 use argonauts_core::models::limits::{CheckRequest, CheckRunner};
 use argonauts_core::runs::events::task::CheckKind;
@@ -117,7 +117,7 @@ pub(super) async fn consider(
         test_command: test_command.clone().unwrap_or_default(),
         limit_usd: facts.spent_usd,
         holdout: false,
-        accepted: OffsetDateTime::now_utc(),
+        accepted: clock::now_utc(),
     };
 
     let mut checks = vec![kept];

@@ -29,7 +29,7 @@ use super::offer::offer_to_start;
 use super::starting;
 use super::{
     ConversationState, Turn, agent, direct, emit, goal, handover, keep, planned, run_request,
-    run_worktree, send_queued, settle_mode, side, styled,
+    run_worktree, send_queued, settle_mode, side, standing, styled,
 };
 use crate::controller::instructions::{self, Command, Roster};
 use crate::controller::shell;
@@ -251,6 +251,7 @@ fn try_turn(
             uncommitted: record.uncommitted,
             settings_sha256: Some(ctx.settings.sha256().to_owned()),
             continues: step.continues(),
+            opens_a_talk: standing::opens_a_talk(ctx, conversation, &step),
         },
     };
     emit(ctx, conversation, started);
@@ -372,6 +373,7 @@ fn try_turn(
             fork,
             excerpt,
             notes,
+            verdict_first: standing::verdict_first(ctx, conversation, &step),
             shell: shell::context_part(&ran),
             fast: conversation.prefs.fast,
             workdir: conversation.folder(ctx).to_path_buf(),
@@ -476,13 +478,10 @@ pub(super) fn on_event(
         return;
     };
     match event {
-        RunnerEvent::Agent(event) => {
+        RunnerEvent::Agent(mut event) => {
             // The line a write outside your folder or a refused call leaves goes after the
             // event, so it reads after the CLI's own words.
-            let line = turn
-                .direct
-                .as_mut()
-                .and_then(|running| direct::on_agent(running, &turn.outside, &event));
+            let after = direct::LinesAfter::of(&mut conversation.direct, turn, &mut event);
             // The CLI's own model list, so `/model` mirrors it.
             if let AgentEvent::ModelsReported { models } = &event {
                 ctx.services
@@ -490,7 +489,7 @@ pub(super) fn on_event(
                     .models_reported(&turn.worker.agent, models);
             }
             if !turn.step.own_session() && !live_event(ctx, conversation, id, &event) {
-                quiet_line(ctx, line);
+                after.show(ctx);
                 return;
             }
             // Each patch goes ahead of its edit's end, so the edit is drawn with it.
@@ -504,7 +503,7 @@ pub(super) fn on_event(
                 );
             }
             let Some(turn) = conversation.turn.as_mut().filter(|turn| &turn.id == id) else {
-                quiet_line(ctx, line);
+                after.show(ctx);
                 return;
             };
             // Another session's context isn't the conversation's.
@@ -557,7 +556,7 @@ pub(super) fn on_event(
                     event,
                 },
             );
-            quiet_line(ctx, line);
+            after.show(ctx);
         }
         // Saved at once, so a turn cancelled halfway still leaves a session to resume.
         RunnerEvent::Session(SessionEvent::CliSession { id: agent_id, .. })
@@ -624,13 +623,6 @@ fn keep_start(
         }
     }));
     true
-}
-
-/// A dim line of what the turn's last event did, when it did something worth one.
-fn quiet_line(ctx: &mut Ctx, line: Option<String>) {
-    if let Some(line) = line {
-        ctx.notice(NoteLevel::Quiet, line);
-    }
 }
 
 /// What the session says about your messages and the screen, as the turn's own `Live` reads
@@ -763,7 +755,7 @@ pub(super) fn on_done(
             &row.worker,
             &end.spend,
             turn,
-            time::OffsetDateTime::now_utc(),
+            argonauts_core::base::clock::now_utc(),
         );
     }
     // A cancelled turn's step ended, so its CLI session is free again. Its reply belongs
@@ -857,7 +849,7 @@ fn keep_context(ctx: &Ctx, conversation: &mut ConversationState, turn: &mut Turn
     };
     let left = ConversationEvent::ContextLeft {
         turn: turn.id.clone(),
-        at: time::OffsetDateTime::now_utc(),
+        at: argonauts_core::base::clock::now_utc(),
         used: row.used,
         window: row.window,
         usage: turn.counted.take(),

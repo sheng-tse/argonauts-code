@@ -1,6 +1,7 @@
 //! What each mark of nature says when the pointer finds it, in the app's words and your agents'
 //! own numbers.
 
+use argonauts_core::behaviors::behavior_world::BEHAVIOR_RUN_LENGTH;
 use time::OffsetDateTime;
 
 use super::{Feature, Kind, Nature, NatureFacts, Shoal};
@@ -22,14 +23,13 @@ impl Feature {
         let count = ground.count[self.behavior];
         let end = facts.end;
         let last = |days: Option<u32>| {
-            days.map_or(String::new(), |d| format!(", the last {}", days_ago(d)))
+            days.map_or(String::new(), |d| format!(", the last one {}", days_ago(d)))
         };
         match &self.kind {
             Kind::Hurricane(storm) => {
                 let word = capital(facts.storm.word());
                 format!(
-                    "{word}, category {} · {} {behavior} actions within one hour, {}",
-                    storm.category,
+                    "{word} · {} {behavior} actions within one hour, {}",
                     storm.actions,
                     when(storm.at, end)
                 )
@@ -41,11 +41,10 @@ impl Feature {
             ),
             Kind::Volcano {
                 failed,
-                smoking,
                 last: failed_last,
+                ..
             } => format!(
-                "Volcano, {} · {behavior} · {failed} of its {count} actions failed{}",
-                if *smoking { "smoking" } else { "quiet" },
+                "Volcano · {failed} of its {count} {behavior} actions failed{}",
                 last(*failed_last)
             ),
             Kind::Flood { sent_back } => format!(
@@ -54,21 +53,21 @@ impl Feature {
             ),
             Kind::Wildfire {
                 dropped,
-                burning,
                 last: dropped_last,
+                ..
             } => format!(
-                "Wildfire, {} · {dropped} of its {count} {behavior} actions were in work that never \
+                "Wildfire · {dropped} of its {count} {behavior} actions were in work that never \
                  merged{}",
-                if *burning { "burning" } else { "burnt out" },
                 last(*dropped_last)
             ),
             Kind::Tornado { times, longest } => format!(
-                "Tornado · {} one agent did {behavior} 5 or more times in a row (the longest \
-                 {longest})",
+                "Tornado · {} one agent did {behavior} {BEHAVIOR_RUN_LENGTH} or more times in a \
+                 row, the longest {longest} times",
                 plural(*times, "time")
             ),
             Kind::Thunderstorm { sessions } => format!(
-                "Thunderstorm · {} stopped on {behavior}, by you, a limit or a full context",
+                "Thunderstorm · {} stopped on {behavior}, by you, by a limit or because the \
+                 context was full",
                 plural(*sessions, "session")
             ),
             Kind::Rift(rift) => match rift.recent.first() {
@@ -111,7 +110,9 @@ impl Feature {
                 stream.moves,
                 quoted(stream.to)
             ),
-            Kind::Atoll => format!("Atoll · {behavior} was used last period, not in this one"),
+            Kind::Atoll => {
+                format!("Atoll · {behavior} was used before the dates shown, not in them")
+            }
         }
     }
 }
@@ -138,7 +139,7 @@ impl Nature {
 
 impl Shoal {
     pub fn line(&self) -> String {
-        format!("Shoal · on the list, never used · ‘{}’", self.name)
+        format!("Shoal · ‘{}’ is a label no action has used", self.name)
     }
 }
 

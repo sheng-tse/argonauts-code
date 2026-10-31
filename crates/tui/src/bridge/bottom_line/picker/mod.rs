@@ -84,7 +84,7 @@ impl LinePicker {
     ) -> Self {
         let facts = facts(state);
         let set = &facts.settings.plan_usage;
-        let clock = clock(state, OffsetDateTime::now_utc());
+        let clock = clock(state, argonauts_core::base::clock::now_utc());
         let source = source(state, &facts, slots, clock);
         let crew = crew_of(state, set);
         let mut rows: Vec<Row> = source
@@ -397,7 +397,7 @@ impl View for LinePicker {
                 ctx.state,
                 ctx.theme,
                 screen.width,
-                OffsetDateTime::now_utc(),
+                argonauts_core::base::clock::now_utc(),
                 ctx.now,
             )
             .len();
@@ -409,7 +409,7 @@ impl View for LinePicker {
             ctx.state,
             ctx.theme,
             area.width,
-            OffsetDateTime::now_utc(),
+            argonauts_core::base::clock::now_utc(),
             ctx.now,
         );
         // The line and the keys sit at the foot, as the line under the input does.

@@ -167,6 +167,7 @@ mod tests {
                 phase(2, "Sign off"),
             ],
             required: vec!["Sign off".to_owned()],
+            talks: false,
         };
         mark_declared(
             &mut declared,
@@ -226,6 +227,7 @@ mod tests {
                 standard: StandardPhase::Do,
             }],
             required: Vec::new(),
+            talks: false,
         })));
         let RunEventKind::Workflow(WorkflowEvent::Declared(shown)) =
             for_screen(&declared, &env).kind

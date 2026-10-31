@@ -17,6 +17,7 @@ use rand::rngs::StdRng;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
+use argonauts_core::base::clock;
 use argonauts_core::base::names::ModelRef;
 use argonauts_core::models::limits::{TrackRecord, TrackRecords};
 use argonauts_core::settings::Settings;
@@ -339,15 +340,11 @@ impl LiveRecords {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         book.get_or_insert_with(|| {
-            let built = Book::rebuild(
-                &self.store,
-                &self.settings.routing,
-                OffsetDateTime::now_utc(),
-            )
-            .unwrap_or_else(|err| {
-                tracing::warn!("track records unavailable: {err}");
-                Book::default()
-            });
+            let built = Book::rebuild(&self.store, &self.settings.routing, clock::now_utc())
+                .unwrap_or_else(|err| {
+                    tracing::warn!("track records unavailable: {err}");
+                    Book::default()
+                });
             Arc::new(built)
         })
         .clone()

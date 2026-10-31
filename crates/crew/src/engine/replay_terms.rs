@@ -267,7 +267,7 @@ mod tests {
             phases: digest(phases_before(&council, StandardPhase::Do)),
             answers: Vec::new(),
         };
-        assert_eq!(phases_before(&council, StandardPhase::Do).len(), 2);
+        assert_eq!(phases_before(&council, StandardPhase::Do).len(), 1);
         assert!(phases_before(&council, StandardPhase::Understand).is_empty());
         assert!(recorded.fits(&council));
         assert!(!recorded.fits(&crate::workflow::builtin::load("captain").unwrap()));

@@ -798,7 +798,7 @@ mod tests {
         let program = fake_opencode(dir.path(), u32::MAX);
         let server =
             PrivateServer::new(&program, Some("2.0.32"), dir.path()).confined(unconfined());
-        let last = vec!["ollama/qwen3-coder:30b-64k".to_owned()];
+        let last = vec!["ollama/qwen3-coder:30b".to_owned()];
         let listing = server
             .list(
                 &ApiCall::operation("model.list"),

@@ -53,9 +53,14 @@ const EVENT_BURST: usize = 256;
 /// can arrive here after its exit was seen.
 const CHILDS_LATE_INTERRUPT: Duration = Duration::from_secs(1);
 
+/// How long the first frame waits for the header, so the input never shows alone. The header
+/// needs only the settings and a few files, a few milliseconds.
+pub(super) const HEADER_WAIT: Duration = Duration::from_millis(250);
+
 /// Work that takes the terminal away, done between events.
 enum Handover {
     EditDraft,
+    Suspend,
     TakeOver(Box<TakeOverJob>),
     Run(TerminalJob),
 }
@@ -90,6 +95,8 @@ pub(super) struct Screen<W: Write> {
     /// Changes as each picture drawn or packed off the frame arrives, so the frame that shows it
     /// is drawn then, and none before.
     arrived: watch::Receiver<u64>,
+    /// The controller sends a header before the first frame, unless the greeting stands on top.
+    header_due: bool,
 }
 
 impl<W: Write> Screen<W> {
@@ -142,6 +149,7 @@ impl<W: Write> Screen<W> {
             terminals: gone::Terminals::default(),
             gone: false,
             arrived: arrivals(),
+            header_due: options.greeting.is_none(),
         };
         screen.refresh_keymap();
         screen
@@ -214,6 +222,7 @@ impl<W: Write> Screen<W> {
 
     async fn run_loop<K: KeySource>(&mut self, keys: &mut K) -> anyhow::Result<()> {
         let mut keys_open = true;
+        self.wait_for_the_header().await;
         loop {
             self.run_handovers(keys).await?;
             if self.exit.is_some() {
@@ -244,7 +253,9 @@ impl<W: Write> Screen<W> {
             let sleep_until = tokio::time::Instant::from_std(wake.unwrap_or(now + IDLE_WAIT));
             tokio::select! {
                 event = self.io.events.recv() => match event {
-                    Some(event) => self.on_app_events(event).await,
+                    Some(event) => {
+                        self.on_app_events(event).await;
+                    }
                     // The controller is gone, so nothing more can happen here.
                     None => {
                         self.exit.get_or_insert_with(Vec::new);
@@ -305,7 +316,34 @@ impl<W: Write> Screen<W> {
         }
     }
 
-    async fn on_app_events(&mut self, first: AppEvent) {
+    /// Holds the first frame until the header and what came with it are in, at most
+    /// [`HEADER_WAIT`], so the header, the notices and the input show together.
+    async fn wait_for_the_header(&mut self) {
+        if !std::mem::replace(&mut self.header_due, false) {
+            return;
+        }
+        let until = tokio::time::Instant::now() + HEADER_WAIT;
+        loop {
+            match tokio::time::timeout_at(until, self.io.events.recv()).await {
+                Ok(Some(event)) => {
+                    let header = self.on_app_events(event).await;
+                    if header || self.exit.is_some() || !self.handovers.is_empty() {
+                        return;
+                    }
+                }
+                Ok(None) => {
+                    self.exit.get_or_insert_with(Vec::new);
+                    return;
+                }
+                Err(_) => return,
+            }
+        }
+    }
+
+    /// Handles `first` and the events queued behind it, and says whether a header was among
+    /// them.
+    async fn on_app_events(&mut self, first: AppEvent) -> bool {
+        let mut header = matches!(first, AppEvent::Welcome { .. });
         self.on_app_event(first).await;
         for _ in 0..EVENT_BURST {
             // A handover runs before the events after it.
@@ -313,10 +351,14 @@ impl<W: Write> Screen<W> {
                 break;
             }
             match self.io.events.try_recv() {
-                Ok(event) => self.on_app_event(event).await,
+                Ok(event) => {
+                    header |= matches!(event, AppEvent::Welcome { .. });
+                    self.on_app_event(event).await;
+                }
                 Err(_) => break,
             }
         }
+        header
     }
 
     async fn on_app_event(&mut self, event: AppEvent) {
@@ -377,6 +419,7 @@ impl<W: Write> Screen<W> {
             clipboard,
             open_link,
             edit_draft,
+            suspend,
             theme,
             vim,
             exit,
@@ -433,6 +476,9 @@ impl<W: Write> Screen<W> {
         if edit_draft {
             self.handovers.push_back(Handover::EditDraft);
         }
+        if suspend {
+            self.handovers.push_back(Handover::Suspend);
+        }
         if let Some(job) = take_over {
             self.handovers.push_back(Handover::TakeOver(Box::new(job)));
         }
@@ -457,6 +503,7 @@ impl<W: Write> Screen<W> {
             };
             match handover {
                 Handover::EditDraft => self.edit_draft(keys).await?,
+                Handover::Suspend => self.suspend(keys).await?,
                 Handover::TakeOver(job) => self.take_over(*job, keys).await?,
                 Handover::Run(job) => self.run_in_terminal(job, keys).await?,
             }
@@ -479,6 +526,19 @@ impl<W: Write> Screen<W> {
                 .set_edited_text(&sent, &text),
             Ok(Err(error)) => self.notice(error.to_string(), Tone::Warning),
             Err(error) => self.notice(format!("the editor failed: {error}"), Tone::Warning),
+        }
+        Ok(())
+    }
+
+    /// Ctrl+Z: the terminal goes back to the shell and the app stops until `fg`, as Claude
+    /// Code does. Agents keep running, but nothing reads their output meanwhile, so a long stop
+    /// can hold them up. Coming back draws the screen again, logos included.
+    async fn suspend<K: KeySource>(&mut self, keys: &mut K) -> anyhow::Result<()> {
+        if let Err(error) = self
+            .handed_over(keys, async { stop_until_continued() })
+            .await?
+        {
+            self.notice(format!("Couldn't suspend: {error}"), Tone::Warning);
         }
         Ok(())
     }
@@ -829,6 +889,31 @@ async fn tick(poll: &mut Option<Interval>) {
         }
         None => std::future::pending().await,
     }
+}
+
+/// Says how to come back, then stops this process, so the agents it started, each in a group
+/// of its own, keep going. Returns once the shell's `fg` continues it. Where no shell keeps
+/// jobs, the stop is dropped and this returns at once.
+fn stop_until_continued() -> io::Result<()> {
+    use nix::sys::signal::{Signal, killpg, raise};
+    use nix::unistd::{getpgrp, getpid};
+
+    let mut out = io::stdout();
+    write!(
+        out,
+        "\x1b[2mArgonauts Code is suspended. Run fg to bring it back.\x1b[22m\r\n"
+    )?;
+    out.flush()?;
+    // Under a parent that waits on it, as npm's launcher does, the shell's job is the
+    // parent's group, and the shell takes the terminal back only once the whole group stops,
+    // so this stops the group, as the terminal's own Ctrl+Z would.
+    let group = getpgrp();
+    let stopped = if group == getpid() {
+        raise(Signal::SIGTSTP)
+    } else {
+        killpg(group, Signal::SIGTSTP)
+    };
+    stopped.map_err(io::Error::from)
 }
 
 #[cfg(test)]

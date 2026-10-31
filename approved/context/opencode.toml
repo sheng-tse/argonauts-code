@@ -11,7 +11,7 @@ hang = true
 # The main agent reads the README in a first step and answers in a second, which puts 23,700
 # tokens in its context, as context/opencode counts it: OpenCode's own figure. The first step's
 # input is the fresh session's start as state/session-starts.json keeps it (7,743 tokens of
-# OpenCode's own prompt and tools, 1,200 of AGENTS.md) and the 3,138 tokens Argonauts Code sends
+# OpenCode's own prompt and tools, 1,200 of AGENTS.md) and the 3,247 tokens Argonauts Code sends
 # with the question, so the start the app keeps from it reads as drawn and the rest counts as
 # messages. When what the app sends changes, this input changes by as much.
 [[rule]]
@@ -23,7 +23,7 @@ emit = '{"type":"step_start","timestamp":1790000000000,"sessionID":"ses_context_
 [[rule.step]]
 emit = '{"type":"tool_use","timestamp":1790000000400,"sessionID":"ses_context_opencode","part":{"id":"prt_2","sessionID":"ses_context_opencode","messageID":"msg_1","type":"tool","callID":"call_read_1","tool":"read","state":{"status":"completed","input":{"filePath":"README.md"},"output":"# Shop","title":"README.md","metadata":{},"time":{"start":1790000000200,"end":1790000000400}}}}'
 [[rule.step]]
-emit = '{"type":"step_finish","timestamp":1790000000500,"sessionID":"ses_context_opencode","part":{"id":"prt_3","sessionID":"ses_context_opencode","messageID":"msg_1","type":"step-finish","reason":"tool-calls","cost":0,"tokens":{"input":12081,"output":40,"reasoning":0,"cache":{"read":0,"write":0}}}}'
+emit = '{"type":"step_finish","timestamp":1790000000500,"sessionID":"ses_context_opencode","part":{"id":"prt_3","sessionID":"ses_context_opencode","messageID":"msg_1","type":"step-finish","reason":"tool-calls","cost":0,"tokens":{"input":12190,"output":40,"reasoning":0,"cache":{"read":0,"write":0}}}}'
 [[rule.step]]
 emit = '{"type":"step_start","timestamp":1790000000600,"sessionID":"ses_context_opencode","part":{"id":"prt_4","sessionID":"ses_context_opencode","messageID":"msg_2","type":"step-start"}}'
 [[rule.step]]

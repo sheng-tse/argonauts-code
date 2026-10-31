@@ -31,7 +31,7 @@ SVG = HERE / "svg"
 
 LOGOS = [
     "claudecode", "codex", "antigravity", "opencode", "ollama", "qwen", "kimi", "openai",
-    "mistral", "meta", "openrouter",
+    "mistral", "meta", "openrouter", "claude", "gemini", "gemma",
 ]
 
 # Name, canvas width and height, and the logo's square size inside it, centred.

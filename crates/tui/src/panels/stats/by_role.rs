@@ -20,13 +20,9 @@ use super::together::{Part, Together};
 use crate::base::format;
 use crate::base::kit::bars::fit_keeping_bars;
 use crate::base::kit::{Drawn, Frame, Header, Kit, fit, spread};
-use crate::base::text::{spans_width, str_width, truncate_spans};
+use crate::base::text::{spans_width, truncate_spans};
 use crate::base::theme::Role;
 
-/// The fewest cells a card gives a model's swatch and name, and the most, with one blank
-/// before its bar: a longer name is cut with `…`.
-const LEAST_NAME: usize = 16;
-const MOST_NAME: usize = draw::MODEL_NAME + 3;
 /// The caught-or-changed card's column of role names.
 const ROLE_COLUMN: usize = 16;
 /// The colours of the reasons work was sent back for, the most common first.
@@ -115,13 +111,7 @@ impl Stats<'_> {
     ) -> (Vec<Drawn>, Layout) {
         let roles = self.crew.filled();
         let layout = Layout::of(width, roles.len());
-        let names = self
-            .crew
-            .models()
-            .map(|(_, model)| str_width(&model.name) + 3)
-            .max()
-            .unwrap_or(0)
-            .clamp(LEAST_NAME, MOST_NAME);
+        let names = draw::names_column(self.crew.models().map(|(_, model)| model.name.as_str()), 1);
         let bodies = roles
             .into_iter()
             .enumerate()
@@ -168,10 +158,8 @@ impl Stats<'_> {
             .map(|(cli, model)| {
                 let style = model_style(kit, cli, model);
                 let tokens = model.spent_in(role).total_tokens();
-                let mut row = draw::swatch(kit, model_fill(kit, cli, model));
-                row.push(Span::raw(model.name.clone()));
-                // A name cut to its column keeps a blank before the bar.
-                let mut row = fit(truncate_spans(&row, names - 1), names);
+                let fill = model_fill(kit, cli, model);
+                let mut row = draw::swatch_and_name(kit, fill, &model.name, (names, 1));
                 row.extend(draw::thin(kit, tokens, used, PART_BAR, style));
                 row.push(kit.dim(format!(" {} · {}", self.tokens(tokens), model.did(role))));
                 fit_keeping_bars(row, inner)

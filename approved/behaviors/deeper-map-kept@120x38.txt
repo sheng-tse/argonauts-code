@@ -1,0 +1,93 @@
+Behaviors, Summaries with Opus 5.5 compared, after a redo that stopped: the map as it was, and why
+screen 120x38
+at 6,0
+size 120x32
+terminal fg=#c8d3f5 bg=#222436
+text
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats     All time  Last 7 days  Last 30 days
+
+  Overview    Models    Behaviors             By model    By CLI    By role    By workflow    By project    By outcome
+
+  1 Map · 2 Planet · 3 Universe                                                                     Labels · Summaries
+
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  Comparing ￼￼ Opus 5.5
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  With the rest, on the land:
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  Red where it does more, blue where less
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼     Much more 2x as often or more
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼     More      1.25x to 2x
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼     Less      0.5x to 0.8x
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼     Much less 0.5x or less
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼     Untinted  About the same, or too few
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  ↑  6 more above
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  ●  ￼￼ Opus 5.5            9
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  ↓  2 more below
+
+  Point at anything on the map to see what it is.
+
+  Summaries · 650 of 823 summarized by Qwen3 Coder 30B · 173 newer not yet
+  Redo stopped: Haiku 5.5 didn't answer after 40 of 823 summaries.
+  The map is as it was, and the 40 are kept for the next try.
+  Distinctive to Opus 5.5 · 8 of its 9 actions, in the model's words ·  new  says more than its label
+          Broad search for cache invalidation
+  ↓  7 more below
+
+   r to cycle dates · s this project · d labels · u update · tab groupings · h  l  compare · j  the list · esc back
+paint
+
+
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+.bbbbbbbb..cddddddddc...eeeeee....eeeeee....eeeee....eeeeeee....eeeeee....eeeee.....fff.ffff..eeee.e.eeee..eeee.ee.eeee
+
+..eeeeeeee....eeeeee...cdddddddddc...........ghhghhhhhg...ee.eee....ee.eeee....ee.eeeeeeee....ee.eeeeeee....ee.eeeeeee
+
+..f.fff.i.e.eeeeee.i.e.eeeeeeee.....................................................................eeeeee.i.fffffffff
+
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..iiiiiiiii.kk.eeee.eee
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..iiii.iii.iiiii.ii.iii.iiiii
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..iii.iiiii.ii.iiii.iiiii.iiii.iiiii.iiii
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..ll.eeee.eeee.ii.ii.iiiii.ii.iiii
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..mm.eeee......iiiii.ii.ii
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..nn.eeee......iiii.ii.iiii
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..oo.eeee.eeee.iiii.ii.iiii
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..pp.eeeeeeee..iiiii.iii.iiiii.ii.iii.iii
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..i..i.iiii.iiiii
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..q..kk.eeee.eee............i
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..i..i.iiii.iiiii
+
+..iiiii.ii.iiiiiiii.ii.iii.iii.ii.iii.iiii.ii.iii
+
+..iiiiiiiii.i.iii.ii.iii.iiiiiiiiii.ii.iiiii.iiiii.iii.i.iii.iiiii.iii.iii
+..rrrr.rrrrrrrr.iiiii.iii.iiiiii.iiiiii.iiiii.ii.ii.iii.iiiiiiiiii
+..iii.iii.ii.ii.ii.iiii.iii.iii.ii.iii.iiii.iii.iii.iiii.iiii
+..bbbbbbbbbbb.bb.bbbb.bbb.i.i.ii.iii.i.iiiiiiii.ii.iii.iiiiiii.iiiii.i.sttts.iiii.iiii.iiii.iii.iiiii
+..........eeeee.eeeeee.eee.eeeee.eeeeeeeeeeee
+..i..i.iiii.iiiii
+
+...i.ii.iiiii.iiiii.i.i.iiii.iiiiiii.i.i.iiiiii.i.i.iiiiii.i.iii.iiiiiiiii.i.i..i..iiiiiii.i.i..iii.iiii.i.iii.iiii
+key
+. blank
+a fg=#b1b9f9  ; Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp
+b fg=#c8d3f5 bold  ; the terminal's own
+c bg=#b1b9f9  ; Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp
+d fg=#14161f bg=#b1b9f9 bold  ; on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp
+e fg=#c8d3f5  ; the terminal's own
+f fg=#b1b9f9 bold  ; Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp
+g bg=#fb923c
+h fg=#14161f bg=#fb923c bold
+i fg=#999999  ; Dim, ModeSupervised, SyntaxComment
+j picture=000001
+k logo=claude
+l bg=#b44a4e
+m bg=#8c5a4c
+n bg=#4a627c
+o bg=#3e5a9a
+p bg=#4e5e48
+q fg=#f7a07f  ; CliClaude
+r fg=#ffc107  ; Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick
+s bg=#ffc107  ; Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick
+t fg=#1f202f bg=#ffc107 bold  ; on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick

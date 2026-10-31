@@ -9,6 +9,7 @@ pub(crate) mod embed;
 pub(crate) mod gather;
 mod linalg;
 pub(crate) mod offer;
+pub(crate) mod open;
 pub(crate) mod places;
 pub(crate) mod project;
 pub(crate) mod prompt;

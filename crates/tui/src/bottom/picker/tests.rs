@@ -390,44 +390,29 @@ fn hatched(picker: &Picker, theme: &Theme, now: Instant) -> usize {
     plain_text(std::slice::from_ref(gauge)).matches('╱').count()
 }
 
-/// Moving to another row springs the gauge to its new ends within a fifth of a second, asking
-/// for frames only while it moves, and with reduced motion it jumps.
+/// The gauge stands at the pointed row's ends in the frame the row is pointed in, and stays
+/// there: nothing slides after the key.
 #[test]
-fn the_gauge_springs_to_the_row_the_pointer_moved_to() {
+fn the_gauge_draws_the_pointed_rows_ends_at_once() {
     use super::Gauge;
 
     let mut theme = Theme::dark();
     theme.glyphs = Glyphs::UNICODE;
-    let before = Gauge {
+    let mut picker = picker(&["one", "two"]);
+    picker.gauge = Some(Gauge {
         label: "this pick".to_owned(),
-        fits: 0.2,
-        needs: 0.2,
-        words: "10 of 50 GB".to_owned(),
-        ..Gauge::default()
-    };
-    let moved_at = Instant::now();
-    let after = Gauge {
         fits: 0.2,
         needs: 0.6,
         words: "30 of 50 GB".to_owned(),
-        ..before.clone()
-    }
-    .moving_from(&before, moved_at);
-    let mut picker = picker(&["one", "two"]);
-    picker.gauge = Some(after);
+        ..Gauge::default()
+    });
 
-    let at = |ms: u64| moved_at + std::time::Duration::from_millis(ms);
-    let (start, middle, end) = (
-        hatched(&picker, &theme, at(0)),
-        hatched(&picker, &theme, at(40)),
-        hatched(&picker, &theme, at(200)),
-    );
-    assert_eq!(start, 0);
-    assert!(0 < middle && middle < end, "{start} {middle} {end}");
-    assert!(picker.next_change(&Clock::still(at(40)), &theme).is_some());
-    assert_eq!(picker.next_change(&Clock::still(at(200)), &theme), None);
-
+    let pointed_at = Instant::now();
+    let at = |ms: u64| pointed_at + std::time::Duration::from_millis(ms);
+    let first = hatched(&picker, &theme, at(0));
+    assert!(first > 0, "the hatched part shows in the first frame");
+    assert_eq!(hatched(&picker, &theme, at(40)), first);
+    assert_eq!(hatched(&picker, &theme, at(200)), first);
     theme.reduced_motion = true;
-    assert_eq!(hatched(&picker, &theme, at(0)), end);
-    assert_eq!(picker.next_change(&Clock::still(at(40)), &theme), None);
+    assert_eq!(hatched(&picker, &theme, at(0)), first);
 }

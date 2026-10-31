@@ -84,7 +84,7 @@ pub enum Kind {
         burning: bool,
         last: Option<u32>,
     },
-    /// One agent did it 5 or more times in a row.
+    /// One agent did it `BEHAVIOR_RUN_LENGTH` or more times in a row.
     Tornado { times: u32, longest: u32 },
     /// Sessions stopped on it: by you, a limit, or a full context.
     Thunderstorm { sessions: u32 },

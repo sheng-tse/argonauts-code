@@ -4,6 +4,7 @@
 
 use std::path::Path;
 
+use argonauts_core::base::clock;
 use argonauts_core::base::names::AgentId;
 use argonauts_core::models::limits::{
     PlanUsageAnswer, PlanUsageReading, PlanUsageSource, PlanUsageStatus,
@@ -72,7 +73,7 @@ pub fn parse_usage(agent_id: &str, stdout: &str) -> Option<PlanUsageReading> {
         resets_at: bucket.resets_at,
         window: bucket.window.clone(),
         source: PlanUsageSource::UsageProbe,
-        observed_at: OffsetDateTime::now_utc(),
+        observed_at: clock::now_utc(),
         detail: Some(data.cloned().unwrap_or(payload)),
         wrap_up: false,
     })

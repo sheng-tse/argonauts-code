@@ -9,10 +9,10 @@
     "--format",
     "json",
     "--model",
-    "ollama/qwen3-coder:30b-64k"
+    "ollama/qwen3-coder:30b"
   ],
   "date": "2026-10-19T00:24:19Z",
   "exit_code": 130,
   "note": "A worker's build session on local Qwen3 Coder 30B (its 64k tag) through OpenCode 2's Code Mode, fixing slugify so a repo's three tests pass. Its tests passed, then it called the execute tool 12 times with `return {...}` holding its done report, each call handing the report back, until the repeat watchdog stopped it. These are the agent events Argonauts Code's parser made of its output, in order, as the run's journal kept them.",
-  "sanitized": "the task worktree's path replaced with /work/task-001; Argonauts Code's own notice and the exit error and result its parser made at the stop left out, so only what the CLI said remains"
+  "sanitized": "the task worktree's path replaced with /work/task-001; Argonauts Code's own notice and the exit error and result its parser made at the stop left out, so only what the CLI said remains; the model's own Ollama tag, made with num_ctx set, written as the stock qwen3-coder:30b"
 }

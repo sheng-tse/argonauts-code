@@ -337,7 +337,7 @@ mod tests {
 
     const LOCAL_QWEN: &str = r#"
         [[model]]
-        id = "opencode/ollama/qwen3-coder:30b-64k"
+        id = "opencode/ollama/qwen3-coder:30b"
         provider = "qwen"
         kind = "cli"
         access = "local"
@@ -385,10 +385,10 @@ mod tests {
     #[test]
     fn a_launch_names_only_a_level_the_model_lists() {
         let registry = OpenCodeList(vec![
-            opencode("ollama/qwen3-coder:30b-64k", &[]),
+            opencode("ollama/qwen3-coder:30b", &[]),
             opencode("opencode/deepseek-v4.1-flash-free", &["low", "high", "max"]),
         ]);
-        let qwen = worker("ollama/qwen3-coder:30b-64k");
+        let qwen = worker("ollama/qwen3-coder:30b");
         let deepseek = worker("opencode/deepseek-v4.1-flash-free");
         assert_eq!(effort_to_run(&registry, &qwen, Some("high".into())), None);
         let run = |set: &str| effort_to_run(&registry, &deepseek, Some(set.into()));

@@ -120,27 +120,46 @@ pub struct View {
 }
 
 impl View {
-    /// The terminal turns the planet in steps of 10°, keeping one picture a step.
+    /// A key or a drag turns the planet in steps of 10°.
     pub const STEPS: u32 = 36;
 
     /// The tilt the terminal shows the planet at.
     pub const TILT: f64 = 0.32;
 
-    /// The terminal's view nearest to a longitude: turned to the closest of its steps, at its
+    /// The view nearest to a longitude among the steps of 10° a key turns by, at the terminal's
     /// tilt.
     pub fn stepped(lon: f64) -> Self {
-        let step = TAU / f64::from(Self::STEPS);
+        Self::stepped_in(lon, Self::STEPS)
+    }
+
+    /// The view nearest to a longitude among `steps` even steps a turn, at the terminal's tilt.
+    pub fn stepped_in(lon: f64, steps: u32) -> Self {
+        let step = TAU / f64::from(steps.max(1));
         Self {
             lon: (lon / step).round() * step,
             tilt: Self::TILT,
         }
     }
 
-    /// Which of the terminal's steps the view is turned to, from 0, however many times round it
-    /// has been.
+    /// The view turned to the nearest of `steps` even steps a turn, at its own tilt.
+    pub fn on_steps(self, steps: u32) -> Self {
+        Self {
+            lon: Self::stepped_in(self.lon, steps).lon,
+            ..self
+        }
+    }
+
+    /// Which of the steps of 10° the view is turned to, from 0, however many times round it has
+    /// been.
     pub fn step(&self) -> u32 {
-        let steps = f64::from(Self::STEPS);
-        // Rounded and brought between 0 and STEPS - 1 first, so the cast is exact.
+        self.step_in(Self::STEPS)
+    }
+
+    /// Which of `steps` even steps a turn the view is turned to, from 0, however many times
+    /// round it has been.
+    pub fn step_in(&self, steps: u32) -> u32 {
+        let steps = f64::from(steps.max(1));
+        // Rounded and brought between 0 and steps - 1 first, so the cast is exact.
         (self.lon / TAU * steps).round().rem_euclid(steps) as u32
     }
 }
@@ -281,13 +300,23 @@ mod tests {
     }
 
     #[test]
-    fn the_terminal_turns_the_planet_in_ten_degree_steps() {
+    fn a_key_turns_the_planet_in_ten_degree_steps() {
         let view = View::stepped(0.19);
         assert!(near(view.lon, 10f64.to_radians()));
         assert!(near(view.tilt, 0.32));
         assert_eq!(view.step(), 1);
         assert_eq!(View::stepped(TAU * 3.0 - 0.01).step(), 0);
         assert_eq!(View::stepped(-10f64.to_radians()).step(), 35);
+    }
+
+    #[test]
+    fn a_finer_turn_steps_by_its_own_share_of_a_turn() {
+        let view = View::stepped_in(0.19, 72);
+        assert!(near(view.lon, 10f64.to_radians()));
+        assert_eq!(view.step_in(72), 2);
+        assert_eq!(View::stepped_in(0.06, 72).step_in(72), 1);
+        assert_eq!(View::stepped_in(-5f64.to_radians(), 72).step_in(72), 71);
+        assert_eq!(View::stepped_in(TAU / 54.0 * 53.0, 54).step_in(54), 53);
     }
 
     #[test]

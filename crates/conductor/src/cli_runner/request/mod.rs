@@ -1160,7 +1160,7 @@ mod tests {
         registry.add(first_local());
         let mut default = local_entry(
             "opencode-acp",
-            "ollama/qwen3-coder:30b-64k",
+            "ollama/qwen3-coder:30b",
             RegistryKind::Cli,
             true,
         );
@@ -1168,7 +1168,7 @@ mod tests {
         default.variants = Some(vec!["low".to_owned(), "high".to_owned()]);
         registry.add(default);
         let request = session_request(&spec, &opencode, &settings, Some(&registry)).unwrap();
-        assert_eq!(request.model.as_deref(), Some("ollama/qwen3-coder:30b-64k"));
+        assert_eq!(request.model.as_deref(), Some("ollama/qwen3-coder:30b"));
         assert_eq!(
             request.effort.as_deref(),
             Some("high"),
@@ -1199,7 +1199,7 @@ mod tests {
         let registry = StaticRegistry::default();
         let mut default = local_entry(
             "opencode-acp",
-            "ollama/qwen3-coder:30b-64k",
+            "ollama/qwen3-coder:30b",
             RegistryKind::Cli,
             true,
         );
@@ -1208,7 +1208,7 @@ mod tests {
         let settings = Settings::default();
         assert_eq!(
             model_run(&bare, &opencode, &settings, Some(&registry)).to_string(),
-            "opencode-acp/ollama/qwen3-coder:30b-64k"
+            "opencode-acp/ollama/qwen3-coder:30b"
         );
 
         // Your setting wins, and one that would be refused stays as it is.

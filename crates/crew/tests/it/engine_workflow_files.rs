@@ -109,9 +109,9 @@ fn builtin_protocols_run_as_workflow_files() {
     ] {
         assert!(kinds(&base).contains(&kind), "{kind:?}");
     }
-    // Council plans by its talk, with no drafts to judge.
+    // Council plans by its talk, with no drafts to judge, and nothing reads your request first.
     let council = load("council");
-    assert_eq!(standards(&council), four);
+    assert_eq!(standards(&council), four[1..]);
     assert!(kinds(&council).contains(&StepKind::Talk));
     for kind in [
         StepKind::Draft,
@@ -617,8 +617,9 @@ async fn council_full_run() -> anyhow::Result<()> {
         .into_iter()
         .map(|(_, standard)| standard)
         .collect();
+    // The seats answer your request as you wrote it, so no step reads it first.
+    assert!(!standards.contains(&StandardPhase::Understand));
     for standard in [
-        StandardPhase::Understand,
         StandardPhase::Plan,
         StandardPhase::Do,
         StandardPhase::Decide,

@@ -9,6 +9,7 @@ use argonauts_core::app::SettingRow;
 use argonauts_core::app::views::{
     LearningAction, LearningArea, LearningCommand, LearningRow, LearningTab, LearningView,
 };
+use argonauts_core::base::clock;
 use argonauts_core::settings::Settings;
 use argonauts_crew::run_review::notes;
 use argonauts_learning::Store;
@@ -37,7 +38,7 @@ pub(crate) fn build(
     focus: &Focus,
     settings_rows: Vec<SettingRow>,
 ) -> anyhow::Result<LearningView> {
-    let now = OffsetDateTime::now_utc();
+    let now = clock::now_utc();
     let (tabs, summary) = match area {
         LearningArea::Records => records(store, settings, now)?,
         LearningArea::LearnedWorkflows => learned_workflows(store, settings, now)?,

@@ -74,7 +74,7 @@ pub(crate) fn at_start(paths: &Paths, settings: &Settings) -> Vec<(NoteLevel, St
     }
     let var = |name: &str| std::env::var(name).ok();
     let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
-    let now = OffsetDateTime::now_utc();
+    let now = argonauts_core::base::clock::now_utc();
     if may_look(&settings.updates, &var, terminal) && is_due(&state, now) {
         let updates = settings.updates.clone();
         let paths = paths.clone();
@@ -386,7 +386,7 @@ mod tests {
 
     #[test]
     fn a_look_is_due_once_a_day() {
-        let now = OffsetDateTime::now_utc();
+        let now = argonauts_core::base::clock::now_utc();
         let mut state = UpdateState::default();
         assert!(is_due(&state, now));
         state.checked = Some(now - Duration::hours(3));
@@ -426,7 +426,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let next = served_newer(&server, &signer);
         let here = here(&server, &signer, dir.path(), Install::Shell);
-        let now = OffsetDateTime::now_utc();
+        let now = argonauts_core::base::clock::now_utc();
         // Not while a run is going: the look is tried again next time.
         look(&here, &UpdateSettings::default(), &|| true, now).await;
         assert_eq!(here.layout.linked(), None);
@@ -461,7 +461,7 @@ mod tests {
         }
         server.publish("stable", &newer, &signer);
         let here = here(&server, &signer, dir.path(), Install::Shell);
-        let now = OffsetDateTime::now_utc();
+        let now = argonauts_core::base::clock::now_utc();
         look(&here, &UpdateSettings::default(), &|| false, now).await;
         assert_eq!(here.layout.linked(), None, "nothing took over");
 
@@ -503,7 +503,7 @@ mod tests {
         let signer = Signer::new();
         let dir = tempfile::tempdir().unwrap();
         let here = here(&server, &signer, dir.path(), Install::Shell);
-        let now = OffsetDateTime::now_utc();
+        let now = argonauts_core::base::clock::now_utc();
         look(&here, &UpdateSettings::default(), &|| false, now).await;
         let mut state = UpdateState::load(&here.state_file);
         assert_eq!(state.checked, None, "due again at the next start");
@@ -626,7 +626,13 @@ Argonauts Code 0.2.0      couldn't check                last looked 10:41 AM · 
         ] {
             let _ = std::fs::remove_file(dir.path().join("update.json"));
             let here = here(&server, &signer, dir.path(), install);
-            look(&here, &notify, &|| false, OffsetDateTime::now_utc()).await;
+            look(
+                &here,
+                &notify,
+                &|| false,
+                argonauts_core::base::clock::now_utc(),
+            )
+            .await;
             assert_eq!(here.layout.linked(), None, "{install:?} replaced nothing");
             let mut state = UpdateState::load(&here.state_file);
             assert_eq!(

@@ -108,6 +108,12 @@ pub trait MapView {
     fn beside(&self) -> Option<Beside> {
         None
     }
+
+    /// What the last drawing of the map's pictures to panic said, once, asked for every frame
+    /// so the screen can say it. A map that draws in line never has one.
+    fn take_failure(&self) -> Option<String> {
+        None
+    }
 }
 
 #[cfg(test)]

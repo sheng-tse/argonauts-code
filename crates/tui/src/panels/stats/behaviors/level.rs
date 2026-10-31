@@ -4,6 +4,8 @@
 
 use std::time::{Duration, Instant};
 
+use crate::world::deliver::clock::Rate;
+
 /// A level of the world, from the map out to the universe and into it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum Level {
@@ -46,22 +48,28 @@ impl Level {
     }
 }
 
-/// The steps a zoom takes from one level to the next, at the world's clock of 8 a second: six,
-/// so a zoom takes the 0.7 s it should, as near as that clock comes.
-pub const ZOOM_FRAMES: u32 = 6;
-const FRAME: Duration = Duration::from_millis(125);
+/// How long a zoom from one level to the next takes: 0.75 s, the 0.7 s it should as near as the
+/// world's clock comes at 12 and at 16 steps a second.
+const ZOOM_SECONDS: f64 = 0.75;
 
-/// The world moving from one level to another: from `from` to `to`, begun `since`.
+/// The world moving from one level to another: from `from` to `to`, begun `since`, a frame
+/// each step at `rate`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Zoom {
     pub from: Level,
     pub to: Level,
     since: Instant,
+    rate: Rate,
 }
 
 impl Zoom {
-    pub fn new(from: Level, to: Level, since: Instant) -> Self {
-        Self { from, to, since }
+    pub fn new(from: Level, to: Level, since: Instant, rate: Rate) -> Self {
+        Self {
+            from,
+            to,
+            since,
+            rate,
+        }
     }
 
     /// When it began.
@@ -69,21 +77,37 @@ impl Zoom {
         self.since
     }
 
-    /// The frame the zoom shows at `now`, from 0 at its start to [`ZOOM_FRAMES`] once it has
+    pub fn rate(&self) -> Rate {
+        self.rate
+    }
+
+    /// The steps it takes.
+    pub fn frames(&self) -> u32 {
+        (ZOOM_SECONDS * f64::from(self.rate.per_second())).round() as u32
+    }
+
+    /// How long it takes.
+    pub fn lasts(&self) -> Duration {
+        self.rate.step() * self.frames()
+    }
+
+    /// The frame the zoom shows at `now`, from 0 at its start to [`Zoom::frames`] once it has
     /// arrived.
     pub fn frame(&self, now: Instant) -> u32 {
-        let steps = now.saturating_duration_since(self.since).as_millis() / FRAME.as_millis();
-        u32::try_from(steps).unwrap_or(u32::MAX).min(ZOOM_FRAMES)
+        let steps = self
+            .rate
+            .steps_in(now.saturating_duration_since(self.since));
+        u32::try_from(steps).unwrap_or(u32::MAX).min(self.frames())
     }
 
     pub fn done(&self, now: Instant) -> bool {
-        self.frame(now) >= ZOOM_FRAMES
+        self.frame(now) >= self.frames()
     }
 
     /// When its next frame is due, while it has one to show.
     pub fn next_frame(&self, now: Instant) -> Option<Instant> {
         let frame = self.frame(now);
-        (frame < ZOOM_FRAMES).then(|| self.since + FRAME * (frame + 1))
+        (frame < self.frames()).then(|| self.since + self.rate.step() * (frame + 1))
     }
 }
 
@@ -92,21 +116,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_zoom_steps_six_frames_at_eight_a_second_then_stays() {
+    fn a_zoom_steps_a_frame_each_step_for_three_quarters_of_a_second_then_stays() {
         let start = Instant::now();
-        let zoom = Zoom::new(Level::Map, Level::Planet, start);
+        let zoom = Zoom::new(Level::Map, Level::Planet, start, Rate::STEADY);
+        assert_eq!(zoom.frames(), 9);
         assert_eq!(zoom.frame(start), 0);
-        assert_eq!(zoom.frame(start + Duration::from_millis(124)), 0);
-        assert_eq!(zoom.frame(start + Duration::from_millis(125)), 1);
+        assert_eq!(zoom.frame(start + Duration::from_millis(83)), 0);
+        assert_eq!(zoom.frame(start + Duration::from_millis(84)), 1);
         assert_eq!(
-            zoom.next_frame(start + Duration::from_millis(130)),
-            Some(start + Duration::from_millis(250))
+            zoom.next_frame(start + Duration::from_millis(90)),
+            Some(start + Rate::STEADY.step() * 2)
         );
         assert!(!zoom.done(start + Duration::from_millis(749)));
         let after = start + Duration::from_millis(750);
         assert!(zoom.done(after));
-        assert_eq!(zoom.frame(after + Duration::from_secs(60)), ZOOM_FRAMES);
+        assert_eq!(zoom.frame(after + Duration::from_secs(60)), 9);
         assert_eq!(zoom.next_frame(after), None);
+        let quick = Zoom::new(Level::Map, Level::Planet, start, Rate::QUICK);
+        assert_eq!(quick.frames(), 12);
+        assert_eq!(quick.lasts(), Duration::from_millis(750));
     }
 
     #[test]

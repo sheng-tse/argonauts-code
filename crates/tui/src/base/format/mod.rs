@@ -12,6 +12,7 @@ pub mod figures;
 mod numbers;
 mod resets;
 
+pub use argonauts_core::base::text::time_in_words;
 pub use clock::{on_24_hours, set_clock, twenty_four_hours};
 pub use figures::Figures;
 pub use numbers::{
@@ -174,7 +175,7 @@ impl WallClock {
     pub fn now(&self) -> OffsetDateTime {
         match self.pinned {
             Some(now) => now,
-            None => self.to_local(OffsetDateTime::now_utc()),
+            None => self.to_local(argonauts_core::base::clock::now_utc()),
         }
     }
 
@@ -363,7 +364,7 @@ mod tests {
     #[test]
     fn context_counts_read_as_claude_codes_context_writes_them() {
         for (count, words) in [
-            (960, "960"),
+            (318, "318"),
             (4_400, "4.4k"),
             (6_000, "6k"),
             (182_460, "182.5k"),
@@ -447,7 +448,7 @@ mod tests {
 
     #[test]
     fn the_local_clock_reads_the_zone() {
-        let now = OffsetDateTime::now_utc();
+        let now = argonauts_core::base::clock::now_utc();
         let local = WallClock::local().to_local(now);
         assert_eq!(local, now);
         assert!(local.offset().whole_hours().abs() <= 14);

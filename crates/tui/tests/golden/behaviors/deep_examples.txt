@@ -21,7 +21,7 @@
 
   ◉ Read external task's implementation · ◧◨ Haiku 5.5 · build:per-api-key · label: read git history
 
-  Summaries · 562 summarized by Qwen3 Coder 30B (64k) · last 30 days
+  Summaries · 562 summarized by Qwen3 Coder 30B · last 30 days
   Actions like Read external task's implementation · 8 · ↑  ↓  rings each on the map
   ❯ ◧◨ Haiku 5.5    build:per-api-key    Read external task's implementation                          20261017-071701
     ◧◨ Haiku 5.5    plan:due             Outline task implementation plan                             20261014-055153

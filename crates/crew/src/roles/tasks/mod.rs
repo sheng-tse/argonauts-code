@@ -8,12 +8,13 @@
 use std::borrow::Cow;
 
 use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::runs::events::run::RunStarted;
 use argonauts_core::settings::Settings;
 use argonauts_core::workflows::steps::intake::InstructionKind;
 use argonauts_core::{Note, NoteLevel};
 
-use super::{candidates, conflict, display_name, provider};
+use super::{candidates, conflict, provider};
 use crate::engine::error::EngineResult;
 use crate::engine::host::Host;
 
@@ -142,6 +143,8 @@ pub struct TaskRoles {
     pub left_out: Vec<(ModelRef, String)>,
     /// The line that says which rule gave way, with why behind Ctrl+O. `None` when they all hold.
     pub relaxed: Option<String>,
+    /// What the run calls each model, for the reasons these roles give.
+    pub names: DisplayNames,
 }
 
 /// The rules as they stand at one point of settling.
@@ -220,8 +223,13 @@ impl Rules {
     }
 
     /// Why `worker` can't own a task under these rules, in plain words.
-    fn why_not_worker(&self, worker: &ModelRef, provider: &dyn Fn(&ModelRef) -> String) -> String {
-        let name = display_name(worker);
+    fn why_not_worker(
+        &self,
+        names: &DisplayNames,
+        worker: &ModelRef,
+        provider: &dyn Fn(&ModelRef) -> String,
+    ) -> String {
+        let name = names.worker(worker);
         let others: Vec<&ModelRef> = self
             .reviewers
             .iter()
@@ -252,7 +260,7 @@ impl Rules {
     }
 
     /// What giving way to `rule` means, from `from` to these rules.
-    fn eased_line(&self, rule: Rule, from: &Rules) -> String {
+    fn eased_line(&self, names: &DisplayNames, rule: Rule, from: &Rules) -> String {
         match rule {
             Rule::PerTask => format!(
                 "each task gets {} reviewer{}, not {}",
@@ -262,11 +270,11 @@ impl Rules {
             ),
             Rule::Workers => format!(
                 "any of the crew may own a task, not only {}",
-                names(&from.workers)
+                who(names, &from.workers)
             ),
             Rule::Reviewers => format!(
                 "any of the crew may review, not only {}",
-                names(&from.reviewers)
+                who(names, &from.reviewers)
             ),
             Rule::OtherProvider => "a task may be reviewed by its worker's provider".to_owned(),
         }
@@ -292,6 +300,7 @@ pub fn reviewers_for(
 /// Settles who may own and review tasks from `settings`, each rule from the layer `layers`
 /// gives it.
 pub fn settle(
+    names: &DisplayNames,
     settings: &Settings,
     layers: Layers,
     provider: &dyn Fn(&ModelRef) -> String,
@@ -348,7 +357,7 @@ pub fn settle(
             said.push(format!(
                 "the one from {} gives way: {}",
                 layers.of_rule(*rule).yours(),
-                eased.eased_line(*rule, &at)
+                eased.eased_line(names, *rule, &at)
             ));
             at = eased;
         }
@@ -356,7 +365,7 @@ pub fn settle(
             .workers
             .iter()
             .filter(|worker| !pinned.may_own(worker, provider))
-            .map(|worker| format!("{}.", pinned.why_not_worker(worker, provider)))
+            .map(|worker| format!("{}.", pinned.why_not_worker(names, worker, provider)))
             .collect();
         format!(
             "Your rules for who owns and reviews tasks can't all hold, so {}.\n{}",
@@ -383,7 +392,7 @@ pub fn settle(
         left_out: left_out
             .into_iter()
             .map(|worker| {
-                let why = rules.why_not_worker(&worker, provider);
+                let why = rules.why_not_worker(names, &worker, provider);
                 (worker, why)
             })
             .collect(),
@@ -391,13 +400,15 @@ pub fn settle(
         per_task: rules.per_task,
         other_provider: rules.other_provider,
         relaxed,
+        names: names.clone(),
     }
 }
 
 /// [`settle`] for this run.
 pub fn for_run(host: &Host) -> TaskRoles {
     let layers = host.read(|state| Layers::of(state.run.started.as_deref()));
-    settle(host.settings(), layers, &|worker| provider(host, worker))
+    let (names, settings) = (host.names(), host.settings());
+    settle(names, settings, layers, &|worker| provider(host, worker))
 }
 
 /// The run's settings with its task roles in place, where they are different: what dividing the
@@ -464,7 +475,7 @@ impl TaskRoles {
         if let Some((_, why)) = self.left_out.iter().find(|(left, _)| left == worker) {
             return why.clone();
         }
-        format!("only {} may own tasks", names(&self.workers))
+        format!("only {} may own tasks", who(&self.names, &self.workers))
     }
 
     /// Why `reviewer` can't review `worker`'s task, in plain words with names.
@@ -474,16 +485,17 @@ impl TaskRoles {
         worker: &ModelRef,
         provider: &dyn Fn(&ModelRef) -> String,
     ) -> String {
+        let names = &self.names;
         if !self.may_review(reviewer) {
-            return format!("only {} may review tasks", names(&self.reviewers));
+            return format!("only {} may review tasks", who(names, &self.reviewers));
         }
         if conflict(RoleName::Reviewer, reviewer, Some(worker), provider).is_some() {
             return "nobody reviews their own task".to_owned();
         }
         format!(
             "{} is from the provider of the task's worker, {}",
-            display_name(reviewer),
-            display_name(worker)
+            names.worker(reviewer),
+            names.worker(worker)
         )
     }
 
@@ -501,7 +513,7 @@ impl TaskRoles {
                 };
                 let mut line = format!(
                     "`{worker}` is {}, from {}: it {may}.",
-                    display_name(worker),
+                    self.names.worker(worker),
                     provider(worker)
                 );
                 if let Some((_, why)) = self.left_out.iter().find(|(left, _)| left == worker) {
@@ -562,8 +574,8 @@ pub fn named_in(text: &str, pool: &[ModelRef]) -> Option<ModelRef> {
 }
 
 /// Names joined as a sentence says them: "Claude Code and Codex", "A, B and C".
-pub fn names(workers: &[ModelRef]) -> String {
-    let names: Vec<String> = workers.iter().map(display_name).collect();
+pub fn who(names: &DisplayNames, workers: &[ModelRef]) -> String {
+    let names = names.workers(workers);
     match names.as_slice() {
         [] => "nobody".to_owned(),
         [one] => one.clone(),

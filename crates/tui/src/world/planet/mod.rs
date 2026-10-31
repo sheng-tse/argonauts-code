@@ -30,7 +30,7 @@ pub use dots::DotLook;
 pub use globe::Bounds;
 pub use pointing::OnGlobe;
 pub use skin::{Band, Skin, has_aurora};
-pub use spin::{Home, Moment, Shot, Spin, shown_drift, turned, turning_moment};
+pub use spin::{Home, Moment, Shot, Spin, shown_drift, turn_steps, turned, turning_moment};
 pub use standing::{ON_MAP, ON_PLANET, Standing};
 pub use unroll::flat_ground;
 

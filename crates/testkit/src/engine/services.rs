@@ -180,6 +180,7 @@ pub fn engine_context_in(
         services: services.services(),
         shutdown: CancellationToken::new(),
         reopen: false,
+        starts_supervised: false,
     };
     (context, sink, commands)
 }

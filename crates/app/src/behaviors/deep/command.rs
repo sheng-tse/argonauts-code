@@ -116,6 +116,7 @@ pub async fn behaviors_deep(
         summarizer: chosen.model.clone(),
         download_embedder,
         redo,
+        download_summarizer: false,
     };
     let mut progress = |progress: DeepProgress| {
         terminal.progress(&progress_words(
@@ -232,6 +233,14 @@ pub(crate) fn done_words(done: &DeepDone, took: Duration) -> Vec<String> {
              carries on.",
             duration_words(took)
         ));
+    } else if let Some(fewer) = done.fewer {
+        lines.push(format!(
+            "Kept the map after {}: the new one had {} dots, fewer than its {}. {made}. Every \
+             summary written is kept.",
+            duration_words(took),
+            fewer.made,
+            fewer.shown
+        ));
     } else if let Some(why) = &done.failed {
         lines.push(format!(
             "The summarizer stopped answering after {} ({why}): {made}. Every summary written is \
@@ -253,6 +262,11 @@ pub(crate) fn done_words(done: &DeepDone, took: Duration) -> Vec<String> {
             lines.push("No embedding model, so the summaries are placed by their words.".to_owned())
         }
         None => {}
+    }
+    for unread in &done.unread {
+        lines.push(format!(
+            "Couldn't read {unread}, so its actions are left out and their dots kept."
+        ));
     }
     lines.push(format!(
         "Summaries place {} dots, {} of them new. d in Overview › Behaviors shows them.",
@@ -293,7 +307,7 @@ mod tests {
     #[test]
     fn the_first_line_matches_the_shell_in_its_picture() {
         let qwen = SummarizerOffer {
-            model: "ollama/qwen3-coder:30b-64k".parse().unwrap(),
+            model: "ollama/qwen3-coder:30b".parse().unwrap(),
             name: "Qwen3 Coder 30B on Ollama".to_owned(),
             short: "Qwen3 Coder 30B".to_owned(),
             place: OfferPlace::ThisMachine {

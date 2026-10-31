@@ -1,0 +1,9 @@
+# Set up with Claude Code to talk to, and a workflow of yours that plans the parts of a change
+# and then builds them side by side.
+workflow = "rate-limit"
+
+[crew]
+main = "claude-code"
+worker = ["claude-code", "codex", "antigravity-cli", "opencode"]
+reviewer = ["claude-code", "codex", "antigravity-cli", "opencode"]
+judge = ["claude-code", "codex", "antigravity-cli", "opencode"]

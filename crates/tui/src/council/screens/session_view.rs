@@ -15,7 +15,7 @@ use super::super::talk::faces::Faces;
 use super::super::talk::row::Row;
 use super::super::talk::words::{self, Mark, Piece, Tone};
 use crate::base::kit::logo::{ModelLabel, NoPicture};
-use crate::base::text::str_width;
+use crate::base::text::{sanitize, sanitize_line, str_width, wrap_text};
 use crate::base::theme::{Role, Theme};
 
 /// One row group of the session.
@@ -267,23 +267,24 @@ fn rule(width: usize, style: Style) -> Line<'static> {
     Line::from(Span::styled("─".repeat(width), style))
 }
 
-/// `text` in rows: the first `first` cells wide, the others `rest`.
-fn wrap_words(text: &str, first: usize, rest: usize) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut line = String::new();
-    let mut room = first;
-    for word in text.split(' ') {
-        if !line.is_empty() && str_width(&line) + 1 + str_width(word) > room {
-            lines.push(std::mem::take(&mut line));
-            room = rest;
-        }
-        if !line.is_empty() {
-            line.push(' ');
-        }
-        line.push_str(word);
-    }
-    lines.push(line);
-    lines
+/// `text` in rows as the seat read or wrote it: each of its lines starts a row of its own and
+/// wraps at word boundaries, the first row `first` cells wide and the others `rest`. Agent
+/// text, so control sequences go first. A wrapped row's first span carries the mark that lets
+/// a copy join it back to the row above.
+fn wrap_lines(text: &str, style: Style, first: usize, rest: usize) -> Vec<Vec<Span<'static>>> {
+    // The first row's room is `rest` less an indent, which comes off again after the wrap.
+    let indent = [Span::raw(" ".repeat(rest.saturating_sub(first)))];
+    wrap_text(&sanitize(text), style, rest.max(1), &indent, &[])
+        .into_iter()
+        .enumerate()
+        .map(|(row, line)| {
+            let mut spans = line.spans;
+            if row == 0 && !spans.is_empty() {
+                spans.remove(0);
+            }
+            spans
+        })
+        .collect()
 }
 
 fn turn_rows(
@@ -309,7 +310,7 @@ fn turn_rows(
             } else {
                 (theme.style(Role::UserBand), theme.style(Role::Faint))
             };
-            wrap_words(words, first, width.saturating_sub(3))
+            wrap_lines(words, bright, first, width.saturating_sub(3))
                 .into_iter()
                 .enumerate()
                 .map(|(i, line)| {
@@ -317,7 +318,7 @@ fn turn_rows(
                     if i == 0 {
                         row.put(0, Span::styled("❯", pointer));
                         let at = row.pieces(2, from, faces, theme);
-                        row.put(at, Span::styled(line, bright));
+                        row.put_all(at, line);
                         if let Some(time) = time {
                             row.put(
                                 width.saturating_sub(1 + str_width(time)),
@@ -325,24 +326,27 @@ fn turn_rows(
                             );
                         }
                     } else {
-                        row.put(2, Span::styled(line, bright));
+                        row.put_all(2, line);
                     }
                     row.filled(band).line(width)
                 })
                 .collect()
         }
-        Turn::Said(words) => wrap_words(words, width.saturating_sub(3), width.saturating_sub(3))
-            .into_iter()
-            .enumerate()
-            .map(|(i, line)| {
-                let mut row = Row::new();
-                if i == 0 {
-                    row.put(0, Span::styled("⏺", text));
-                }
-                row.put(2, Span::styled(line, text));
-                row.line(width)
-            })
-            .collect(),
+        Turn::Said(words) => {
+            let room = width.saturating_sub(3);
+            wrap_lines(words, text, room, room)
+                .into_iter()
+                .enumerate()
+                .map(|(i, line)| {
+                    let mut row = Row::new();
+                    if i == 0 {
+                        row.put(0, Span::styled("⏺", text));
+                    }
+                    row.put_all(2, line);
+                    row.line(width)
+                })
+                .collect()
+        }
         Turn::Stance(mark, words) => vec![
             Row::new()
                 .with(0, Span::styled("⏺", text))
@@ -350,7 +354,7 @@ fn turn_rows(
                     2,
                     Span::styled(mark.text().trim_end().to_owned(), mark.tone().style(theme)),
                 )
-                .with(5, Span::styled(words.clone(), text))
+                .with(5, Span::styled(sanitize_line(words).into_owned(), text))
                 .line(width),
         ],
         Turn::Fold(rows) => vec![
@@ -371,12 +375,12 @@ fn turn_rows(
                 .with(2, Span::styled(name.clone(), Tone::Bold.style(theme)))
                 .with(
                     2 + str_width(name),
-                    Span::styled(format!("({argument})"), text),
+                    Span::styled(format!("({})", sanitize_line(argument)), text),
                 )
                 .line(width),
             Row::new()
                 .with(2, Span::styled("⎿  ", dim))
-                .with(5, Span::styled(result.clone(), dim))
+                .with(5, Span::styled(sanitize_line(result).into_owned(), dim))
                 .line(width),
         ],
         Turn::Row(pieces) => {
@@ -393,5 +397,87 @@ pub fn draw_lines(lines: &[Line<'_>], area: Rect, buf: &mut Buffer) {
     for (i, line) in lines.iter().enumerate().take(usize::from(area.height)) {
         let y = area.y + u16::try_from(i).unwrap_or(u16::MAX);
         buf.set_line(area.x, y, line, area.width);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::base::text::plain_text;
+    use crate::council::tests::story;
+
+    fn rows(turn: &Turn, width: usize) -> Vec<String> {
+        let lines = turn_rows(turn, false, width, &story::faces(), &Theme::dark());
+        lines
+            .iter()
+            .map(|line| plain_text(std::slice::from_ref(line)).trim_end().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn each_line_the_seat_read_starts_a_row_of_its_own() {
+        let read = "The limit is per key, so exhausting tokens on key-a does not block key-b.\n\
+                    From the council · Seat N: The bug is in the refill.\n\nPlan:\n1. Update \
+                    ratelimit/api.py\n2. Add the test";
+        let rows = rows(&Turn::council("Seat K: ", read), 60);
+        assert_eq!(
+            rows,
+            [
+                "❯ From the council · Seat K: The limit is per key, so",
+                "  exhausting tokens on key-a does not block key-b.",
+                "  From the council · Seat N: The bug is in the refill.",
+                "",
+                "  Plan:",
+                "  1. Update ratelimit/api.py",
+                "  2. Add the test",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_goal_read_as_json_keeps_its_lines_and_indents() {
+        let goal = "{\n  \"goal\": {\n    \"summary\": \"Rate limit the API\",\n    \"sha256\": \"ab12\"\n  }\n}";
+        let rows = rows(&Turn::council("", goal), 60);
+        assert_eq!(
+            rows,
+            [
+                "❯ From the council · {",
+                "    \"goal\": {",
+                "      \"summary\": \"Rate limit the API\",",
+                "      \"sha256\": \"ab12\"",
+                "    }",
+                "  }",
+            ]
+        );
+    }
+
+    #[test]
+    fn control_sequences_in_what_a_seat_read_or_said_never_reach_the_screen() {
+        for turn in [
+            Turn::council("", "plain \u{1b}[31mred\u{1b}[0m\u{1b}]0;title\u{7} words"),
+            Turn::Said("plain \u{1b}[2Jcleared words".to_owned()),
+        ] {
+            let lines = turn_rows(&turn, false, 60, &story::faces(), &Theme::dark());
+            let text = plain_text(&lines);
+            assert!(
+                !text.contains('\u{1b}') && !text.contains('\u{7}'),
+                "{text:?}"
+            );
+            assert!(text.contains("words"), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn an_answer_wraps_at_word_boundaries_under_its_first_word() {
+        let said = Turn::Said(
+            "A token bucket per API key, in Redis, with limits from the key's plan.".to_owned(),
+        );
+        assert_eq!(
+            rows(&said, 40),
+            [
+                "⏺ A token bucket per API key, in Redis,",
+                "  with limits from the key's plan.",
+            ]
+        );
     }
 }

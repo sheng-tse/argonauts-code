@@ -19,7 +19,7 @@ impl OverviewView {
         ctx: &ViewCtx<'_>,
         width: usize,
     ) -> Vec<Drawn> {
-        let usage = self.usage(ctx).filter(|_| !self.stats_period_from_file);
+        let usage = self.usage(ctx).filter(|_| self.stats_opened_on.is_none());
         if self.stats.page_open() {
             let blocks = self
                 .stats
@@ -55,9 +55,8 @@ impl OverviewView {
         let Some(stats) = &usage.stats else {
             return;
         };
-        if self.stats_period_from_file {
+        if self.stats_opened_on.take() == Some(self.period) {
             self.period = stats.settings.period.usage();
-            self.stats_period_from_file = false;
         }
         if usage.period == self.period {
             self.stats.settle(stats);

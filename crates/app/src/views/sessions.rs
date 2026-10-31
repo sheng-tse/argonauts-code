@@ -1089,7 +1089,7 @@ mod tests {
     #[test]
     fn a_fallback_chosen_before_the_start_says_why_in_its_agent_view() {
         let key = SessionKey::numbered(1);
-        let qwen: ModelRef = "ollama/qwen3-coder:30b-64k".parse().unwrap();
+        let qwen: ModelRef = "ollama/qwen3-coder:30b".parse().unwrap();
         let mut started = session_started(0, &key, None, RoleName::Reviewer, "codex");
         if let RunEventKind::Session(SessionEvent::Started(session)) = &mut started.kind {
             session.label = Some("review:per-api-key".to_owned());

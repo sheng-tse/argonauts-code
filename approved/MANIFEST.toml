@@ -24,17 +24,28 @@
 #   clis = "conversation/alone.toml" # optional: fake CLI rules for the drawing's requests,
 #                                    # placed before the default fake agents' rules
 #   folder = "code/shop"             # optional: the project's folder under HOME, as the header
-#                                    # names it after ~/ (github/argonauts-code unless named)
-#   held_by = "crates/tui/src/…_tests.rs::draws_it"
-#                                    # optional: the test that holds the drawing's cells, for a
-#                                    # screen whose figures the fake CLIs can't give; the app is
-#                                    # then only brought to the screen
-#   steps = [                        # what brings the app from its start to the screen; a drawing
-#                                    # needs steps, a holding test, or both
+#                                    # names it after ~/ (code/tasks-api unless named)
+#   clock = "2026-10-27T08:40:00-04:00"
+#                                    # optional: the instant the app's time starts at, its offset
+#                                    # the zone it writes times in (DRAWN_AT unless named)
+#   pictures = false                 # optional: a terminal with no picture protocol, where the
+#                                    # maps are braille (Ghostty, which shows pictures, unless set)
+#   git = false                      # optional: a project folder git has never seen (a repository
+#                                    # unless set)
+#   one_size = 362                   # optional: the decision that approved this state at one of
+#                                    # 120x38 and 177x40 for now; every other state has both
+#   held = { approval = 374, why = "…" }
+#                                    # optional: what the app doesn't draw on this screen yet and
+#                                    # what that waits for, with the approval that lets it wait;
+#                                    # the runner compares a held drawing only when
+#                                    # ARGONAUTS_DRAWINGS picks it
+#   steps = [                        # what brings the app from its start to the screen, which
+#                                    # every drawing needs
 #     { wait = "shift\\+tab to cycle" },  # a regex the visible rows match; after it the
 #                                    # runner waits out a new question's first moment
 #     { press = "Esc" },             # a key: Enter, Esc, Tab, Shift+Tab, Up, Ctrl+c, j, …
 #     { send = "/usage\r" },         # text typed, \r for Enter
+#     { point = [30, 12] },          # the mouse moved there, no button held: column, row from 0
 #   ]
 #
 # A screen draws a drawing's cells otherwise only where a departure allows it:
@@ -50,13 +61,15 @@
 # `cargo test -p argonauts-testkit approved` checks that every drawing here is listed, reads and
 # still has its hash.
 
+# Not yet approved: redrawn for 0.2.1, when only the row with the keys kept its pick in
+# orange. Approval 371 settled that rule, not this drawing, which waits for its own.
 [[drawing]]
 file = "behaviors/deeper-list-down-1@120x38.txt"
-release = "0.2.0"
-approval = 361
-hash = "sha256:e09c0436f63dc989c5370d553c5ba821510cf324f47b19efe0ec98305595337a"
-home = "homes/captain-vim"
-held_by = "crates/tui/src/panels/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+release = "0.2.1"
+approval = 371
+one_size = 362
+hash = "sha256:6f3acc07e84c29ba8c35eb82dd19a43d7942918a5f6aee0735142b8cc3c4371f"
+home = "homes/behaviors-labels"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/overview\r" },
@@ -66,24 +79,29 @@ steps = [
   { press = "Tab" },
   { press = "Tab" },
   { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "Down" },
+  { press = "Down" },
   { press = "d" },
-  { wait = "Summaries" },
+  { wait = "Summaries · 650 of 823" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
-  { press = "Down" },
-  { press = "Down" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
   { press = "Down" },
 ]
 
+# Not yet approved: redrawn for 0.2.1, when only the row with the keys kept its pick in
+# orange. Approval 371 settled that rule, not this drawing, which waits for its own.
 [[drawing]]
 file = "behaviors/deeper-list-down-2@120x38.txt"
-release = "0.2.0"
-approval = 361
-hash = "sha256:4a905809588b63a760d75f2bc4b5750e19971516d0eee8b1b30d134f637cd6a5"
-home = "homes/captain-vim"
-held_by = "crates/tui/src/panels/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+release = "0.2.1"
+approval = 371
+one_size = 362
+hash = "sha256:99128484626946d8347ace6c648205ff389de15b2bf7ad08279751d1549d2444"
+home = "homes/behaviors-labels"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/overview\r" },
@@ -93,25 +111,30 @@ steps = [
   { press = "Tab" },
   { press = "Tab" },
   { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "Down" },
+  { press = "Down" },
   { press = "d" },
-  { wait = "Summaries" },
+  { wait = "Summaries · 650 of 823" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
-  { press = "Down" },
-  { press = "Down" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
   { press = "Down" },
   { press = "Down" },
 ]
 
+# Not yet approved: redrawn for 0.2.1, when only the row with the keys kept its pick in
+# orange. Approval 371 settled that rule, not this drawing, which waits for its own.
 [[drawing]]
 file = "behaviors/deeper-list-down-3@120x38.txt"
-release = "0.2.0"
-approval = 361
-hash = "sha256:8d7885b0a10583bbe631d817b2f542d134b23ba93dc6a3f1ad9cd474f25e91e1"
-home = "homes/captain-vim"
-held_by = "crates/tui/src/panels/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+release = "0.2.1"
+approval = 371
+one_size = 362
+hash = "sha256:3711412ee9bde4c7ead07aa45fdabb36f4c9297c284de393688b6ebf1903faa0"
+home = "homes/behaviors-labels"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/overview\r" },
@@ -121,26 +144,31 @@ steps = [
   { press = "Tab" },
   { press = "Tab" },
   { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "Down" },
+  { press = "Down" },
   { press = "d" },
-  { wait = "Summaries" },
+  { wait = "Summaries · 650 of 823" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
-  { press = "Down" },
-  { press = "Down" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
 ]
 
+# Not yet approved: redrawn for 0.2.1, when only the row with the keys kept its pick in
+# orange. Approval 371 settled that rule, not this drawing, which waits for its own.
 [[drawing]]
 file = "behaviors/deeper-list-down-4@120x38.txt"
-release = "0.2.0"
-approval = 361
-hash = "sha256:2dda11ccfb5030fb5446282c8496ba3e9b4b074289d8c9afd7337dd4964316ed"
-home = "homes/captain-vim"
-held_by = "crates/tui/src/panels/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+release = "0.2.1"
+approval = 371
+one_size = 362
+hash = "sha256:4b9b52769e9b12496c96b3631255ee78ba0453e9b9481a04d2652ff4009f354a"
+home = "homes/behaviors-labels"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/overview\r" },
@@ -150,27 +178,32 @@ steps = [
   { press = "Tab" },
   { press = "Tab" },
   { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "Down" },
+  { press = "Down" },
   { press = "d" },
-  { wait = "Summaries" },
+  { wait = "Summaries · 650 of 823" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
-  { press = "Down" },
-  { press = "Down" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
 ]
 
+# Not yet approved: redrawn for 0.2.1, when only the row with the keys kept its pick in
+# orange. Approval 371 settled that rule, not this drawing, which waits for its own.
 [[drawing]]
 file = "behaviors/deeper-list-down-5@120x38.txt"
-release = "0.2.0"
-approval = 361
-hash = "sha256:1fc41c41d143ef838f631c420d7859843efb0b564f19e212f773508031066a71"
-home = "homes/captain-vim"
-held_by = "crates/tui/src/panels/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+release = "0.2.1"
+approval = 371
+one_size = 362
+hash = "sha256:03c6404ba9dae2a2b43239e790a21ee930c17fc71c9ed4120b3ce085a84f3c01"
+home = "homes/behaviors-labels"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/overview\r" },
@@ -180,14 +213,17 @@ steps = [
   { press = "Tab" },
   { press = "Tab" },
   { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "Down" },
+  { press = "Down" },
   { press = "d" },
-  { wait = "Summaries" },
+  { wait = "Summaries · 650 of 823" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
-  { press = "Down" },
-  { press = "Down" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
@@ -195,13 +231,15 @@ steps = [
   { press = "Down" },
 ]
 
+# Not yet approved: redrawn for 0.2.1, when only the row with the keys kept its pick in
+# orange. Approval 371 settled that rule, not this drawing, which waits for its own.
 [[drawing]]
 file = "behaviors/deeper-list-down-6@120x38.txt"
-release = "0.2.0"
-approval = 361
-hash = "sha256:a5adfb6d39fd5b2d64441c49ee5d67b5eff47c0118a8a2cf7044387d218c5346"
-home = "homes/captain-vim"
-held_by = "crates/tui/src/panels/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+release = "0.2.1"
+approval = 371
+one_size = 362
+hash = "sha256:bd34aa067194638088f250edc3ccc5acd671d929248fa30839b8d3c2d6293843"
+home = "homes/behaviors-labels"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/overview\r" },
@@ -211,14 +249,17 @@ steps = [
   { press = "Tab" },
   { press = "Tab" },
   { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "Down" },
+  { press = "Down" },
   { press = "d" },
-  { wait = "Summaries" },
+  { wait = "Summaries · 650 of 823" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
-  { press = "Down" },
-  { press = "Down" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
@@ -227,13 +268,15 @@ steps = [
   { press = "Down" },
 ]
 
+# Not yet approved: redrawn for 0.2.1, when only the row with the keys kept its pick in
+# orange. Approval 371 settled that rule, not this drawing, which waits for its own.
 [[drawing]]
 file = "behaviors/deeper-list-down-7@120x38.txt"
-release = "0.2.0"
-approval = 361
-hash = "sha256:8fc8952e834934913c562971acd05c0035de18a9594aab9db0bad27b85726156"
-home = "homes/captain-vim"
-held_by = "crates/tui/src/panels/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+release = "0.2.1"
+approval = 371
+one_size = 362
+hash = "sha256:29096f71a90ab40960d42d568d470d5fc4ed373c50ee4cc99d1f35a5192be43f"
+home = "homes/behaviors-labels"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/overview\r" },
@@ -243,14 +286,17 @@ steps = [
   { press = "Tab" },
   { press = "Tab" },
   { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "Down" },
+  { press = "Down" },
   { press = "d" },
-  { wait = "Summaries" },
+  { wait = "Summaries · 650 of 823" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
-  { press = "Down" },
-  { press = "Down" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
@@ -260,13 +306,15 @@ steps = [
   { press = "Down" },
 ]
 
+# Not yet approved: redrawn for 0.2.1, when only the row with the keys kept its pick in
+# orange. Approval 371 settled that rule, not this drawing, which waits for its own.
 [[drawing]]
 file = "behaviors/deeper-list-down-8@120x38.txt"
-release = "0.2.0"
-approval = 361
-hash = "sha256:5a76e10d22ad7aab5d698b2e10df78d8dc4e43ddb2cec5583de6a6f18e59c480"
-home = "homes/captain-vim"
-held_by = "crates/tui/src/panels/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+release = "0.2.1"
+approval = 371
+one_size = 362
+hash = "sha256:d4bbc4e0a566a7d12da7ff6528a33eb27c0afb461f0031a74b8f1c7df16e6157"
+home = "homes/behaviors-labels"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/overview\r" },
@@ -276,14 +324,17 @@ steps = [
   { press = "Tab" },
   { press = "Tab" },
   { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "Down" },
+  { press = "Down" },
   { press = "d" },
-  { wait = "Summaries" },
+  { wait = "Summaries · 650 of 823" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
-  { press = "Down" },
-  { press = "Down" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
@@ -294,13 +345,15 @@ steps = [
   { press = "Down" },
 ]
 
+# Not yet approved: redrawn for 0.2.1, when only the row with the keys kept its pick in
+# orange. Approval 371 settled that rule, not this drawing, which waits for its own.
 [[drawing]]
 file = "behaviors/deeper-list-down-9-up-1@120x38.txt"
-release = "0.2.0"
-approval = 361
-hash = "sha256:15237c3aaf69a01f07f05aff738fc307440ba53c9268db350f3f8e675a2d5c5c"
-home = "homes/captain-vim"
-held_by = "crates/tui/src/panels/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+release = "0.2.1"
+approval = 371
+one_size = 362
+hash = "sha256:f076e670e3971e77586db46d138642fc4ed2ed86b2b521c056609d0bb07703a7"
+home = "homes/behaviors-labels"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/overview\r" },
@@ -310,12 +363,17 @@ steps = [
   { press = "Tab" },
   { press = "Tab" },
   { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "Down" },
+  { press = "Down" },
   { press = "d" },
-  { wait = "Summaries" },
+  { wait = "Summaries · 650 of 823" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
@@ -325,18 +383,19 @@ steps = [
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
-  { press = "Down" },
-  { press = "Down" },
+  { wait = "Lit: Reading the token bucket config values" },
   { press = "Up" },
 ]
 
+# Not yet approved: redrawn for 0.2.1, when only the row with the keys kept its pick in
+# orange. Approval 371 settled that rule, not this drawing, which waits for its own.
 [[drawing]]
 file = "behaviors/deeper-list-down-9-up-2@120x38.txt"
-release = "0.2.0"
-approval = 361
-hash = "sha256:b5ae6edf224a09f5bfbd30248b155cc591873e7ab98388da92085cbaa1813968"
-home = "homes/captain-vim"
-held_by = "crates/tui/src/panels/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+release = "0.2.1"
+approval = 371
+one_size = 362
+hash = "sha256:ab15e186761a903171fe797826983b25b0c3eb3d49b6309f44b36c95aa8db2bc"
+home = "homes/behaviors-labels"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/overview\r" },
@@ -346,12 +405,17 @@ steps = [
   { press = "Tab" },
   { press = "Tab" },
   { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "Down" },
+  { press = "Down" },
   { press = "d" },
-  { wait = "Summaries" },
+  { wait = "Summaries · 650 of 823" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
@@ -361,19 +425,20 @@ steps = [
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
-  { press = "Down" },
-  { press = "Down" },
+  { wait = "Lit: Reading the token bucket config values" },
   { press = "Up" },
   { press = "Up" },
 ]
 
+# Not yet approved: redrawn for 0.2.1, when only the row with the keys kept its pick in
+# orange. Approval 371 settled that rule, not this drawing, which waits for its own.
 [[drawing]]
 file = "behaviors/deeper-list-down-9-up-3@120x38.txt"
-release = "0.2.0"
-approval = 361
-hash = "sha256:9c44c3e6888615a53d1a2c67591bc8ab117e873b8094acb875c4d24e1af477b4"
-home = "homes/captain-vim"
-held_by = "crates/tui/src/panels/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+release = "0.2.1"
+approval = 371
+one_size = 362
+hash = "sha256:5c863b71ba57498e0a509a33790f5d98003763afb0d93fe08ff047d3b5bfc7d3"
+home = "homes/behaviors-labels"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/overview\r" },
@@ -383,12 +448,17 @@ steps = [
   { press = "Tab" },
   { press = "Tab" },
   { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "Down" },
+  { press = "Down" },
   { press = "d" },
-  { wait = "Summaries" },
+  { wait = "Summaries · 650 of 823" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
@@ -398,20 +468,21 @@ steps = [
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
-  { press = "Down" },
-  { press = "Down" },
+  { wait = "Lit: Reading the token bucket config values" },
   { press = "Up" },
   { press = "Up" },
   { press = "Up" },
 ]
 
+# Not yet approved: redrawn for 0.2.1, when only the row with the keys kept its pick in
+# orange. Approval 371 settled that rule, not this drawing, which waits for its own.
 [[drawing]]
 file = "behaviors/deeper-list-down-9-up-4@120x38.txt"
-release = "0.2.0"
-approval = 361
-hash = "sha256:323085a33f888bbd2703591070e9280e8a94913d1a2b2e3c30b7aac52c6451b3"
-home = "homes/captain-vim"
-held_by = "crates/tui/src/panels/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+release = "0.2.1"
+approval = 371
+one_size = 362
+hash = "sha256:4dd177067541cbafdaaae056e8bb775522152de91cd99e37d200d6afde9b6c1d"
+home = "homes/behaviors-labels"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/overview\r" },
@@ -421,12 +492,17 @@ steps = [
   { press = "Tab" },
   { press = "Tab" },
   { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "Down" },
+  { press = "Down" },
   { press = "d" },
-  { wait = "Summaries" },
+  { wait = "Summaries · 650 of 823" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
@@ -436,21 +512,22 @@ steps = [
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
-  { press = "Down" },
-  { press = "Down" },
+  { wait = "Lit: Reading the token bucket config values" },
   { press = "Up" },
   { press = "Up" },
   { press = "Up" },
   { press = "Up" },
 ]
 
+# Not yet approved: redrawn for 0.2.1, when only the row with the keys kept its pick in
+# orange. Approval 371 settled that rule, not this drawing, which waits for its own.
 [[drawing]]
 file = "behaviors/deeper-list-down-9-up-5@120x38.txt"
-release = "0.2.0"
-approval = 361
-hash = "sha256:73e376e2de508062bb1026ce502e338418f3d546e535757105c024aa73fa8663"
-home = "homes/captain-vim"
-held_by = "crates/tui/src/panels/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+release = "0.2.1"
+approval = 371
+one_size = 362
+hash = "sha256:26b2c2e5717aa6244143f8a06c39bfa85c3c8d42aab3af65fea838752ad7ce3b"
+home = "homes/behaviors-labels"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/overview\r" },
@@ -460,12 +537,17 @@ steps = [
   { press = "Tab" },
   { press = "Tab" },
   { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "Down" },
+  { press = "Down" },
   { press = "d" },
-  { wait = "Summaries" },
+  { wait = "Summaries · 650 of 823" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
@@ -475,8 +557,7 @@ steps = [
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
-  { press = "Down" },
-  { press = "Down" },
+  { wait = "Lit: Reading the token bucket config values" },
   { press = "Up" },
   { press = "Up" },
   { press = "Up" },
@@ -484,13 +565,15 @@ steps = [
   { press = "Up" },
 ]
 
+# Not yet approved: redrawn for 0.2.1, when only the row with the keys kept its pick in
+# orange. Approval 371 settled that rule, not this drawing, which waits for its own.
 [[drawing]]
 file = "behaviors/deeper-list-down-9-up-6@120x38.txt"
-release = "0.2.0"
-approval = 361
-hash = "sha256:be18591fd5ceb72e98143672c22b78662faf00eb8c5b62186fef13c40eb77f42"
-home = "homes/captain-vim"
-held_by = "crates/tui/src/panels/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+release = "0.2.1"
+approval = 371
+one_size = 362
+hash = "sha256:44ccded7b5df3b1de8114fa341d7d3dc637495ce24ee7913d7d676f8c4bb107f"
+home = "homes/behaviors-labels"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/overview\r" },
@@ -500,12 +583,17 @@ steps = [
   { press = "Tab" },
   { press = "Tab" },
   { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "Down" },
+  { press = "Down" },
   { press = "d" },
-  { wait = "Summaries" },
+  { wait = "Summaries · 650 of 823" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
@@ -515,8 +603,7 @@ steps = [
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
-  { press = "Down" },
-  { press = "Down" },
+  { wait = "Lit: Reading the token bucket config values" },
   { press = "Up" },
   { press = "Up" },
   { press = "Up" },
@@ -525,13 +612,15 @@ steps = [
   { press = "Up" },
 ]
 
+# Not yet approved: redrawn for 0.2.1, when only the row with the keys kept its pick in
+# orange. Approval 371 settled that rule, not this drawing, which waits for its own.
 [[drawing]]
 file = "behaviors/deeper-list-down-9-up-7@120x38.txt"
-release = "0.2.0"
-approval = 361
-hash = "sha256:579743f2b2ebdd22119862844502ad573542705a29f7aa2d2a65d33933a68bf1"
-home = "homes/captain-vim"
-held_by = "crates/tui/src/panels/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+release = "0.2.1"
+approval = 371
+one_size = 362
+hash = "sha256:03bcbca61338a8cb156ffa70de8434b4e2f1c33815df3febc74919d09d02049f"
+home = "homes/behaviors-labels"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/overview\r" },
@@ -541,12 +630,17 @@ steps = [
   { press = "Tab" },
   { press = "Tab" },
   { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "Down" },
+  { press = "Down" },
   { press = "d" },
-  { wait = "Summaries" },
+  { wait = "Summaries · 650 of 823" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
@@ -556,8 +650,7 @@ steps = [
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
-  { press = "Down" },
-  { press = "Down" },
+  { wait = "Lit: Reading the token bucket config values" },
   { press = "Up" },
   { press = "Up" },
   { press = "Up" },
@@ -567,13 +660,15 @@ steps = [
   { press = "Up" },
 ]
 
+# Not yet approved: redrawn for 0.2.1, when only the row with the keys kept its pick in
+# orange. Approval 371 settled that rule, not this drawing, which waits for its own.
 [[drawing]]
 file = "behaviors/deeper-list-down-9-up-8@120x38.txt"
-release = "0.2.0"
-approval = 361
-hash = "sha256:24445197945b6b528d712f5e3058ae55849ef36e50000387be004ac8375ed1d1"
-home = "homes/captain-vim"
-held_by = "crates/tui/src/panels/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+release = "0.2.1"
+approval = 371
+one_size = 362
+hash = "sha256:55a19837b2e0c6fa160553e1a5855422d1db699f919577be106d8d74e901e163"
+home = "homes/behaviors-labels"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/overview\r" },
@@ -583,12 +678,17 @@ steps = [
   { press = "Tab" },
   { press = "Tab" },
   { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "Down" },
+  { press = "Down" },
   { press = "d" },
-  { wait = "Summaries" },
+  { wait = "Summaries · 650 of 823" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
@@ -598,8 +698,7 @@ steps = [
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
-  { press = "Down" },
-  { press = "Down" },
+  { wait = "Lit: Reading the token bucket config values" },
   { press = "Up" },
   { press = "Up" },
   { press = "Up" },
@@ -610,13 +709,15 @@ steps = [
   { press = "Up" },
 ]
 
+# Not yet approved: redrawn for 0.2.1, when only the row with the keys kept its pick in
+# orange. Approval 371 settled that rule, not this drawing, which waits for its own.
 [[drawing]]
 file = "behaviors/deeper-list-down-9@120x38.txt"
-release = "0.2.0"
-approval = 361
-hash = "sha256:ba5164f9eb0fdfe1278cce74b458c95bb720268a9cdaa5fb307525e59008b9b1"
-home = "homes/captain-vim"
-held_by = "crates/tui/src/panels/stats/behaviors/golden/drawings.rs::the_summaries_list_steps_down_and_back_up_as_drawn"
+release = "0.2.1"
+approval = 371
+one_size = 362
+hash = "sha256:b814cf92789f695f57f2ef9afdd65badd0cf2a4c92ff5a1fd064c1a028d3430c"
+home = "homes/behaviors-labels"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/overview\r" },
@@ -626,14 +727,17 @@ steps = [
   { press = "Tab" },
   { press = "Tab" },
   { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "Down" },
+  { press = "Down" },
   { press = "d" },
-  { wait = "Summaries" },
+  { wait = "Summaries · 650 of 823" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
-  { press = "Down" },
-  { press = "Down" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
@@ -645,13 +749,14 @@ steps = [
   { press = "Down" },
 ]
 
+# Not yet approved: redrawn for 0.2.1, when only the row with the keys kept its pick in
+# orange. Approval 371 settled that rule, not this drawing, which waits for its own.
 [[drawing]]
 file = "behaviors/deeper-map-compared@120x38.txt"
-release = "0.2.0"
-approval = 361
-hash = "sha256:cba4cea337cf0b984e72755fe3f1d3ae566f484498ad68a64abf2872e224a61e"
-home = "homes/captain-vim"
-held_by = "crates/tui/src/panels/stats/behaviors/golden/drawings.rs::beside_the_map_summaries_compare_a_model_as_drawn"
+release = "0.2.1"
+approval = 371
+hash = "sha256:98198bf021048f50b6339361810428b9618b016863f12bb2c0f38c9987a8c89c"
+home = "homes/behaviors-labels"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/overview\r" },
@@ -661,23 +766,60 @@ steps = [
   { press = "Tab" },
   { press = "Tab" },
   { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "Down" },
+  { press = "Down" },
   { press = "d" },
-  { wait = "Summaries" },
+  { wait = "Summaries · 650 of 823" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
-  { press = "Down" },
-  { press = "Down" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
 ]
 
+# Not yet approved: redrawn for 0.2.1, when only the row with the keys kept its pick in
+# orange. Approval 371 settled that rule, not this drawing, which waits for its own.
 [[drawing]]
 file = "behaviors/deeper-map-compared@177x40.txt"
-release = "0.2.0"
-approval = 361
-hash = "sha256:a50baecc0467575e0a35721d85e573a2b7690545d4179a8d773fef9e1bb379b8"
+release = "0.2.1"
+approval = 371
+hash = "sha256:6b90b9e1f877738ef0c975358573fa902303ce119c9fe4f43da4b40384445fcc"
+home = "homes/behaviors-labels"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "d" },
+  { wait = "Summaries · 650 of 823" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+]
+
+[[drawing]]
+file = "behaviors/deeper-map-kept@120x38.txt"
+release = "0.2.1"
+approval = 371
+hash = "sha256:61ec529669591cef97e20bc5cf05caf2ad244259c316c2668320c5dbd0eea91c"
+held = { approval = 374, why = """\
+  The app can't reach this screen yet. The drawing shows a redo by Haiku 5.5 that stopped on a \
+  map Qwen3 Coder 30B made, but the tab redoes a map only with its own summarizer, and \
+  homes/captain-vim has no recorded actions. Waits for a redraw from a redo the tab can reach, or \
+  for the state to go.""" }
 home = "homes/captain-vim"
-held_by = "crates/tui/src/panels/stats/behaviors/golden/drawings.rs::beside_the_map_summaries_compare_a_model_as_drawn"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/overview\r" },
@@ -698,12 +840,16 @@ steps = [
 ]
 
 [[drawing]]
-file = "behaviors/label-list-down-10@120x38.txt"
-release = "0.2.0"
-approval = 361
-hash = "sha256:7b87c1b1c69d0ca7b0d387358390d3608ba4aa49a0d25184667a09854c76ea73"
+file = "behaviors/deeper-map-kept@177x40.txt"
+release = "0.2.1"
+approval = 371
+hash = "sha256:0ea145962e2069a8844c930cffe6c32fdec77a9819ad57f9ee0dee53352060ea"
+held = { approval = 374, why = """\
+  The app can't reach this screen yet. The drawing shows a redo by Haiku 5.5 that stopped on a \
+  map Qwen3 Coder 30B made, but the tab redoes a map only with its own summarizer, and \
+  homes/captain-vim has no recorded actions. Waits for a redraw from a redo the tab can reach, or \
+  for the state to go.""" }
 home = "homes/captain-vim"
-held_by = "crates/tui/src/panels/stats/behaviors/golden/drawings.rs::the_label_list_steps_down_as_drawn"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/overview\r" },
@@ -713,12 +859,40 @@ steps = [
   { press = "Tab" },
   { press = "Tab" },
   { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "d" },
+  { wait = "Summaries" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
   { press = "l" },
   { press = "Down" },
   { press = "Down" },
+]
+
+# Not yet approved: redrawn for 0.2.1, when only the row with the keys kept its pick in
+# orange. Approval 371 settled that rule, not this drawing, which waits for its own.
+[[drawing]]
+file = "behaviors/label-list-down-10@120x38.txt"
+release = "0.2.1"
+approval = 371
+one_size = 362
+hash = "sha256:fbdd26dac8510241dc689fd68873e2c4eeed12b058db4e43c8f66496a0490fdf"
+home = "homes/behaviors-labels"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "1 Map · 2 Planet · 3 Universe" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
@@ -731,13 +905,15 @@ steps = [
   { press = "Down" },
 ]
 
+# Not yet approved: redrawn for 0.2.1, when only the row with the keys kept its pick in
+# orange. Approval 371 settled that rule, not this drawing, which waits for its own.
 [[drawing]]
 file = "behaviors/label-list-down-11@120x38.txt"
-release = "0.2.0"
-approval = 361
-hash = "sha256:19abbe8c18686663e4939808ce2084675148cf339e27033c301e1bb45db6aec5"
-home = "homes/captain-vim"
-held_by = "crates/tui/src/panels/stats/behaviors/golden/drawings.rs::the_label_list_steps_down_as_drawn"
+release = "0.2.1"
+approval = 371
+one_size = 362
+hash = "sha256:a0b7214c66bea583913857bf740353a6f2550eaaa13f334e614a1fc14ec0ff18"
+home = "homes/behaviors-labels"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/overview\r" },
@@ -747,12 +923,12 @@ steps = [
   { press = "Tab" },
   { press = "Tab" },
   { wait = "1 Map · 2 Planet · 3 Universe" },
-  { press = "l" },
-  { press = "l" },
-  { press = "l" },
-  { press = "l" },
   { press = "Down" },
   { press = "Down" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
@@ -766,13 +942,15 @@ steps = [
   { press = "Down" },
 ]
 
+# Not yet approved: redrawn for 0.2.1, when only the row with the keys kept its pick in
+# orange. Approval 371 settled that rule, not this drawing, which waits for its own.
 [[drawing]]
 file = "behaviors/label-list-down-1@120x38.txt"
-release = "0.2.0"
-approval = 361
-hash = "sha256:badf219101be14ef1074c1c2640cd108ff9a3fd0a5557bd06f776d5754a0465d"
-home = "homes/captain-vim"
-held_by = "crates/tui/src/panels/stats/behaviors/golden/drawings.rs::the_label_list_steps_down_as_drawn"
+release = "0.2.1"
+approval = 371
+one_size = 362
+hash = "sha256:6550e428d0011be0e52991cf8491bc3c8b87ca35b4f6cce245e360fed8ef9df2"
+home = "homes/behaviors-labels"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/overview\r" },
@@ -782,22 +960,24 @@ steps = [
   { press = "Tab" },
   { press = "Tab" },
   { wait = "1 Map · 2 Planet · 3 Universe" },
-  { press = "l" },
-  { press = "l" },
-  { press = "l" },
-  { press = "l" },
   { press = "Down" },
   { press = "Down" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
   { press = "Down" },
 ]
 
+# Not yet approved: redrawn for 0.2.1, when only the row with the keys kept its pick in
+# orange. Approval 371 settled that rule, not this drawing, which waits for its own.
 [[drawing]]
 file = "behaviors/label-list-down-4@120x38.txt"
-release = "0.2.0"
-approval = 361
-hash = "sha256:3904ed99b25dbdfc5c8e8061315bd1c2f0e898421b51317a1b33f7cf282bb868"
-home = "homes/captain-vim"
-held_by = "crates/tui/src/panels/stats/behaviors/golden/drawings.rs::the_label_list_steps_down_as_drawn"
+release = "0.2.1"
+approval = 371
+one_size = 362
+hash = "sha256:ac3452bf25a5a2338eec0588f11b9bce2282e63feb714d339786ecf708ba9083"
+home = "homes/behaviors-labels"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/overview\r" },
@@ -807,25 +987,27 @@ steps = [
   { press = "Tab" },
   { press = "Tab" },
   { wait = "1 Map · 2 Planet · 3 Universe" },
-  { press = "l" },
-  { press = "l" },
-  { press = "l" },
-  { press = "l" },
   { press = "Down" },
   { press = "Down" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
 ]
 
+# Not yet approved: redrawn for 0.2.1, when only the row with the keys kept its pick in
+# orange. Approval 371 settled that rule, not this drawing, which waits for its own.
 [[drawing]]
 file = "behaviors/label-list-down-5@120x38.txt"
-release = "0.2.0"
-approval = 361
-hash = "sha256:172b3827561e8992164916c7d3f3f905bc10f568782ccb14928229745acaf5cb"
-home = "homes/captain-vim"
-held_by = "crates/tui/src/panels/stats/behaviors/golden/drawings.rs::the_label_list_steps_down_as_drawn"
+release = "0.2.1"
+approval = 371
+one_size = 362
+hash = "sha256:b1bb8bfbcd3663c8f4906747fdb981fc6886683c79604ea2c55e56ab7bc77721"
+home = "homes/behaviors-labels"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/overview\r" },
@@ -835,12 +1017,12 @@ steps = [
   { press = "Tab" },
   { press = "Tab" },
   { wait = "1 Map · 2 Planet · 3 Universe" },
-  { press = "l" },
-  { press = "l" },
-  { press = "l" },
-  { press = "l" },
   { press = "Down" },
   { press = "Down" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
@@ -848,13 +1030,15 @@ steps = [
   { press = "Down" },
 ]
 
+# Not yet approved: redrawn for 0.2.1, when only the row with the keys kept its pick in
+# orange. Approval 371 settled that rule, not this drawing, which waits for its own.
 [[drawing]]
 file = "behaviors/label-list-down-6@120x38.txt"
-release = "0.2.0"
-approval = 361
-hash = "sha256:99c8556a44722527218888a34c7125e0d36859d7391d4dca7d0e6a744ca8ccc8"
-home = "homes/captain-vim"
-held_by = "crates/tui/src/panels/stats/behaviors/golden/drawings.rs::the_label_list_steps_down_as_drawn"
+release = "0.2.1"
+approval = 371
+one_size = 362
+hash = "sha256:80c11acaafe559e41e07106160f1013bfd6995cf81ab8cd0c2647df7a08f351b"
+home = "homes/behaviors-labels"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/overview\r" },
@@ -864,12 +1048,12 @@ steps = [
   { press = "Tab" },
   { press = "Tab" },
   { wait = "1 Map · 2 Planet · 3 Universe" },
-  { press = "l" },
-  { press = "l" },
-  { press = "l" },
-  { press = "l" },
   { press = "Down" },
   { press = "Down" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
+  { press = "l" },
   { press = "Down" },
   { press = "Down" },
   { press = "Down" },
@@ -878,49 +1062,66 @@ steps = [
   { press = "Down" },
 ]
 
+# Not yet approved: redrawn for 0.2.1, when only the row with the keys kept its pick in
+# orange. Approval 371 settled that rule, not this drawing, which waits for its own. The
+# hurricane's line says no category since 373.
 [[drawing]]
 file = "behaviors/label-map@120x38.txt"
-release = "0.2.0"
-approval = 361
-hash = "sha256:8dceff376cc64336bb1a6cafe0548a39b9e65b782a4b42a5be51922cfc441f4b"
-home = "homes/captain-vim"
-held_by = "crates/tui/src/panels/stats/behaviors/golden/drawings.rs::the_label_map_opens_with_nothing_compared_and_the_mouse_on_the_hurricane_as_drawn"
+release = "0.2.1"
+approval = 373
+hash = "sha256:5acf4134a33b6b59e1f51f3544bcd49b38c04f7decad065f39ec463a68bce2b7"
+held = { approval = 374, why = """\
+  The app draws a newer header than the drawing's: the name bold and the version grey, where the \
+  drawing has both plain. Waits for a redraw of those cells from the app, or departures.""" }
+home = "homes/behaviors-label-map"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/overview\r" },
   { wait = "Yes, import it" },
-  { press = "2" },
+  { press = "1" },
   { press = "Down" },
   { press = "Tab" },
   { press = "Tab" },
   { wait = "1 Map · 2 Planet · 3 Universe" },
+  { wait = "Label map · 961 actions" },
+  { point = [35, 26] },
+  { wait = "Hurricane · 27" },
 ]
 
+# Not yet approved: redrawn for 0.2.1, when only the row with the keys kept its pick in
+# orange. Approval 371 settled that rule, not this drawing, which waits for its own. The
+# hurricane's line says no category since 373.
 [[drawing]]
 file = "behaviors/label-map@177x40.txt"
-release = "0.2.0"
-approval = 364
-hash = "sha256:efecf4c6847cc187a7cbd2bfcc6ec59e02e4647bbb76c6343a9ee494a635793d"
-home = "homes/captain-vim"
-held_by = "crates/tui/src/panels/stats/behaviors/golden/drawings.rs::the_label_map_opens_with_nothing_compared_and_the_mouse_on_the_hurricane_as_drawn"
+release = "0.2.1"
+approval = 373
+hash = "sha256:7154943b47c19b840a985a48b6ab6b3c0ebfefdd85b2e5d0f9a9dd3484e0f0eb"
+held = { approval = 374, why = """\
+  The app draws a newer header than the drawing's: the name bold and the version grey, where the \
+  drawing has both plain. The app also names ollama/gemma3:12b \"Gemma3 12B\" where the drawing \
+  says \"Gemma 3 12B\". Waits for a redraw of those cells from the app, or departures.""" }
+home = "homes/behaviors-label-map"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/overview\r" },
   { wait = "Yes, import it" },
-  { press = "2" },
+  { press = "1" },
   { press = "Down" },
   { press = "Tab" },
   { press = "Tab" },
   { wait = "1 Map · 2 Planet · 3 Universe" },
+  { wait = "Label map · 961 actions" },
+  { point = [47, 26] },
+  { wait = "Hurricane · 27" },
 ]
 
 [[drawing]]
 file = "behaviors/legend-sample-crew@120x38.txt"
-release = "0.2.0"
-approval = 361
-hash = "sha256:a962b049fa931d2fe2f81b12fd413baadcffe90ef281ecae94bd9d91b79a9eeb"
-home = "homes/captain-vim"
-held_by = "crates/tui/src/panels/stats/behaviors/golden/drawings.rs::the_legend_draws_each_model_of_the_colours_crew_in_its_clis_shade"
+release = "0.2.1"
+approval = 371
+one_size = 362
+hash = "sha256:b6f9df1eaf0dd80c6ea89d2f329ad031adc5837d2e0bd74007570f16ee521e10"
+home = "homes/behaviors-legend"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/overview\r" },
@@ -934,9 +1135,10 @@ steps = [
 
 [[drawing]]
 file = "bottom-line/logos@177x40.txt"
-release = "0.2.0"
-approval = 364
-hash = "sha256:1e4fc707cbb6ded12c9ca6973eb7aec3b8b5a7e61a5b783618f7728a3a674b5f"
+release = "0.2.1"
+approval = 371
+one_size = 362
+hash = "sha256:c307b78706a8546660079406eb030b6109c2a7dccd982ee00ed641e66700ba10"
 home = "homes/autopilot"
 steps = [
   { wait = "-- INSERT -- .*autopilot on \\(shift\\+tab to cycle\\)" },
@@ -945,11 +1147,14 @@ steps = [
 
 [[drawing]]
 file = "config-mods/cards@120x38.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:92aa89680ddad33178973d0f58dfc969dd4c27f442f620f2d70a1bb0cfaf39c5"
+release = "0.2.1"
+approval = 371
+hash = "sha256:7f4d7b406e785280c751e42d6975763a62c861d7c42e4243011c8bafc4bd7ca4"
+held = { approval = 374, why = """\
+  The drawing stacks four cards, each from a different row of the Mods list, and the app shows \
+  one card at a time, so its steps reach the Mods list and not the cards. Waits for one drawing \
+  per card as the app shows it, or the four kept together.""" }
 home = "homes/council"
-held_by = "crates/tui/src/mods/drawings_tests.rs::each_card_draws_beside_the_list_as_its_drawing_does"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/mods\r" },
@@ -958,11 +1163,14 @@ steps = [
 
 [[drawing]]
 file = "config-mods/cards@177x40.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:0b151467715a41df496f8e0dc3e8bd6ea0f300e98755925e1132fd9b240d3707"
+release = "0.2.1"
+approval = 371
+hash = "sha256:e517d19bdca1db724a94ca765deb790f1a176fcf6b7acb2af2d897fd2a04ffff"
+held = { approval = 374, why = """\
+  The drawing stacks four cards, each from a different row of the Mods list, and the app shows \
+  one card at a time, so its steps reach the Mods list and not the cards. Waits for one drawing \
+  per card as the app shows it, or the four kept together.""" }
 home = "homes/council"
-held_by = "crates/tui/src/mods/drawings_tests.rs::each_card_draws_beside_the_list_as_its_drawing_does"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/mods\r" },
@@ -995,9 +1203,9 @@ steps = [
 
 [[drawing]]
 file = "context/agy-before@120x38.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:5456853c4e03abb6a93fdb3a1bc75bab3b78b79d072af73c8e392d2afa478295"
+release = "0.2.1"
+approval = 371
+hash = "sha256:2efcceaebc50bd159e07f096fe7dd8f02a7bac2d5c34ccd14a2de048b4fc3492"
 home = "homes/context-kept-agy"
 steps = [
   { wait = "shift\\+tab to cycle" },
@@ -1007,9 +1215,9 @@ steps = [
 
 [[drawing]]
 file = "context/agy-before@177x40.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:d4770bea553daae2990c1a701f0680df4f00b980260f3a0521242b7a29fc4541"
+release = "0.2.1"
+approval = 371
+hash = "sha256:2a41f8dfec8ebfccd6d89b2d5b1844bca781580db8167a26e2a1dbd1d1681a52"
 home = "homes/context-kept-agy"
 steps = [
   { wait = "shift\\+tab to cycle" },
@@ -1019,9 +1227,9 @@ steps = [
 
 [[drawing]]
 file = "context/agy-first@120x38.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:1990807de3bb7bdf80283cf7e16c9341882bd44c9d25df02ef431b86df84690f"
+release = "0.2.1"
+approval = 371
+hash = "sha256:3ddca55833cb00c869d3c7e5cae64ca20265438246ffdeead8419f1d886beda0"
 home = "homes/context-first-agy"
 steps = [
   { wait = "shift\\+tab to cycle" },
@@ -1031,9 +1239,9 @@ steps = [
 
 [[drawing]]
 file = "context/agy-first@177x40.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:71bf5a1aa94aa60558795a937567ea7a8b8a464317928b39956eba09cad2d246"
+release = "0.2.1"
+approval = 371
+hash = "sha256:27f03023e2ff37f846510a95c327f22e658273389a0908436d28a5f147871aee"
 home = "homes/context-first-agy"
 steps = [
   { wait = "shift\\+tab to cycle" },
@@ -1042,10 +1250,34 @@ steps = [
 ]
 
 [[drawing]]
+file = "context/agy-no-window@120x38.txt"
+release = "0.2.1"
+approval = 371
+hash = "sha256:237a8e5133a44437f8bf917491e4ce6fb54002a7127ccade7566b3db32687867"
+home = "homes/context-no-window-agy"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/context\r" },
+  { wait = "estimated" },
+]
+
+[[drawing]]
+file = "context/agy-no-window@177x40.txt"
+release = "0.2.1"
+approval = 371
+hash = "sha256:eb5349998a1c597fa33e14a4878b7da991ba1c1445e6b940eada7352cbbceae7"
+home = "homes/context-no-window-agy"
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/context\r" },
+  { wait = "estimated" },
+]
+
+[[drawing]]
 file = "context/agy-loading@120x38.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:361cb8b4bd4afe47e1477735930b7d7515a3c1010fdaf4d0905f98222f1e54bd"
+release = "0.2.1"
+approval = 371
+hash = "sha256:05854f633d9873d84a87ea00f5f81fcd3d911631ac6c73658446c2a8c43d47bd"
 home = "homes/context-kept-agy"
 clis = "context/agy.toml"
 steps = [
@@ -1058,9 +1290,9 @@ steps = [
 
 [[drawing]]
 file = "context/agy-loading@177x40.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:966d7d83d73640ab58be947b1ffae6a2b7b4b6d60138215fb61556960264d424"
+release = "0.2.1"
+approval = 371
+hash = "sha256:1d3483d8d5c8e82db5e5a26bbc36cb12cc66e8d41f3104a1f8c7dab996484fdc"
 home = "homes/context-kept-agy"
 clis = "context/agy.toml"
 steps = [
@@ -1073,35 +1305,39 @@ steps = [
 
 [[drawing]]
 file = "context/agy@120x38.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:7ed266cf44313d975dbd300a0c434a80335c9b32ce266fc04a4964dc65a06766"
-home = "homes/council-agy"
-held_by = "crates/tui/src/panels/context/tests/drawing_tests.rs::every_context_state_matches_its_drawing"
+release = "0.2.1"
+approval = 371
+hash = "sha256:a49472be3edb449e5a7ed5e11694dc724591f2e1a2066b493e0bc255b6809b19"
+home = "homes/context-kept-agy"
+clis = "context/agy.toml"
 steps = [
   { wait = "shift\\+tab to cycle" },
+  { send = "What does this repo hold?\r" },
+  { wait = "It holds a README" },
   { send = "/context\r" },
-  { wait = "What fills each session's context" },
+  { wait = "38k/1M tokens" },
 ]
 
 [[drawing]]
 file = "context/agy@177x40.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:6a38d942b22b9340bc5282ae8e79a1a7ac2eec9df1d833285b96339d759a5158"
-home = "homes/council-agy"
-held_by = "crates/tui/src/panels/context/tests/drawing_tests.rs::every_context_state_matches_its_drawing"
+release = "0.2.1"
+approval = 371
+hash = "sha256:1b860a4a2cd010d8af4db8d690b9edfd63c10a1a05bcdd17eac981de7b07d0e3"
+home = "homes/context-kept-agy"
+clis = "context/agy.toml"
 steps = [
   { wait = "shift\\+tab to cycle" },
+  { send = "What does this repo hold?\r" },
+  { wait = "It holds a README" },
   { send = "/context\r" },
-  { wait = "What fills each session's context" },
+  { wait = "38k/1M tokens" },
 ]
 
 [[drawing]]
 file = "context/claude-code-before@120x38.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:34f8a4c046b400b0f42e65ca9fcec5e9cc1a5001099bfda490da9a8e0c91c074"
+release = "0.2.1"
+approval = 371
+hash = "sha256:4fee2e78132cbb1d67a3ffbf8f7bbc9db2f85fa190c7d2adbdecacfe8b9b2f96"
 home = "homes/context-kept"
 steps = [
   { wait = "shift\\+tab to cycle" },
@@ -1111,9 +1347,9 @@ steps = [
 
 [[drawing]]
 file = "context/claude-code-before@177x40.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:ef58512f4b7a2ba167d81c9d9f99aa17d2839f3d7b4b53203dc5e3974f8ef4d3"
+release = "0.2.1"
+approval = 371
+hash = "sha256:095e71f2b826d5f934a902943ac01da493c7bf2b41e295baf1546c15a94402ca"
 home = "homes/context-kept"
 steps = [
   { wait = "shift\\+tab to cycle" },
@@ -1123,11 +1359,10 @@ steps = [
 
 [[drawing]]
 file = "context/claude-code-first@120x38.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:16fcfaa59f1301af8d6763db949520f48f0e8ccef8f216080147e214079d7855"
+release = "0.2.1"
+approval = 371
+hash = "sha256:2012e8ce83b54231271e872b6d4bc9f2adede94567c99e6ae90bd94586a00dae"
 home = "homes/context-first"
-held_by = "crates/tui/src/panels/context/tests/drawing_tests.rs::every_context_state_matches_its_drawing"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/context\r" },
@@ -1136,11 +1371,10 @@ steps = [
 
 [[drawing]]
 file = "context/claude-code-first@177x40.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:90a3bb2f6f9db43459295cd0e2e47895ecf73014248de7dbefc5f348a2b7843f"
+release = "0.2.1"
+approval = 371
+hash = "sha256:f7d4ca5a621594b62ef428a7612f218cc7f87a57fcc6ef7ec5c6b46a973654a6"
 home = "homes/context-first"
-held_by = "crates/tui/src/panels/context/tests/drawing_tests.rs::every_context_state_matches_its_drawing"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/context\r" },
@@ -1149,9 +1383,9 @@ steps = [
 
 [[drawing]]
 file = "context/claude-code-loading@120x38.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:1fb12a4c3ad0a0d9e1db0ccbc9776efd0067f69418759c83c53a70e8fbd9a4a4"
+release = "0.2.1"
+approval = 371
+hash = "sha256:d384a5608a562ecebd6dc3b48c834d9d149cf2dc81bd2bc7bee2f0f0b48db3a2"
 home = "homes/context-kept"
 clis = "context/claude-code.toml"
 steps = [
@@ -1164,9 +1398,9 @@ steps = [
 
 [[drawing]]
 file = "context/claude-code-loading@177x40.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:b8aa39930a135df1b03d9c468d137c6d2526f877bb84df916bdb14145b6bd30b"
+release = "0.2.1"
+approval = 371
+hash = "sha256:0cc83aa46da872021ad5570f3b41143c7d91e0ff9016992e72b2a0b8efd8e4ec"
 home = "homes/context-kept"
 clis = "context/claude-code.toml"
 steps = [
@@ -1179,9 +1413,9 @@ steps = [
 
 [[drawing]]
 file = "context/claude-code@120x38.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:a7e92e8da931bea19cbbc1cacb5298bacf888652703837d742eed92bf608e20b"
+release = "0.2.1"
+approval = 371
+hash = "sha256:93404e22a2873646f037f2ab72c334a45046e04cca86407ecc2d86eaeeb24884"
 home = "homes/council"
 clis = "context/claude-code.toml"
 steps = [
@@ -1189,15 +1423,15 @@ steps = [
   { send = "What does this repo hold?\r" },
   { wait = "It holds a README" },
   { send = "/context\r" },
-  { wait = "32.3k in context" },
-  { wait = "33 skills" },
+  { wait = "28.8k in context" },
+  { wait = "18 skills" },
 ]
 
 [[drawing]]
 file = "context/claude-code@177x40.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:6b6c999a768bd7e0adfde12a47edbdca9ec2cdfe83e7ce1edbb03fffcfecb487"
+release = "0.2.1"
+approval = 371
+hash = "sha256:a0badd12a221ff9610e1ad0253c7fc3e9f34e67168bad1a54025f907171d8ee0"
 home = "homes/council"
 clis = "context/claude-code.toml"
 steps = [
@@ -1205,15 +1439,15 @@ steps = [
   { send = "What does this repo hold?\r" },
   { wait = "It holds a README" },
   { send = "/context\r" },
-  { wait = "32.3k in context" },
-  { wait = "33 skills" },
+  { wait = "28.8k in context" },
+  { wait = "18 skills" },
 ]
 
 [[drawing]]
 file = "context/codex-before@120x38.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:2b96de3018d6099ad4a5fcb7c352b49eab7a52fdfacfe46b94def02fc389e46b"
+release = "0.2.1"
+approval = 371
+hash = "sha256:e191fa6d24aa7149a21c92f9cf33ebc1f036419680ca2b1f45269e84bb9cb2f9"
 home = "homes/context-kept-codex"
 steps = [
   { wait = "shift\\+tab to cycle" },
@@ -1223,9 +1457,9 @@ steps = [
 
 [[drawing]]
 file = "context/codex-before@177x40.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:ec8645bac9ef4f9256c84581c9ec66929fd80db0d4171fbb9414b626ac3fcfdd"
+release = "0.2.1"
+approval = 371
+hash = "sha256:933e8fb2737f88047cd952325f15f6d437f18677f648630ffae7cc9fa2defd93"
 home = "homes/context-kept-codex"
 steps = [
   { wait = "shift\\+tab to cycle" },
@@ -1235,9 +1469,9 @@ steps = [
 
 [[drawing]]
 file = "context/codex-first@120x38.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:e1c8d29052d2b83a024eaa4f3f5e8ab1bef7bcca244c6cfc752d6e36c9888925"
+release = "0.2.1"
+approval = 371
+hash = "sha256:5303319de91f12fced4c055a5716fdd420b881e48f3a5ca74d6678254963986b"
 home = "homes/context-first-codex"
 steps = [
   { wait = "shift\\+tab to cycle" },
@@ -1247,9 +1481,9 @@ steps = [
 
 [[drawing]]
 file = "context/codex-first@177x40.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:0c912f2243173e77a474b2c0ae4dd991818351387b5c588e76a10b8d5aaef6eb"
+release = "0.2.1"
+approval = 371
+hash = "sha256:31089dfbcd2bbcbbb2f6353055b37fa3c56479c6706b4c2ea6aad496dfdfc28a"
 home = "homes/context-first-codex"
 steps = [
   { wait = "shift\\+tab to cycle" },
@@ -1259,9 +1493,9 @@ steps = [
 
 [[drawing]]
 file = "context/codex-loading@120x38.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:dbad53ae2731b723d1be526ecfdee319521e8f01e62b53aa4d5dc1f58f2f385c"
+release = "0.2.1"
+approval = 371
+hash = "sha256:d89d4b2efcc925b7bb9300d406b624e03c3fff820ebee3afd62070cd85d1759c"
 home = "homes/context-kept-codex"
 clis = "context/codex.toml"
 steps = [
@@ -1274,9 +1508,9 @@ steps = [
 
 [[drawing]]
 file = "context/codex-loading@177x40.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:776e6adf8b127be80dca80c622196abd8dc3128bdef8ced004bd3175deb2ea9b"
+release = "0.2.1"
+approval = 371
+hash = "sha256:a13d48d41b2045ac1ff63c1c4910ea5eee27689a6fa249f261cbb2a2e5eca520"
 home = "homes/context-kept-codex"
 clis = "context/codex.toml"
 steps = [
@@ -1289,9 +1523,9 @@ steps = [
 
 [[drawing]]
 file = "context/codex@120x38.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:b144cb97448a856f301be4ba8d89de1609abc3cb09b9f4810e47ffc000d8a427"
+release = "0.2.1"
+approval = 371
+hash = "sha256:309a55368a43267ae3a779f4ff817cb52d3ef51bbdffbe20dc952a8a9df45ca7"
 home = "homes/context-kept-codex"
 clis = "context/codex.toml"
 steps = [
@@ -1304,9 +1538,9 @@ steps = [
 
 [[drawing]]
 file = "context/codex@177x40.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:935a95d16f6ffaa832c7d7e715eb542fe9e3f7b66b3e64d8407dfe14b8936f60"
+release = "0.2.1"
+approval = 371
+hash = "sha256:46cb30159486902922c6856b6a6f643fa2fa5cc79e958629dd05afe1b7dcd42c"
 home = "homes/context-kept-codex"
 clis = "context/codex.toml"
 steps = [
@@ -1322,13 +1556,20 @@ file = "context/crew-list@120x38.txt"
 release = "0.2.0"
 approval = 360
 hash = "sha256:8741d33f26754dbfdc5ab7ac26db2222634bc86e1cc302670ac24605e1b667c5"
-home = "homes/council"
-held_by = "crates/tui/src/panels/context/tests/drawing_tests.rs::every_context_state_matches_its_drawing"
+home = "homes/crew-at-work"
+clis = "context/crew-at-work.toml"
+clock = "2026-10-20T08:30:00-04:00"
 steps = [
   { wait = "shift\\+tab to cycle" },
-  { send = "/context\r" },
-  { wait = "What fills each session's context" },
+  { send = "What does this repo hold?\r" },
+  { wait = "It holds a README" },
+  { send = "/crew Make the rate limiter per API key\r" },
+  { wait = "build:cap-bucket-refills" },
+  { send = "/context all\r" },
+  { wait = "80.3k in context" },
   { press = "Down" },
+  { press = "End" },
+  { wait = "refills .* 21k/1m" },
 ]
 
 [[drawing]]
@@ -1336,20 +1577,27 @@ file = "context/crew-list@177x40.txt"
 release = "0.2.0"
 approval = 360
 hash = "sha256:75aa24bb4a468502ece03ac584832facd8278d7a979f64d9f09502f20e938af7"
-home = "homes/council"
-held_by = "crates/tui/src/panels/context/tests/drawing_tests.rs::every_context_state_matches_its_drawing"
+home = "homes/crew-at-work"
+clis = "context/crew-at-work.toml"
+clock = "2026-10-20T08:30:00-04:00"
 steps = [
   { wait = "shift\\+tab to cycle" },
-  { send = "/context\r" },
-  { wait = "What fills each session's context" },
+  { send = "What does this repo hold?\r" },
+  { wait = "It holds a README" },
+  { send = "/crew Make the rate limiter per API key\r" },
+  { wait = "build:cap-bucket-refills" },
+  { send = "/context all\r" },
+  { wait = "80.3k in context" },
   { press = "Down" },
+  { press = "End" },
+  { wait = "refills .* 21k/1m" },
 ]
 
 [[drawing]]
 file = "context/opencode-before@120x38.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:085c5f19cf892bf7359ff88032b09012d6aa2c349099cc9723bb7d1e3c430a89"
+release = "0.2.1"
+approval = 371
+hash = "sha256:439582ae1a37a092bcf01732963864f2b79e67ba6e890dd66c95d8811d10a6f4"
 home = "homes/context-kept-opencode"
 steps = [
   { wait = "shift\\+tab to cycle" },
@@ -1359,9 +1607,9 @@ steps = [
 
 [[drawing]]
 file = "context/opencode-before@177x40.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:68ebdcf080ed75fe32be4422731b52b7b3e2a38a2bca8c0d5ce2499279cc2ade"
+release = "0.2.1"
+approval = 371
+hash = "sha256:32c10153648580729e38f316767ed1151615af5ab1956c19e8c307d78044824a"
 home = "homes/context-kept-opencode"
 steps = [
   { wait = "shift\\+tab to cycle" },
@@ -1371,9 +1619,9 @@ steps = [
 
 [[drawing]]
 file = "context/opencode-first@120x38.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:23d9dc2c6684a053dda7cb44572048749a7d20c000445b245a83cd3f4605e748"
+release = "0.2.1"
+approval = 371
+hash = "sha256:56632f879ef970edf96862f7899c01c7a99445b08544f560ac3917eb8dcdcb53"
 home = "homes/context-first-opencode"
 steps = [
   { wait = "shift\\+tab to cycle" },
@@ -1383,9 +1631,9 @@ steps = [
 
 [[drawing]]
 file = "context/opencode-first@177x40.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:65c19aa4830b9d4e607e5568310cce19d6cd3c7bae3f1800372e24e35bc5b928"
+release = "0.2.1"
+approval = 371
+hash = "sha256:af296ca6cfffbba9dd4c3926c32873f568267fdd91c0acb07e917ec36b26d9da"
 home = "homes/context-first-opencode"
 steps = [
   { wait = "shift\\+tab to cycle" },
@@ -1395,9 +1643,9 @@ steps = [
 
 [[drawing]]
 file = "context/opencode-loading@120x38.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:ae57fe3ceffee62846a431f31de145f33ba6141ceb852be7079f7f7fd266d78e"
+release = "0.2.1"
+approval = 371
+hash = "sha256:691ade696ee8a66732a536ea2e7f0e8e1108acece2c0be2346039b440c5df8db"
 home = "homes/context-kept-opencode"
 clis = "context/opencode.toml"
 steps = [
@@ -1410,9 +1658,9 @@ steps = [
 
 [[drawing]]
 file = "context/opencode-loading@177x40.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:490a20284a7a8498c1f33ab8f540c91450919c850799a3437282f2d46720be42"
+release = "0.2.1"
+approval = 371
+hash = "sha256:b2ccd72e3cb461184a50a95502fad136336af6ff6ddccb2e3fb0c7352fb390fa"
 home = "homes/context-kept-opencode"
 clis = "context/opencode.toml"
 steps = [
@@ -1425,9 +1673,9 @@ steps = [
 
 [[drawing]]
 file = "context/opencode@120x38.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:5d3a6390daddfa49ee11146d5cd65439401bb693c57f622d23785923e64e5133"
+release = "0.2.1"
+approval = 371
+hash = "sha256:8258d898cef909d0e6415b2aa7ac0f78507735f6866fa11c6b8244336d731226"
 home = "homes/context-kept-opencode"
 clis = "context/opencode.toml"
 steps = [
@@ -1440,9 +1688,9 @@ steps = [
 
 [[drawing]]
 file = "context/opencode@177x40.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:ecc765736e6e9ecad8c3b7bd939b3428a16cfa0a47382899b57e437b35328413"
+release = "0.2.1"
+approval = 371
+hash = "sha256:93ff5d24caf895b3ff8cac28ebd4266d7672a45c5b5e2480b74f9e32168a599f"
 home = "homes/context-kept-opencode"
 clis = "context/opencode.toml"
 steps = [
@@ -1455,35 +1703,45 @@ steps = [
 
 [[drawing]]
 file = "context/with-crew@120x38.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:0f208907a9173cce506eefa126e78b0ba00aa19f04eef29b644232062b421a28"
-home = "homes/council"
-held_by = "crates/tui/src/panels/context/tests/drawing_tests.rs::every_context_state_matches_its_drawing"
+release = "0.2.1"
+approval = 371
+hash = "sha256:9f2380fd4095b4928ce35a80c138edbd1453db0b77a6831b7f0dbbf2d1261618"
+home = "homes/crew-at-work"
+clis = "context/crew-at-work.toml"
+clock = "2026-10-20T08:30:00-04:00"
 steps = [
   { wait = "shift\\+tab to cycle" },
+  { send = "What does this repo hold?\r" },
+  { wait = "It holds a README" },
+  { send = "/crew Make the rate limiter per API key\r" },
+  { wait = "build:cap-bucket-refills" },
   { send = "/context\r" },
-  { wait = "What fills each session's context" },
+  { wait = "80.3k in context" },
 ]
 
 [[drawing]]
 file = "context/with-crew@177x40.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:d44a59337d0ee170cd941e65e011cced69639f86ed2286697f9f72127753760c"
-home = "homes/council"
-held_by = "crates/tui/src/panels/context/tests/drawing_tests.rs::every_context_state_matches_its_drawing"
+release = "0.2.1"
+approval = 371
+hash = "sha256:7b90c953ba3ce83e328ed97b608cd0805be7a25d8cdff77200a47f161c98a2f5"
+home = "homes/crew-at-work"
+clis = "context/crew-at-work.toml"
+clock = "2026-10-20T08:30:00-04:00"
 steps = [
   { wait = "shift\\+tab to cycle" },
+  { send = "What does this repo hold?\r" },
+  { wait = "It holds a README" },
+  { send = "/crew Make the rate limiter per API key\r" },
+  { wait = "build:cap-bucket-refills" },
   { send = "/context\r" },
-  { wait = "What fills each session's context" },
+  { wait = "80.3k in context" },
 ]
 
 [[drawing]]
 file = "context-mod/card@120x38.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:a641a2f13191f4f8f9e7931c5dbba445543f9411e97cbcb4bdad18dea856bb46"
+release = "0.2.1"
+approval = 371
+hash = "sha256:efc71382d086a44b6231cd77cb24422d21ab0d64cf33fb8eee5744772ea14e27"
 home = "homes/council"
 clis = "context/claude-code.toml"
 steps = [
@@ -1491,17 +1749,17 @@ steps = [
   { send = "What does this repo hold?\r" },
   { wait = "It holds a README" },
   { send = "/context\r" },
-  { wait = "32.3k in context" },
-  { wait = "33 skills" },
+  { wait = "28.8k in context" },
+  { wait = "18 skills" },
   { press = "Down" },
   { press = "End" },
 ]
 
 [[drawing]]
 file = "context-mod/card@177x40.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:b99bf8feaa37d3b2e15daf1fafcff67b667074682f89a208d2e2725489b2c540"
+release = "0.2.1"
+approval = 371
+hash = "sha256:759cad4b4d2c77e8aa317dda95f8ff45b93ce1039e9258c15276ab8ad5cd0449"
 home = "homes/council"
 clis = "context/claude-code.toml"
 steps = [
@@ -1509,8 +1767,8 @@ steps = [
   { send = "What does this repo hold?\r" },
   { wait = "It holds a README" },
   { send = "/context\r" },
-  { wait = "32.3k in context" },
-  { wait = "33 skills" },
+  { wait = "28.8k in context" },
+  { wait = "18 skills" },
   { press = "Down" },
   { press = "End" },
 ]
@@ -1522,7 +1780,6 @@ approval = 360
 hash = "sha256:8b1635e738ea4c50ac3594a062da534ac7985474707eb5c50b97e1d7b9d68ecc"
 home = "homes/council-direct"
 clis = "conversation/alone.toml"
-held_by = "crates/scenarios/tests/it/app_conversation.rs::app_default_workflow_says_when_the_main_agent_works_alone"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "Make the rate limiter per API key, so one busy key can't block the others. Keep the tests passing.\r" },
@@ -1536,7 +1793,6 @@ approval = 360
 hash = "sha256:eebc1980597bc2c950ce3d771424a422f7c1558237a5e0024a7a8d2a7636b6ab"
 home = "homes/council-direct"
 clis = "conversation/alone.toml"
-held_by = "crates/scenarios/tests/it/app_conversation.rs::app_default_workflow_says_when_the_main_agent_works_alone"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "Make the rate limiter per API key, so one busy key can't block the others. Keep the tests passing.\r" },
@@ -1548,8 +1804,11 @@ file = "conversation/orchestrator-run-codex-builds@120x38.txt"
 release = "0.2.0"
 approval = 360
 hash = "sha256:5d92bffb42dbc3ee4593f93db7bdfd0a8a951121992ea1ce7aa828c4e8ea1eca"
+held = { approval = 374, why = """\
+  The drawn moment is the run done, with each session's time (21s, 1m 2s, 2m 40s), which the app \
+  measures in real time, and the fakes don't play the run to it yet. Waits for a redraw from the \
+  app's run on the fakes, each session's time read from the settable clock.""" }
 home = "homes/orchestrator"
-held_by = "crates/tui/src/bridge/agents/rows_tests.rs::a_run_building_on_codexs_other_models_matches_its_drawings"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { wait = "Orchestrator · Opus 5\\.5" },
@@ -1560,8 +1819,11 @@ file = "conversation/orchestrator-run-codex-builds@177x40.txt"
 release = "0.2.0"
 approval = 360
 hash = "sha256:4e504dea2156c922f672a41ee96f04b01d08e1ac15f9c9135bdf84877f9ddd66"
+held = { approval = 374, why = """\
+  The drawn moment is the run done, with each session's time (21s, 1m 2s, 2m 40s), which the app \
+  measures in real time, and the fakes don't play the run to it yet. Waits for a redraw from the \
+  app's run on the fakes, each session's time read from the settable clock.""" }
 home = "homes/orchestrator"
-held_by = "crates/tui/src/bridge/agents/rows_tests.rs::a_run_building_on_codexs_other_models_matches_its_drawings"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { wait = "Orchestrator · Opus 5\\.5" },
@@ -1572,11 +1834,18 @@ file = "conversation/orchestrator-run@120x38.txt"
 release = "0.2.0"
 approval = 360
 hash = "sha256:83e0f8b11869a8eb7e4f2941850980721c2578872e950001b5ac59b7b810267a"
-home = "homes/orchestrator"
-held_by = "crates/tui/src/bridge/agents/rows_tests.rs::an_orchestrator_run_matches_its_drawings"
+held = { approval = 374, why = """\
+  The drawn moment is the run done, with each session's time (21s, 1m 2s, 2m 40s), which the app \
+  measures in real time, and the fakes don't play the run to it yet. Waits for a redraw from the \
+  app's run on the fakes, each session's time read from the settable clock.""" }
+home = "homes/orchestrator-run"
+clis = "conversation/orchestrator-run.toml"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { wait = "Orchestrator · Opus 5\\.5" },
+  { send = "/crew Add due dates\r" },
+  { wait = "review:due-flag" },
+  { wait = "Merge this run into main\\?" },
 ]
 
 [[drawing]]
@@ -1584,64 +1853,85 @@ file = "conversation/orchestrator-run@177x40.txt"
 release = "0.2.0"
 approval = 360
 hash = "sha256:53c2681131ffc13a41a8f3b129cee351eca3ff8fb2392320dfe6c4ad354feced"
-home = "homes/orchestrator"
-held_by = "crates/tui/src/bridge/agents/rows_tests.rs::an_orchestrator_run_matches_its_drawings"
+held = { approval = 374, why = """\
+  The drawn moment is the run done, with each session's time (21s, 1m 2s, 2m 40s), which the app \
+  measures in real time, and the fakes don't play the run to it yet. Waits for a redraw from the \
+  app's run on the fakes, each session's time read from the settable clock.""" }
+home = "homes/orchestrator-run"
+clis = "conversation/orchestrator-run.toml"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { wait = "Orchestrator · Opus 5\\.5" },
+  { send = "/crew Add due dates\r" },
+  { wait = "review:due-flag" },
+  { wait = "Merge this run into main\\?" },
 ]
 
 [[drawing]]
 file = "council/first-answers@120x38.txt"
 release = "0.2.0"
 approval = 360
+one_size = 362
 hash = "sha256:d214ce2a6442692c2b24210be2917af9b83f1245bc7b20c9fde5f69ab82f90d8"
+held = { approval = 374, why = """\
+  The council's draws aren't pinned yet: the note keeper is drawn from the run's id, which \
+  carries the time to the second, and each seat's letters from the install's secret, so who \
+  builds each task and each seat's time change from run to run. The fakes' answers and their \
+  order aren't the drawing's either. Waits for a way to pin a run's draws and fakes that play the \
+  drawn talk, or redraws from the app's run on the fakes.""" }
 home = "homes/council-talk"
-clis = "council/seats-writing.toml"
-held_by = "crates/tui/src/tests/council_approved_tests.rs::first_answers_draw_their_conversation_as_drawn"
+clis = "council/first-answers.toml"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/council\r" },
   { wait = "Switched to Council" },
   { send = "Add rate limiting to the public API, so one noisy client can't slow down everyone else. Build the limiter with Maker-checker, split the route tests across agents, and let Luna do the plan limits in its own session.\r" },
-  { wait = "Run this workflow\\?" },
-  { press = "Enter" },
-  { wait = "answers alone first" },
+  { wait = "Gathering the points" },
 ]
 
 [[drawing]]
 file = "council/plan@120x38.txt"
 release = "0.2.0"
 approval = 364
+one_size = 362
 hash = "sha256:865e5abc070634425c81bf8ebe41b6e6ecfc1bfee7e078ae3ef66c9a1cfe784e"
+held = { approval = 374, why = """\
+  The council's draws aren't pinned yet: the note keeper is drawn from the run's id, which \
+  carries the time to the second, and each seat's letters from the install's secret, so who \
+  builds each task and each seat's time change from run to run. Who names crew CLIs where the \
+  drawing names seats, 3.8 Flash's objection has no reason, \"Checked by\" has no logos, and the \
+  seats' times and tokens read 0s and 240. Waits for a way to pin a run's draws and fakes that \
+  play the drawn talk, or redraws from the app's run on the fakes.""" }
 home = "homes/council-talk"
-clis = "council/seats-writing.toml"
-held_by = "crates/tui/src/tests/council_approved_tests.rs::the_plan_draws_its_conversation_as_drawn"
+clis = "council/plan.toml"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/council\r" },
   { wait = "Switched to Council" },
   { send = "Add rate limiting to the public API, so one noisy client can't slow down everyone else. Build the limiter with Maker-checker, split the route tests across agents, and let Luna do the plan limits in its own session.\r" },
-  { wait = "Run this workflow\\?" },
-  { press = "Enter" },
-  { wait = "answers alone first" },
+  { wait = "◆ Approve this plan\\?" },
 ]
 
 [[drawing]]
 file = "council/sent@120x38.txt"
 release = "0.2.0"
 approval = 360
+one_size = 362
 hash = "sha256:5d5720b249f21ce459ff3e65698e9e173f54f198ab11ddcbe54437c85a7ef7f3"
+held = { approval = 374, why = """\
+  The council's draws aren't pinned yet: the note keeper is drawn from the run's id, which \
+  carries the time to the second, and each seat's letters from the install's secret, so who \
+  builds each task and each seat's time change from run to run. Here the clock reads 8:40 AM \
+  where the drawing says 10:41 AM, and the row of typing bubbles isn't the drawing's. Waits for a \
+  way to pin a run's draws and fakes that play the drawn talk, or redraws from the app's run on \
+  the fakes.""" }
 home = "homes/council-talk"
 clis = "council/seats-writing.toml"
-held_by = "crates/tui/src/tests/council_approved_tests.rs::sent_draws_its_conversation_as_drawn"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/council\r" },
   { wait = "Switched to Council" },
   { send = "Add rate limiting to the public API, so one noisy client can't slow down everyone else. Build the limiter with Maker-checker, split the route tests across agents, and let Luna do the plan limits in its own session.\r" },
-  { wait = "Run this workflow\\?" },
-  { press = "Enter" },
   { wait = "answers alone first" },
 ]
 
@@ -1649,47 +1939,57 @@ steps = [
 file = "council/talk@120x38.txt"
 release = "0.2.0"
 approval = 360
+one_size = 362
 hash = "sha256:c528cd49739ae4c9d2acde6407ad2f550d4773eb487f52554f4fd9817b015461"
+held = { approval = 374, why = """\
+  The council's draws aren't pinned yet: the note keeper is drawn from the run's id, which \
+  carries the time to the second, and each seat's letters from the install's secret, so who \
+  builds each task and each seat's time change from run to run. The fakes' talk and its order \
+  aren't the drawing's either. Waits for a way to pin a run's draws and fakes that play the drawn \
+  talk, or redraws from the app's run on the fakes.""" }
 home = "homes/council-talk"
-clis = "council/seats-writing.toml"
-held_by = "crates/tui/src/tests/council_approved_tests.rs::the_talk_draws_its_conversation_as_drawn"
+clis = "council/talk.toml"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/council\r" },
   { wait = "Switched to Council" },
   { send = "Add rate limiting to the public API, so one noisy client can't slow down everyone else. Build the limiter with Maker-checker, split the route tests across agents, and let Luna do the plan limits in its own session.\r" },
-  { wait = "Run this workflow\\?" },
-  { press = "Enter" },
-  { wait = "answers alone first" },
+  { wait = "is writing · " },
 ]
 
 [[drawing]]
 file = "council/work-starts@120x38.txt"
 release = "0.2.0"
 approval = 360
+one_size = 362
 hash = "sha256:8ee1ebb0438eb05c23db513b1d2467e9bd1dbd042fcf1cf3fb9f1befa13730e3"
+held = { approval = 374, why = """\
+  The council's draws aren't pinned yet: the note keeper is drawn from the run's id, which \
+  carries the time to the second, and each seat's letters from the install's secret, so who \
+  builds each task and each seat's time change from run to run. After you approve, the run ends \
+  with \"an agent's answer didn't match the format\", as the main agent's change of workflow \
+  meets a fake with no rule for it. Waits for a way to pin a run's draws and fakes that play the \
+  drawn talk, or redraws from the app's run on the fakes.""" }
 home = "homes/council-talk"
-clis = "council/seats-writing.toml"
-held_by = "crates/tui/src/tests/council_approved_tests.rs::the_work_starts_as_drawn"
+clis = "council/work-starts.toml"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/council\r" },
   { wait = "Switched to Council" },
   { send = "Add rate limiting to the public API, so one noisy client can't slow down everyone else. Build the limiter with Maker-checker, split the route tests across agents, and let Luna do the plan limits in its own session.\r" },
-  { wait = "Run this workflow\\?" },
+  { wait = "◆ Approve this plan\\?" },
   { press = "Enter" },
-  { wait = "answers alone first" },
+  { wait = "You approved the plan" },
 ]
 
 [[drawing]]
 file = "limits/spend-card-week@120x38.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:15bdb5935f3a0be845e41d1c28804fe5a25e0ffb01339c3eb6992556735f39b1"
-home = "homes/council"
-# Held: its spend falls on the first days of the current week, which a fixed ledger can't
-# follow.
-held_by = "crates/tui/src/panels/tests/crew_like_tests.rs::limits_draws_a_week_with_spend_as_its_drawing_does"
+release = "0.2.1"
+approval = 371
+one_size = 362
+hash = "sha256:498a3447e780dc88f28ab581a1c82742958c6ded6ac18d9f24fdaccb50a6638b"
+home = "homes/limits-week"
+clock = "2026-10-27T08:40:00-04:00"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/limits\r" },
@@ -1698,13 +1998,11 @@ steps = [
 
 [[drawing]]
 file = "limits/spend-card@120x38.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:9f904d4d3617da980f61577a7f05bf4672dfcfaa8a3a0422553446ff8df2075d"
+release = "0.2.1"
+approval = 371
+hash = "sha256:e9e22571090bbaae72e933398dd1e6535d9fd597385f2b31c04353eedaedcf8f"
 home = "homes/council"
-# Held: the card marks today's weekday, which follows the clock. The home's ledger gives
-# every other cell on the release build.
-held_by = "crates/tui/src/panels/tests/crew_like_tests.rs::limits_draws_the_crew_as_its_drawings_do"
+clock = "2026-10-27T08:40:00-04:00"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/limits\r" },
@@ -1713,13 +2011,11 @@ steps = [
 
 [[drawing]]
 file = "limits/spend-card@177x40.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:5d1644c57747f287d407dd4648e566cdc97abf481575f00ed1599269710336e6"
+release = "0.2.1"
+approval = 371
+hash = "sha256:1f5cbba51040c29ffcfcb2da64ce17e241071a191bf6f083ca502e6fcc5d1be0"
 home = "homes/council"
-# Held: the card marks today's weekday, which follows the clock. The home's ledger gives
-# every other cell on the release build.
-held_by = "crates/tui/src/panels/tests/crew_like_tests.rs::limits_draws_the_crew_as_its_drawings_do"
+clock = "2026-10-27T08:40:00-04:00"
 steps = [
   { wait = "shift\\+tab to cycle" },
   { send = "/limits\r" },
@@ -1728,9 +2024,10 @@ steps = [
 
 [[drawing]]
 file = "stats/by-model-table-light-terminal@120x38.txt"
-release = "0.2.0"
-approval = 364
-hash = "sha256:62644fb44b44daf00b7dd66c6029f12daa64b5d677e5b71d000fe1f1dad4d042"
+release = "0.2.1"
+approval = 371
+one_size = 362
+hash = "sha256:0ffc7cc69f23d0a9053988e1e6b9be47d4627cb9e4f34e6a92a27bdee2adb3e3"
 home = "homes/council"
 steps = [
   { wait = "shift\\+tab to cycle" },
@@ -1743,9 +2040,9 @@ steps = [
 
 [[drawing]]
 file = "stats/by-model-table@120x38.txt"
-release = "0.2.0"
-approval = 364
-hash = "sha256:73cb3a33802dc05eab1e457735bce78230d31fff1c319b6eb07674b1f3debf49"
+release = "0.2.1"
+approval = 371
+hash = "sha256:70cf2597df216025fcf610c1197651dcf271dfded79cf8b467ff2afa1ebb3ace"
 home = "homes/council"
 steps = [
   { wait = "shift\\+tab to cycle" },
@@ -1758,9 +2055,9 @@ steps = [
 
 [[drawing]]
 file = "stats/by-model-table@177x40.txt"
-release = "0.2.0"
-approval = 360
-hash = "sha256:1dc7cf4f1e81f60e0dec96c5119811897c007ffacdb3eece3a694f841fd4a627"
+release = "0.2.1"
+approval = 371
+hash = "sha256:9a498e1c52b7b2255b9bbe6579b8088d349fa41ef25b73bb8fd5e369fcf42c17"
 home = "homes/council"
 steps = [
   { wait = "shift\\+tab to cycle" },
@@ -1769,4 +2066,110 @@ steps = [
   { press = "Down" },
   { press = "Right" },
   { wait = "▾tokens" },
+]
+
+[[drawing]]
+file = "bottom-line/near-limit@120x38.txt"
+release = "0.2.1"
+approval = 371
+hash = "sha256:6937c2f7f0d206b442c73fba380e1a537a28d7ffd931ff084b1fdc2293c6893f"
+home = "homes/meter-near-limit"
+steps = [
+  { wait = "-- INSERT -- " },
+  { wait = "5h \\S+  92%" },
+]
+
+[[drawing]]
+file = "bottom-line/near-limit@177x40.txt"
+release = "0.2.1"
+approval = 371
+hash = "sha256:dd5d55cd9e847db964dae071cab5ad6e2f92d0ef01107f496f79f9d62d7a65b8"
+home = "homes/meter-near-limit"
+steps = [
+  { wait = "-- INSERT -- " },
+  { wait = "5h \\S+  92%" },
+]
+
+[[drawing]]
+file = "conversation/no-git@120x38.txt"
+release = "0.2.1"
+approval = 371
+hash = "sha256:881fbf4e06ab547a63e0fa7d315558130c5fb36170c487f7a28f430ef187e57e"
+home = "homes/captain-autopilot"
+folder = "Downloads"
+git = false
+steps = [
+  { wait = "-- INSERT -- " },
+  { wait = "This folder has no git" },
+  { wait = "7d \\S+  44%" },
+]
+
+[[drawing]]
+file = "conversation/no-git@177x40.txt"
+release = "0.2.1"
+approval = 371
+hash = "sha256:c033b1f4bab3f8539bcf50c9fe8c529e76f8f275672b70b9baeb19e8e6b8601f"
+home = "homes/captain-autopilot"
+folder = "Downloads"
+git = false
+steps = [
+  { wait = "-- INSERT -- " },
+  { wait = "This folder has no git" },
+  { wait = "7d \\S+  44%" },
+]
+
+[[drawing]]
+file = "behaviors/braille-map-compared@120x38.txt"
+release = "0.2.1"
+approval = 371
+hash = "sha256:daa326da90db4341a5af8061af41a0225aee5af65f0427e5c64507f0fda2e84d"
+held = { approval = 374, why = """\
+  The app doesn't draw this map yet. homes/captain-vim has no recorded actions, so the map says \
+  \"No actions recorded yet\" and never shows \"Comparing\". With actions, each dot still sits at \
+  its label's place plus a jitter from the action's own key, off the drawing's cells. Waits for a \
+  redraw from the app on homes/behaviors-label-map with no picture protocol, or departures over \
+  the map's cells.""" }
+home = "homes/captain-vim"
+pictures = false
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "Nothing compared" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "l" },
+  { wait = "Comparing" },
+]
+
+[[drawing]]
+file = "behaviors/braille-map-compared@177x40.txt"
+release = "0.2.1"
+approval = 371
+hash = "sha256:114494a571cbf1a3c9448d8c920e7fda496be3a6bda5d5599db0618c25ed81ab"
+held = { approval = 374, why = """\
+  The app doesn't draw this map yet. homes/captain-vim has no recorded actions, so the map says \
+  \"No actions recorded yet\" and never shows \"Comparing\". With actions, each dot still sits at \
+  its label's place plus a jitter from the action's own key, off the drawing's cells. Waits for a \
+  redraw from the app on homes/behaviors-label-map with no picture protocol, or departures over \
+  the map's cells.""" }
+home = "homes/captain-vim"
+pictures = false
+steps = [
+  { wait = "shift\\+tab to cycle" },
+  { send = "/overview\r" },
+  { wait = "Yes, import it" },
+  { press = "2" },
+  { press = "Down" },
+  { press = "Tab" },
+  { press = "Tab" },
+  { wait = "Nothing compared" },
+  { press = "Down" },
+  { press = "Down" },
+  { press = "l" },
+  { wait = "Comparing" },
 ]

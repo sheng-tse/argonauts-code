@@ -318,10 +318,10 @@ mod tests {
             inline["provider"][provider]["models"][model]["limit"].clone()
         };
         let urls = LocalUrls::new();
-        let qwen = "ollama/qwen3-coder:30b-64k";
+        let qwen = "ollama/qwen3-coder:30b";
         let full = inline_config(qwen, Declared::Nothing, Some(65_536), &urls).unwrap();
         assert_eq!(
-            window(&full, "ollama", "qwen3-coder:30b-64k"),
+            window(&full, "ollama", "qwen3-coder:30b"),
             json!({"context": 65_536, "output": 16_384})
         );
         assert_eq!(
@@ -330,14 +330,14 @@ mod tests {
         );
 
         let added = inline_config(qwen, Declared::Provider, Some(65_536), &urls).unwrap();
-        let model = &added["provider"]["ollama"]["models"]["qwen3-coder:30b-64k"];
-        assert_eq!(model["name"], "qwen3-coder:30b-64k");
+        let model = &added["provider"]["ollama"]["models"]["qwen3-coder:30b"];
+        assert_eq!(model["name"], "qwen3-coder:30b");
         assert_eq!(model["limit"]["context"], 65_536);
         assert!(added["provider"]["ollama"]["options"].is_null());
 
         // Your model without a window gets only the window, and nothing without one to give.
         let lacking = inline_config(qwen, Declared::Model, Some(32_768), &urls).unwrap();
-        let model = &lacking["provider"]["ollama"]["models"]["qwen3-coder:30b-64k"];
+        let model = &lacking["provider"]["ollama"]["models"]["qwen3-coder:30b"];
         assert_eq!(
             model,
             &json!({"limit": {"context": 32_768, "output": 8_192}})
@@ -355,7 +355,7 @@ mod tests {
             window(
                 &inline_config(qwen, Declared::Nothing, None, &urls).unwrap(),
                 "ollama",
-                "qwen3-coder:30b-64k"
+                "qwen3-coder:30b"
             )
             .is_null()
         );

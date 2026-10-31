@@ -3,8 +3,8 @@
 //! for, so it takes the newest release on your channel at once, whatever the rollout's
 //! schedule, and it never runs while a run is going.
 
+use argonauts_core::base::clock;
 use argonauts_core::settings::updates::UpdateSettings;
-use time::OffsetDateTime;
 use tokio_util::sync::CancellationToken;
 
 use super::install::Install;
@@ -38,7 +38,7 @@ pub(crate) async fn own_row(
         }
     };
     let found = tokio::select! {
-        found = manifest::check(&here, updates.channel, true, OffsetDateTime::now_utc()) => found,
+        found = manifest::check(&here, updates.channel, true, clock::now_utc()) => found,
         () = stop.cancelled() => return OwnRow {
             version,
             words: "stopped".to_owned(),

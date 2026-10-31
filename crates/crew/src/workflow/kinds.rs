@@ -766,9 +766,9 @@ mod tests {
 
     #[test]
     fn the_understand_loop_has_a_round_left_only_before_its_last() {
-        let first = understand_loop("council", 1);
+        let first = understand_loop("draft-and-vote", 1);
         assert!(another_round(&first, &at(&[0, 2])));
-        let last = understand_loop("council", 2);
+        let last = understand_loop("draft-and-vote", 2);
         assert!(!another_round(&last, &at(&[0, 2])));
         let last = understand_loop("orchestrator", 2);
         assert!(!another_round(&last, &at(&[0, 2])));

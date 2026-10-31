@@ -67,9 +67,17 @@ fn key(view: &mut OverviewView, state: &AppState, code: KeyCode) -> ViewOutcome 
 
 /// ↓ from the tabs, through any sub-tabs, into the cards.
 fn into_the_cards(view: &mut OverviewView, state: &AppState) {
-    while view.level() != Level::Cards {
-        key(view, state, KeyCode::Down);
+    for _ in 0..2 {
+        if view.level() != Level::Cards {
+            key(view, state, KeyCode::Down);
+        }
     }
+    assert_eq!(
+        view.level(),
+        Level::Cards,
+        "{:?} has rows to go into",
+        view.tab
+    );
 }
 
 /// ↓ until the next card has the keys, past the rows of the one before.
@@ -743,13 +751,14 @@ fn the_limits_tab_lists_the_limits_and_enter_opens_the_picked_one_to_change() {
     );
     into_the_cards(&mut overview, &state);
     assert_eq!(opened(key(&mut overview, &state, KeyCode::Enter)), None);
-    // On the other usage tabs Enter has nothing to open.
+    // On the Overview Enter has nothing to open, and its sub-tabs keep the keys.
     let mut usage = view(Tab::Overview);
-    into_the_cards(&mut usage, &state);
+    key(&mut usage, &state, KeyCode::Down);
     assert!(matches!(
         key(&mut usage, &state, KeyCode::Enter),
-        ViewOutcome::Ignored
+        ViewOutcome::Consumed
     ));
+    assert_eq!(usage.level(), Level::SubTabs);
 }
 
 #[test]
@@ -1204,6 +1213,11 @@ fn tab_goes_along_the_row_with_the_keys() {
             .contains("tab By CLI, By model, By role"),
         "{shown:#?}"
     );
+    // Opened from the Overview, the tab drew asking for the period its file sets, which comes.
+    let state = self::state(UsageSummary {
+        period: stats.period,
+        ..sample::usage_with_stats()
+    });
     key(&mut stats, &state, KeyCode::Tab);
     assert_eq!(
         stats.stats.group,

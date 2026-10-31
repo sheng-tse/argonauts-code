@@ -500,6 +500,76 @@ fn phases_of(workflow: &str) -> Vec<String> {
     lines
 }
 
+/// Whether the workflow `name` seats a council as the next run reads it, by your file's phases
+/// or else the built-in's, and the file of yours it read. A steps file of yours runs by its
+/// steps, which never talk.
+fn talks_reading(ctx: &Ctx, name: &str) -> (bool, Option<PathBuf>) {
+    let phases = |text: &str| workflow_files::phases(text, name).ok().flatten();
+    let (yours, read) = match library(ctx).find(name) {
+        Some((_, Some(path))) if path.extension().is_none_or(|ext| ext != "toml") => {
+            return (false, Some(path));
+        }
+        Some((_, Some(path))) => {
+            let found = std::fs::read_to_string(&path).ok().and_then(|t| phases(&t));
+            (found, Some(path))
+        }
+        _ => (None, None),
+    };
+    let talks = yours
+        .or_else(|| workflow_files::built_in(name).and_then(phases))
+        .is_some_and(|workflow| workflow.talks());
+    (talks, read)
+}
+
+/// Whether the workflow in use talks, worked out again only once the settings, the workflow
+/// folders or the file it read change: working it out reads the trust state, looks through the
+/// folders and parses a file, and every turn's start asks.
+#[derive(Debug, Default)]
+pub(crate) struct Talking(std::sync::Mutex<Option<(Stamp, bool)>>);
+
+/// What a [`Talking`] answer was worked out from: the settings' hash, the workflow, and when
+/// the workflow folders and the file it read last changed.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Stamp {
+    settings: String,
+    workflow: String,
+    changed: Vec<Option<SystemTime>>,
+    read: Option<PathBuf>,
+}
+
+impl Stamp {
+    fn now(ctx: &Ctx, workflow: &str, read: Option<PathBuf>) -> Self {
+        let modified = |path: &Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
+        let project = ctx.env.repo_root.join(".argonauts/workflows");
+        let yours = ctx.env.paths.global_workflows();
+        let mut changed = vec![modified(&project), modified(&yours)];
+        changed.extend(read.as_deref().map(modified));
+        Self {
+            settings: ctx.settings.sha256().to_owned(),
+            workflow: workflow.to_owned(),
+            changed,
+            read,
+        }
+    }
+}
+
+impl Talking {
+    pub(crate) fn talks(&self, ctx: &Ctx, name: &str) -> bool {
+        let mut known = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((stamp, talks)) = known.as_ref()
+            && *stamp == Stamp::now(ctx, name, stamp.read.clone())
+        {
+            return *talks;
+        }
+        let (talks, read) = talks_reading(ctx, name);
+        *known = Some((Stamp::now(ctx, name, read), talks));
+        talks
+    }
+}
+
 /// A built-in with phases of its own and no steps, as Council talks in its phases, runs a
 /// request by them. A file of yours that only sets settings has nothing to run by itself.
 fn runs_by_its_phases(workflow: &str, err: &LibraryError) -> bool {
@@ -1014,10 +1084,7 @@ mod tests {
             planned.lines
         );
         assert!(
-            planned
-                .lines
-                .iter()
-                .any(|line| line.starts_with("1 Understand")),
+            planned.lines.iter().any(|line| line.starts_with("1 Talk")),
             "{:?}",
             planned.lines
         );
@@ -1412,6 +1479,23 @@ mod tests {
             .iter()
             .any(|event| matches!(event, AppEvent::Notice { text, .. } if text.contains("saved")));
         assert!(!told, "a save from the page needs no notice");
+    }
+
+    /// Each turn's start asks whether the workflow in use talks: the answer stands until the
+    /// settings or a workflow file change, and then it is worked out again.
+    #[tokio::test]
+    async fn whether_a_workflow_talks_is_worked_out_again_once_a_file_changes() {
+        let (test, _) = TestCtx::new(CliOptions::default());
+        let talking = Talking::default();
+        assert!(talking.talks(&test.ctx, "council"));
+        assert!(talking.talks(&test.ctx, "council"));
+        let dir = test.ctx.env.paths.global_workflows();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("council.js"), "// steps of yours\n").unwrap();
+        assert!(
+            !talking.talks(&test.ctx, "council"),
+            "a script of yours runs by its steps, which never talk"
+        );
     }
 
     #[tokio::test]

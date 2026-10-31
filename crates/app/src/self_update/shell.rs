@@ -6,12 +6,12 @@ use std::io::{IsTerminal as _, Write as _};
 use std::process::ExitCode;
 
 use argonauts_core::Paths;
+use argonauts_core::base::clock;
 use argonauts_core::settings::updates::UpdateChannel;
 use argonauts_tui::base::theme::{ColorEnv, Role, Theme};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use semver::Version;
-use time::OffsetDateTime;
 
 use super::apply::{self, Step, Switched};
 use super::install::{Install, RELEASES};
@@ -110,7 +110,7 @@ const RUN_GOING: &str = "A run is going, and Argonauts Code switches versions be
 
 /// `--check`: whether a newer version is out on `channel`, and what installs it.
 async fn check(here: &Here, channel: UpdateChannel, out: &mut Printer) -> anyhow::Result<ExitCode> {
-    let found = manifest::check(here, channel, true, OffsetDateTime::now_utc()).await;
+    let found = manifest::check(here, channel, true, clock::now_utc()).await;
     let line = match found {
         Ok(Found::Newer(release)) => format!(
             "Argonauts Code {} is out ({}) · {}",
@@ -204,7 +204,7 @@ async fn update(
                 .await
                 .map_err(|err| format!("the manifest for {version}: {err}"))?
         }
-        None => match manifest::check(here, channel, true, OffsetDateTime::now_utc()).await {
+        None => match manifest::check(here, channel, true, clock::now_utc()).await {
             Ok(Found::Newer(release)) => release,
             Ok(Found::Halted(version)) => {
                 out.line(plain(&format!(
@@ -380,14 +380,9 @@ pub async fn behind_line(overrides: Vec<String>) -> Option<String> {
     let paths = Paths::from_env().ok()?;
     let settings = crate::commands::current_settings(None, overrides).unwrap_or_default();
     let here = Here::this_process(&paths, source);
-    let found = manifest::check(
-        &here,
-        settings.updates.channel,
-        true,
-        OffsetDateTime::now_utc(),
-    )
-    .await
-    .ok()?;
+    let found = manifest::check(&here, settings.updates.channel, true, clock::now_utc())
+        .await
+        .ok()?;
     let Found::Newer(release) = found else {
         return None;
     };

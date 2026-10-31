@@ -1,6 +1,6 @@
 //! The note keeper's who-does-what, drawn from the plan the run asks you to approve: each task
-//! with a way, who does it and how, "You asked" for a way you named, a seat's objection to it,
-//! and who checks it where the plan already says. Approve with edits lists the same tasks.
+//! with a way, who does it and how, why that way, a seat's objection to it, and who checks it
+//! where the plan already says. Approve with edits lists the same tasks.
 
 use argonauts_core::base::names::{ModelRef, SeatId};
 use argonauts_core::look::display_names::DisplayNames;
@@ -11,12 +11,15 @@ use argonauts_core::runs::events::task::TaskSpec;
 use super::{Cx, Talk};
 use crate::council::screens::edits::EditTask;
 use crate::council::talk::item::Inset;
-use crate::council::work::plan::{Columns, PlanTask, Who, way_word, you_asked};
-use crate::council::{Body, Face, Item, Piece, SeatSays, Tone};
+use crate::council::work::plan::{
+    Columns, PROPOSING, PlanTask, RULE, Who, way_word, why_cell, you_asked,
+};
+use crate::council::{Body, Face, Item, Mark, Piece, SeatSays, Tone};
 
 impl Talk {
-    /// A bubble from the note keeper with the plan's tasks, under whatever printed last. The same
-    /// plan opened again shows once.
+    /// The note keeper's who-does-what under its plan message, or in a bubble of its own when
+    /// something printed since, with each other seat's ✔ for signing or ✘ for objecting to a
+    /// way. The same plan opened again shows once.
     pub(super) fn show_plan(&mut self, plan: &PlanPacket, cx: &mut Cx<'_>) {
         let Some(notes) = self.conversation.notes.clone() else {
             return;
@@ -33,28 +36,64 @@ impl Talk {
         }
         self.shown_plan = Some(tasks.clone());
         let mut says = SeatSays::new(
-            notes,
-            Body::Words {
-                paragraphs: Vec::new(),
-                shown: None,
-            },
+            notes.clone(),
+            Body::words(vec![vec![Piece::text(PROPOSING)]]),
         );
-        says.note = Some(" · keeps the notes".to_owned());
-        says.inset = Some(Inset::Plan {
-            tasks,
-            columns: Columns::PROPOSED,
-            rule: None,
-        });
-        self.add(Item::Seat(vec![says]), None, cx);
-        let signed = cx
+        let talk = cx
             .state
             .runs
             .get(&self.run)
             .and_then(|run| run.talk.as_ref())
-            .filter(|talk| talk.step == self.step)
-            .is_some_and(|talk| talk.every_seat_signed());
+            .filter(|talk| talk.step == self.step);
+        let signed = talk.is_some_and(|talk| talk.every_seat_signed());
+        says.inset = Some(Inset::Plan {
+            tasks,
+            columns: Columns::PROPOSED,
+            rule: Some(RULE.to_owned()),
+            sat_out: talk.map(|talk| talk.sat_out()).unwrap_or_default(),
+        });
+        if let Some(talk) = talk {
+            says.taps = talk
+                .seats()
+                .filter(|now| now.seat.id != notes)
+                .filter_map(|now| {
+                    let objects = plan.objections.iter().any(|o| o.seat == now.seat.id);
+                    let mark = match (objects, now.signed || signed) {
+                        (true, _) => Mark::Object,
+                        (false, true) => Mark::Agree,
+                        (false, false) => return None,
+                    };
+                    Some((now.seat.id.clone(), mark))
+                })
+                .collect();
+        }
+        if let Some(mut says) = self.under_the_keepers_message(&notes, says) {
+            says.note = Some(" · keeps the notes".to_owned());
+            self.add(Item::Seat(vec![says]), None, cx);
+        }
         if let Some(line) = under_the_plan(signed, &plan.objections) {
             self.add(line, None, cx);
+        }
+    }
+
+    /// Puts `says` under the note keeper's message while that message is the newest and still
+    /// live, as its next bubble. Hands `says` back when it is not.
+    fn under_the_keepers_message(&mut self, notes: &SeatId, says: SeatSays) -> Option<SeatSays> {
+        let Some((id, _, shared)) = &self.live else {
+            return Some(says);
+        };
+        if self.conversation.seat_of(id).as_ref() != Some(notes) {
+            return Some(says);
+        }
+        match shared.lock() {
+            Ok(mut item) => match &mut *item {
+                Item::Seat(bubbles) => {
+                    bubbles.push(says);
+                    None
+                }
+                _ => Some(says),
+            },
+            Err(_) => Some(says),
         }
     }
 
@@ -96,10 +135,10 @@ impl Talk {
             Some(seat) => Who::Seat(seat),
             None => self.who(worker, names),
         };
-        let why = if way.asked_by_you {
-            vec![you_asked()]
-        } else {
-            Vec::new()
+        let why = match (&way.why, way.asked_by_you) {
+            (Some(why), _) => why_cell(why),
+            (None, true) => vec![you_asked()],
+            (None, false) => Vec::new(),
         };
         let checked_by = spec
             .reviewers

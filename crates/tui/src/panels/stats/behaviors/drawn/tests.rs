@@ -88,8 +88,8 @@ fn what_the_pointer_finds_on_a_crews_map_says_what_nature_made_it_from() {
                 .to_owned())
             .as_deref(),
         Some(
-            "Hurricane, category 1 · 27 ‘tried an edit that didn't apply’ actions within one \
-             hour, 8 days ago at 2:01 PM"
+            "Hurricane · 27 ‘tried an edit that didn't apply’ actions within one hour, 8 days \
+             ago at 2:01 PM"
         )
     );
 }
@@ -101,7 +101,7 @@ fn comparing_a_group_hides_nature_and_the_wonders() {
         ..standing(Key::R)
     };
     let (_, shown) = drawn(Key::R, look);
-    let scene = shown.scene(Moment::At(1.0), 1);
+    let scene = shown.scene(Moment::at(1.0), 1);
     assert!(shown.weather.is_none());
     assert!(scene.sprites().is_empty(), "nothing moves or stands");
     assert!(!scene.moves);
@@ -480,12 +480,12 @@ fn the_land_stands_up_as_a_zoom_from_the_planet_arrives_on_the_map() {
     tab.moment.now = left;
     tab.key(KeyCode::Char('1'));
     let frame = |tab: &BehaviorsTab, at: u64| {
-        let when = left + Duration::from_millis(125 * at);
+        let when = left + tab.rate().step() * u32::try_from(at).unwrap_or(u32::MAX);
         let scene = tab.scene(&colours, &theme, &names, (18, 42), when);
         scene.expect("a frame").flatten()
     };
     // The zoom's last three frames, as the land stands up into the map.
-    let last = u64::from(super::super::level::ZOOM_FRAMES);
+    let last = u64::from(tab.zoom.expect("zooming in").frames());
     let unrolled = frame(&tab, last - 3);
     let rising = frame(&tab, last - 2);
     let risen = frame(&tab, last - 1);
@@ -775,4 +775,90 @@ fn a_drawing_given_up_stops_between_steps_and_keeps_nothing() {
         MapLook::unless(&grown, &standing(Key::R), 2, &|| false)
     });
     assert!(look.is_some());
+}
+
+/// While the map shows, its planet is made ahead on a thread of its own, and while the planet
+/// shows, the universe round it, so going out to either shows at once.
+#[test]
+fn the_next_level_out_is_made_ahead_while_one_shows() {
+    use crossterm::event::KeyCode;
+
+    use crate::base::kit::Kit;
+    use crate::base::theme::Theme;
+    use crate::panels::stats::behaviors::{BehaviorsTab, GroupColours};
+
+    crate::world::deliver::worker::threads_for_this_test();
+    let theme = Theme::dark();
+    let kit = Kit::new(&theme);
+    let mut tab = BehaviorsTab::default();
+    tab.accept(&crews::map(Key::R));
+    tab.moment.still = true;
+    tab.moment.skips_frames = true;
+    tab.picture_placed = true;
+    let colours = GroupColours::new(&kit, tab.map().expect("a map"), &[], &Default::default());
+    let names = Default::default();
+    let now = tab.moment.now;
+    let made_ahead = |tab: &BehaviorsTab, made: &dyn Fn(&Kept) -> bool| loop {
+        let _ = tab.scene(&colours, &theme, &names, (18, 42), now);
+        if made(&tab.drawings.kept.lock().expect("kept")) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    made_ahead(&tab, &|kept| kept.planet.is_some());
+    tab.key(KeyCode::Char('2'));
+    assert!(
+        tab.drawings.kept.lock().expect("kept").cosmos.is_none(),
+        "the universe waits for the planet to show"
+    );
+    made_ahead(&tab, &|kept| kept.cosmos.is_some());
+}
+
+/// In the universe, the picked galaxy, the one `+` goes into, is drawn ahead once the
+/// universe's own look is drawn, and kept with the universe.
+#[test]
+fn the_picked_galaxy_is_drawn_ahead_once_the_universe_shows() {
+    use crossterm::event::KeyCode;
+
+    use crate::base::kit::Kit;
+    use crate::base::theme::Theme;
+    use crate::panels::stats::behaviors::{BehaviorsTab, GroupColours};
+    use crate::world::cosmos::Level as CosmosLevel;
+
+    crate::world::deliver::worker::threads_for_this_test();
+    let theme = Theme::dark();
+    let kit = Kit::new(&theme);
+    let mut tab = BehaviorsTab::default();
+    tab.accept(&crews::map(Key::R));
+    tab.moment.still = true;
+    tab.moment.skips_frames = true;
+    tab.picture_placed = true;
+    let colours = GroupColours::new(&kit, tab.map().expect("a map"), &[], &Default::default());
+    let names = Default::default();
+    let now = tab.moment.now;
+    let cell = (18, 42);
+    while tab.drawings.kept.lock().expect("kept").grown.is_none() {
+        let _ = tab.scene(&colours, &theme, &names, cell, now);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    tab.key(KeyCode::Char('3'));
+    tab.picked = Some(Pointed::Galaxy(0));
+    let (width, height) = tab.fit().pixels(cell);
+    let drawn = |tab: &BehaviorsTab, level: CosmosLevel| {
+        let kept = tab.drawings.kept.lock().expect("kept");
+        kept.cosmos
+            .as_ref()
+            .is_some_and(|(_, cosmos)| cosmos.has_drawn(level, width, height))
+    };
+    loop {
+        let _ = tab.scene(&colours, &theme, &names, cell, now);
+        if drawn(&tab, CosmosLevel::Galaxy(0)) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        drawn(&tab, CosmosLevel::Universe),
+        "the galaxy waits for the universe to show"
+    );
 }

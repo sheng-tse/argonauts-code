@@ -1,0 +1,21 @@
+The bottom line on Autopilot in vim's INSERT with Claude Code's 5-hour window 92% used: its meter fills five of six cells, since only a window used up fills the sixth, and says when it resets
+screen 177x40
+at ?,0
+size 177x1
+terminal fg=#c8d3f5 bg=#222436
+text
+  -- INSERT -- ⏵⏵ autopilot on (shift+tab to cycle)                                       ￼￼ 5h ▄▄▄▄▄▁  92% resets 4:40pm  7d ▄▄▄▁▁▁  44%   ￼￼ 5h ▁▁▁▁▁▁   0%   ￼￼ 5h ▁▁▁▁▁▁   0%
+paint
+..aa.aaaaaa.aa.bb.bbbbbbbbb.bb.aaaaaaaaaa.aa.aaaaaa.......................................cc.aa.ddddde..fff.dddddd.dddddd..aa.gggeee..hhh...ii.aa.eeeeee...aa...jj.aa.eeeeee...aa
+key
+. blank
+a fg=#999999  ; Dim, ModeSupervised, SyntaxComment
+b fg=#ff6b80  ; Danger, ModeAutopilot
+c logo=claudecode
+d fg=#ffc107
+e fg=#505050  ; Faint
+f fg=#ffc107 bold
+g fg=#f7a07f  ; CliClaude
+h fg=#ffffff bold  ; Bright
+i logo=codex
+j logo=antigravity

@@ -5,8 +5,6 @@
 //! take. A hosted model's group says where it runs. A model that won't fit says which limit it
 //! meets, and suggests one that does.
 
-use std::time::Instant;
-
 use argonauts_core::app::ModelChoice;
 use argonauts_core::app::model_picker::{Fit, ListedFacts, MachineMemory, ModelMemory};
 use argonauts_core::look::window_size::window_words;
@@ -42,7 +40,7 @@ fn whole_gb(bytes: u64) -> f64 {
 
 /// `Models can use` and `up to 52 GB of this computer's 64 GB · 18 GB free now · models hold
 /// 25 GB · other apps 21 GB`: the ceiling, what is free, and who holds the rest.
-pub(super) fn banner(memory: &MachineMemory) -> (String, String) {
+pub(crate) fn banner(memory: &MachineMemory) -> (String, String) {
     let models = if memory.in_use == 0 {
         "none".to_owned()
     } else {
@@ -66,7 +64,7 @@ pub(super) fn banner(memory: &MachineMemory) -> (String, String) {
 
 /// A group's heading: where its models come from, and for the ones not installed, why they
 /// are offered.
-pub(super) fn heading(group: &str, listed: &ListedFacts) -> String {
+pub(crate) fn heading(group: &str, listed: &ListedFacts) -> String {
     if listed.hosted_by.is_some() {
         format!("Hosted by {group}")
     } else if listed
@@ -147,7 +145,7 @@ fn fit_cell(memory: &ModelMemory, machine: &MachineMemory) -> PickerCell {
 /// A model's row in the table's columns, its cost left out where the level says it once for
 /// every model. Default, which stands for another model, says what it runs in its description
 /// instead.
-pub(super) fn cells(
+pub(crate) fn cells(
     choice: &ModelChoice,
     listed: &ListedFacts,
     machine: Option<&MachineMemory>,
@@ -205,7 +203,7 @@ pub(super) fn default_description(choice: &ModelChoice, listed: &ListedFacts) ->
 
 /// The gauge for the row under the pointer: what it takes of the most models can use here,
 /// solid as far as what is free now covers it, and the rest hatched with what is short.
-pub(super) fn gauge(choice: Option<&ModelChoice>, machine: &MachineMemory) -> Gauge {
+pub(crate) fn gauge(choice: Option<&ModelChoice>, machine: &MachineMemory) -> Gauge {
     let limit = machine.limit.max(1);
     let share = |bytes: u64| (bytes as f64 / limit as f64).min(1.0);
     let listed = choice.and_then(|choice| choice.listed.as_ref());
@@ -258,15 +256,6 @@ pub(super) fn gauge(choice: Option<&ModelChoice>, machine: &MachineMemory) -> Ga
         needs: share(need),
         words,
         short,
-        moved: None,
-    }
-}
-
-/// The gauge for the row the pointer moved to, springing from where `before` stood.
-pub(super) fn gauge_after(gauge: Gauge, before: Option<&Gauge>, now: Instant) -> Gauge {
-    match before {
-        Some(before) => gauge.moving_from(before, now),
-        None => gauge,
     }
 }
 

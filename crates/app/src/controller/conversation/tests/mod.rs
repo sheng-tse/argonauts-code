@@ -7,6 +7,7 @@ mod carry;
 mod cli;
 mod direct;
 mod direct_kept_out;
+mod direct_macos;
 mod direct_outside;
 mod in_cli;
 mod live;

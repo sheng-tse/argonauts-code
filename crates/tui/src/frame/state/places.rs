@@ -49,7 +49,8 @@ impl Places {
         }
         if let Some(home) = self.home.as_deref() {
             match under(path, home) {
-                Some("") => return "~".to_owned(),
+                // The home folder itself keeps its full path, as Claude Code's header shows it.
+                Some("") => return path.trim_end_matches('/').to_owned(),
                 Some(rest) => return format!("~/{rest}"),
                 None => {}
             }
@@ -79,5 +80,32 @@ fn in_worktree(path: &str) -> Option<&str> {
     match (parts.next(), parts.next(), parts.next(), parts.next()) {
         (Some(_), Some(_), Some(_), Some(inner)) if !inner.is_empty() => Some(inner),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_home_folder_shows_whole_and_a_folder_under_it_from_home() {
+        let places = Places {
+            folder: Some("/Users/you/code/tasks-api".into()),
+            home: Some("/Users/you".into()),
+        };
+        assert_eq!(places.show("/Users/you"), "/Users/you");
+        assert_eq!(places.show("/Users/you/"), "/Users/you");
+        assert_eq!(places.show("/Users/you/notes/todo.md"), "~/notes/todo.md");
+        assert_eq!(places.show("/Users/you/code/tasks-api/src"), "src");
+
+        // A folder whose name only starts with the home's is outside it.
+        let places = Places {
+            folder: None,
+            home: Some("/Users/you/work".into()),
+        };
+        assert_eq!(
+            places.show("/Users/you/workshop/a.md"),
+            "/Users/you/workshop/a.md"
+        );
     }
 }

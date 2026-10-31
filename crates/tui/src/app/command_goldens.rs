@@ -20,7 +20,7 @@ use crate::base::theme::{Glyphs, Role, Theme};
 use crate::bottom::{ApprovalMode, VimMode};
 use crate::bridge::Bridge;
 use crate::cells::cell::{AssistantMessage, HistoryCell};
-use crate::testing::pictures::picture_check::{Unlike, assert_rows_match};
+use crate::testing::pictures::picture_check::assert_rows_match;
 
 const WIDTH: u16 = 118;
 
@@ -201,16 +201,6 @@ fn welcome() -> AppEvent {
     }
 }
 
-/// The line under the input ends at the screen's edge, where the picture's ends a cell short,
-/// so its right side sits a cell further right.
-fn line_edge(row: usize) -> Unlike {
-    Unlike {
-        row,
-        cols: (40, WIDTH as usize - 1),
-        why: "the plan usage ends at the screen's edge, where the picture leaves one cell",
-    }
-}
-
 /// After `/clear` the screen starts over: the header as a fresh start prints it, the way back
 /// to the old conversation under it, then the empty input and the line under it.
 #[test]
@@ -232,7 +222,6 @@ fn the_screen_after_clear_is_its_picture() {
         (&txt, &html),
         1..16,
         &screen.theme,
-        &[line_edge(14)],
     );
     assert_eq!(frame.cursor, block(&html, 1..16));
 }
@@ -382,7 +371,6 @@ fn update_as_it_works_and_once_its_done_is_its_picture() {
         (&txt, &html),
         2..13,
         &screen.theme,
-        &[line_edge(10)],
     );
     let (column, row) = working.cursor;
     assert_eq!((column, row - 3), block(&html, 2..13));
@@ -407,7 +395,6 @@ fn update_as_it_works_and_once_its_done_is_its_picture() {
         (&txt, &html),
         17..39,
         &screen.theme,
-        &[line_edge(21)],
     );
     assert_eq!(done.cursor, block(&html, 17..39));
 }
@@ -469,17 +456,10 @@ fn the_captain_runs_start_and_answer_are_its_picture() {
     let (txt, html) = picture("captain_after");
     let mut starting = AssistantMessage::new(STARTING).lines(&ctx);
     starting.push(Line::default());
-    assert_rows_match(
-        "captain_after",
-        &starting,
-        (&txt, &html),
-        89..92,
-        &theme,
-        &[],
-    );
+    assert_rows_match("captain_after", &starting, (&txt, &html), 89..92, &theme);
     let narrower = RenderCtx::new(WIDTH - 2, &theme, Clock::still(Instant::now()));
     let answer = AssistantMessage::new(MERGED).lines(&narrower);
-    assert_rows_match("captain_after", &answer, (&txt, &html), 61..67, &theme, &[]);
+    assert_rows_match("captain_after", &answer, (&txt, &html), 61..67, &theme);
 }
 
 /// The Captain run's picture keeps your prompt over the run's end and over its start, cut a
@@ -498,7 +478,6 @@ fn the_captain_runs_prompt_rows_are_its_picture() {
             (&txt, &html),
             top..top + 2,
             &theme,
-            &[],
         );
     }
 }
@@ -515,14 +494,7 @@ fn the_fork_starts_prompt_row_is_its_picture() {
     let words = sticky::words(ASKED).expect("the prompt's words");
     let prompt = [sticky::prompt_row(&words, &ctx), Line::default()];
     for top in [2, 31] {
-        assert_rows_match(
-            "fork_start",
-            &prompt,
-            (&txt, &html),
-            top..top + 2,
-            &theme,
-            &[],
-        );
+        assert_rows_match("fork_start", &prompt, (&txt, &html), top..top + 2, &theme);
     }
 }
 
@@ -536,14 +508,7 @@ fn the_starting_line_over_its_row_is_its_picture() {
     let (txt, html) = picture("starting_line_after");
     let words = sticky::words(PROMPT).expect("the prompt's words");
     let prompt = [sticky::prompt_row(&words, &ctx), Line::default()];
-    assert_rows_match(
-        "starting_line_after",
-        &prompt,
-        (&txt, &html),
-        0..2,
-        &theme,
-        &[],
-    );
+    assert_rows_match("starting_line_after", &prompt, (&txt, &html), 0..2, &theme);
 
     let mut starting = AssistantMessage::new(STARTING).lines(&ctx);
     starting.push(Line::default());
@@ -553,7 +518,6 @@ fn the_starting_line_over_its_row_is_its_picture() {
         (&txt, &html),
         2..5,
         &theme,
-        &[],
     );
 
     let mut screen = Screen::new(theme.clone());
@@ -598,6 +562,5 @@ fn the_starting_line_over_its_row_is_its_picture() {
         (&txt, &html),
         5..7,
         &theme,
-        &[],
     );
 }

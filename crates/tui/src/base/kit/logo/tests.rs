@@ -432,21 +432,21 @@ fn a_workers_logo_is_the_model_it_runs_where_it_names_none() {
     let names = DisplayNames {
         configured: std::collections::BTreeMap::from([(
             "opencode".to_owned(),
-            "ollama/qwen3-coder:30b-64k".to_owned(),
+            "ollama/qwen3-coder:30b".to_owned(),
         )]),
         ..DisplayNames::default()
     };
     let pictures = with_pictures(Brightness::Dark);
     let unnamed = ModelRef::new("opencode", None);
-    let reported = ModelRef::new("opencode", Some("ollama/qwen3-coder:30b-64k".to_owned()));
+    let reported = ModelRef::new("opencode", Some("ollama/qwen3-coder:30b".to_owned()));
     let from_start = ModelLabel::of(&names, &unnamed, &pictures, NoPicture::Nothing);
     let once_reported = ModelLabel::of(&names, &reported, &pictures, NoPicture::Nothing);
     assert_eq!(from_start.whose.mark, Some(LogoMark::Ollama));
     assert_eq!(from_start, once_reported);
-    assert_eq!(from_start.name, "Qwen3 Coder 30B 64K");
+    assert_eq!(from_start.name, "Qwen3 Coder 30B");
     assert_eq!(
         from_start.clone().beside_picture().as_deref(),
-        Some("Qwen3 Coder 30B 64K")
+        Some("Qwen3 Coder 30B")
     );
     let dotted = ModelLabel::of(&names, &unnamed, &Theme::dark(), NoPicture::Nothing);
     assert_eq!(dotted.beside_picture(), None);

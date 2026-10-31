@@ -440,7 +440,7 @@ mod tests {
         let answered = |answer: &str, window: Option<u64>| {
             let req = SessionRequest {
                 cli_version: Some("2.0.32".to_owned()),
-                model: Some("ollama/qwen3-coder:30b-64k".to_owned()),
+                model: Some("ollama/qwen3-coder:30b".to_owned()),
                 cli_config: Some(answer.to_owned()),
                 window,
                 ..request()
@@ -453,7 +453,7 @@ mod tests {
         };
         let yours = r#"[{"type": "document", "path": "/h/.config/opencode/opencode.json",
             "info": {"providers": {"ollama": {"settings": {"baseURL": "http://gpu:11434/v1"},
-            "models": {"qwen3-coder:30b-64k": {"limit": {"context": 65536, "output": 16384}}}}}}}]"#;
+            "models": {"qwen3-coder:30b": {"limit": {"context": 65536, "output": 16384}}}}}}}]"#;
         assert_eq!(answered(yours, Some(32_768)), None);
         // Your provider at your own address: only the model goes, with the window it holds.
         let provider_only = r#"[{"type": "document", "info": {"providers": {"ollama":
@@ -462,7 +462,7 @@ mod tests {
         let ollama = &sent["provider"]["ollama"];
         assert!(ollama["options"].is_null(), "{sent}");
         assert_eq!(
-            ollama["models"]["qwen3-coder:30b-64k"]["limit"]["context"],
+            ollama["models"]["qwen3-coder:30b"]["limit"]["context"],
             65_536
         );
     }
@@ -471,7 +471,7 @@ mod tests {
     fn take_over_opens_opencodes_own_screen_on_the_session() {
         let req = SessionRequest {
             cli_version: Some("2.0.32".to_owned()),
-            model: Some("ollama/qwen3-coder:30b-64k".to_owned()),
+            model: Some("ollama/qwen3-coder:30b".to_owned()),
             ..SessionRequest::reopening("ses_abc123", Path::new("/work/task-001"))
         };
         let cmd = take_over(&req, &[], &LocalUrls::new()).unwrap();

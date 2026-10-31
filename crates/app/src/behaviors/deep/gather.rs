@@ -7,20 +7,25 @@ use std::sync::Arc;
 
 use argonauts_core::Adapter;
 use argonauts_core::base::names::ModelRef;
+use argonauts_core::behaviors::deep_map::OpenModels;
 use argonauts_core::look::display_names::DisplayNames;
-use argonauts_core::models::cheapest::cheapest_listed;
+use argonauts_core::models::cheapest::{cheapest_listed, cheapest_of};
 use argonauts_core::models::registry::ModelRegistry;
 use argonauts_core::models::registry::provider::provider_name;
 use argonauts_core::settings::Settings;
 
 use super::choose::{HostedModel, LocalModel, embeds, fit};
 use super::embed::{KeyedEndpoint, NOMIC};
+use super::open::{installed_servers, open_models, stopped};
 use crate::agents::adapters::builtin_adapters;
+use crate::controller::settings::memory_facts::Reading;
 use crate::host::memory::{ask_ollama, machine};
 use crate::setup::probe::local_servers;
 
 /// The CLIs a summarizer may run on, after the main one, in the order they're offered.
-const HOSTED_ORDER: &[&str] = &["claude-code", "codex", "antigravity-cli"];
+const HOSTED_ORDER: &[&str] = &["claude-code", "codex", "antigravity-cli", "opencode"];
+/// OpenCode lists the models of this computer's servers beside its hosted ones.
+const OPENCODE: &str = "opencode";
 
 /// What this machine offers.
 #[derive(Debug, Clone, Default)]
@@ -33,6 +38,8 @@ pub(crate) struct Gathered {
     /// An OpenAI endpoint with your key, which embeds when no Ollama answered.
     pub keyed: Option<KeyedEndpoint>,
     pub names: DisplayNames,
+    /// What Open models lists.
+    pub open: OpenModels,
 }
 
 pub(crate) async fn gather(settings: &Settings, registry: &Arc<dyn ModelRegistry>) -> Gathered {
@@ -48,6 +55,7 @@ pub(crate) async fn gather(settings: &Settings, registry: &Arc<dyn ModelRegistry
     let mut locals = Vec::new();
     let mut ollama = None;
     let mut memory = None;
+    let mut reading = None;
     for server in &servers {
         let (tags, loaded) = if server.id == "ollama" {
             match ask_ollama(&server.base_url).await {
@@ -56,6 +64,10 @@ pub(crate) async fn gather(settings: &Settings, registry: &Arc<dyn ModelRegistry
                     ollama = Some((v1(&server.base_url), has_nomic));
                     if memory.is_none() {
                         memory = machine(read.in_use()).await;
+                        reading = memory.map(|machine| Reading {
+                            machine,
+                            ollama: read.clone(),
+                        });
                     }
                     (Some(read.tags), read.loaded)
                 }
@@ -78,12 +90,20 @@ pub(crate) async fn gather(settings: &Settings, registry: &Arc<dyn ModelRegistry
             });
         }
     }
+    let installed = installed_servers(Path::new("/Applications"), crate::host::services::on_path);
+    let open = open_models(
+        &servers,
+        reading.as_ref(),
+        &registry.catalog().local,
+        stopped(&servers, &installed),
+    );
     Gathered {
         locals,
         hosted: hosted(settings, registry),
         ollama,
         keyed: KeyedEndpoint::find(settings),
         names,
+        open,
     }
 }
 
@@ -107,19 +127,32 @@ fn hosted(settings: &Settings, registry: &Arc<dyn ModelRegistry>) -> Vec<HostedM
         if !crate::host::services::installed(settings, adapter) {
             continue;
         }
-        hosted.push(HostedModel {
-            worker: cheapest(registry.as_ref(), adapter),
-        });
+        if let Some(worker) = cheapest(registry.as_ref(), adapter) {
+            hosted.push(HostedModel { worker });
+        }
     }
     hosted
 }
 
-/// The cheapest model the CLI lists, else the one its adapter names.
-fn cheapest(registry: &dyn ModelRegistry, adapter: &Arc<dyn Adapter>) -> ModelRef {
+/// The cheapest model the CLI lists, else the one its adapter names. OpenCode's is the
+/// cheapest it hosts, a free one where it lists one, since this computer's own models are
+/// Open models'; it names none of its own.
+fn cheapest(registry: &dyn ModelRegistry, adapter: &Arc<dyn Adapter>) -> Option<ModelRef> {
+    if adapter.id() == OPENCODE {
+        let hosted: Vec<ModelRef> = registry
+            .list()
+            .into_iter()
+            .filter(|entry| entry.id.agent == OPENCODE && !entry.retired)
+            .filter(|entry| entry.access != argonauts_core::models::registry::ModelAccess::Local)
+            .map(|entry| entry.id)
+            .collect();
+        return cheapest_of(&registry.catalog(), &hosted, |_| None)
+            .map(|found| ModelRef::new(OPENCODE, Some(found.model)));
+    }
     let model = cheapest_listed(registry, adapter.id())
         .map(|cheapest| cheapest.model)
         .unwrap_or_else(|| adapter.cheapest_model().0.to_owned());
-    ModelRef::new(adapter.id(), Some(model))
+    Some(ModelRef::new(adapter.id(), Some(model)))
 }
 
 /// The lowest level the CLI's cheapest model takes, which its sessions run at.
@@ -141,6 +174,8 @@ pub(crate) fn plan_and_provider(
         "claude-code" => "Claude",
         "codex" => "ChatGPT",
         "antigravity-cli" => "Google AI",
+        // OpenCode has no plan of its own: its models are paid for where they're hosted.
+        OPENCODE => "",
         other => other,
     };
     let provider = registry.provider(worker);

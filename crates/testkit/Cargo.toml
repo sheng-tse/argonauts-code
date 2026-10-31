@@ -15,6 +15,7 @@ path = "src/bin/argonauts-fake-cli/main.rs"
 anyhow.workspace = true
 argonauts-conductor.workspace = true
 argonauts-core.workspace = true
+base64.workspace = true
 portable-pty.workspace = true
 regex.workspace = true
 serde.workspace = true

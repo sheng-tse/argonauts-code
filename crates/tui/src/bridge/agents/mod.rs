@@ -187,7 +187,11 @@ impl AgentBlocks {
                     self.remove(index, cx);
                 }
                 let task = event.task_id.as_ref();
-                if writes_the_closing(started.step)
+                // A seat's work shows in its bubble and on its row under the request, so the
+                // conversation prints no agent rows for it; the run's own view keeps them.
+                if started.seat.is_some()
+                    || judges_a_council(&event.run_id, started.role, cx)
+                    || writes_the_closing(started.step)
                     || asked_inside_a_cli_workflow(
                         &event.run_id,
                         started.role,
@@ -611,7 +615,8 @@ impl AgentBlocks {
     }
 
     /// The event's session, taken up from the app's state when its start never came, as after
-    /// attaching to a long run.
+    /// attaching to a long run. A council seat's session is never taken up: its start left it
+    /// out on purpose, since its work shows in its bubble and its row under the request.
     fn find(&mut self, event: &RunEvent, cx: &mut Cx<'_>) -> Option<usize> {
         let key = event.session.as_ref()?;
         if let Some(index) = self.index(&event.run_id, key) {
@@ -620,6 +625,8 @@ impl AgentBlocks {
         let session = cx
             .state
             .session(&event.run_id, key)
+            .filter(|session| session.seat.is_none())
+            .filter(|session| !judges_a_council(&event.run_id, session.role, cx))
             .filter(|session| session.is_running() && !writes_the_closing(session.step))
             .filter(|session| {
                 let task = session.task.as_ref().or(event.task_id.as_ref());
@@ -690,6 +697,13 @@ fn writes_the_closing(step: Option<StepName>) -> bool {
 /// A reviewer or judge that a CLI's own workflow asked through Argonauts Code while it runs: its
 /// answer belongs to the workflow's row and view, not to the conversation. It is tied to no task
 /// and no step of its own.
+/// The judge that settles a talking council's question or plan for you in auto mode. The
+/// question's row says who decided, so the talk prints no agent rows for it, as for a seat; a
+/// council that prints its agents as rows keeps its judges' rows.
+fn judges_a_council(run: &RunId, role: RoleName, cx: &Cx<'_>) -> bool {
+    role == RoleName::Judge && cx.state.runs.get(run).is_some_and(|run| run.talk.is_some())
+}
+
 fn asked_inside_a_cli_workflow(
     run: &RunId,
     role: RoleName,
@@ -1617,6 +1631,172 @@ mod tests {
         ]
     }
 
+    /// A council seat's turn as a run's log records it: its start, a tool it ran, and its end
+    /// with a large count, as real CLIs report.
+    fn a_seats_turn() -> Vec<RunEvent> {
+        let on = |seq: u64, kind: serde_json::Value| -> RunEvent {
+            serde_json::from_value(json!({
+                "seq": seq,
+                "ts": "2026-10-15T00:35:00Z",
+                "run_id": "run-01",
+                "session": "talk-1",
+                "source": "argonauts-code",
+                "kind": kind,
+            }))
+            .expect("a run event")
+        };
+        vec![
+            on(
+                1,
+                json!({ "type": "session", "data": {
+                    "event": "started",
+                    "worker": "claude-code/haiku",
+                    "agent_id": "claude-code",
+                    "provider": "anthropic",
+                    "kind": "cli",
+                    "role": "draft",
+                    "step": null,
+                    "access": "read_only",
+                    "lifetime": "seat",
+                    "resumed_from": null,
+                    "follow_key": null,
+                    "label": "talk:anthropic",
+                    "seat": "seat-001",
+                }}),
+            ),
+            on(
+                2,
+                json!({ "type": "agent", "data": {
+                    "type": "tool_started",
+                    "id": "toolu-1",
+                    "name": "Read",
+                    "input": { "file_path": "src/server.ts" },
+                    "parent": null,
+                }}),
+            ),
+            on(
+                3,
+                json!({ "type": "session", "data": {
+                    "event": "ended",
+                    "cli_session": null,
+                    "exit_code": 0,
+                    "signal": null,
+                    "duration_ms": 6_000,
+                    "reason": { "why": "completed" },
+                    "spend": argonauts_core::Spend {
+                        input_tokens: 373_000,
+                        output_tokens: 900,
+                        ..argonauts_core::Spend::default()
+                    },
+                    "tool_calls": 1,
+                    "result_text": null,
+                    "structured": null,
+                    "last_message": null,
+                }}),
+            ),
+        ]
+    }
+
+    /// A seat's turn shows in its bubble and its row under the request, so the conversation
+    /// prints no agent row for it, not even once its tools run and it ends.
+    #[test]
+    fn a_seats_turn_leaves_no_agent_row() {
+        let printed = printed(a_seats_turn());
+        assert!(
+            !printed.contains("Done") && !printed.contains("Read") && !printed.contains("talk:"),
+            "{printed}"
+        );
+    }
+
+    /// The judge auto mode asks to settle a talking council's question reads files and ends
+    /// like a seat's turn, and the question's row says who decided, so the talk prints no agent
+    /// row for it either.
+    #[test]
+    fn a_councils_judge_leaves_no_agent_row() {
+        use std::path::PathBuf;
+
+        use argonauts_core::runs::events::RunEventKind;
+        use argonauts_core::runs::events::council;
+        use argonauts_core::runs::events::run::{RunLifecycle, RunMode, RunStarted};
+
+        let turn = a_seats_turn();
+        let started = RunEvent {
+            seq: 0,
+            ts: turn[0].ts,
+            run_id: turn[0].run_id.clone(),
+            task_id: None,
+            session: None,
+            source: "argonauts-code".into(),
+            kind: RunEventKind::Run(RunLifecycle::Started(Box::new(RunStarted {
+                request: "make the rate limiter per api key".into(),
+                title: "Make the rate limiter per API key".into(),
+                mode: RunMode::Crew,
+                forced: false,
+                workflow: "council".into(),
+                estimate: None,
+                captain_or_crew: None,
+                conversation_turn: None,
+                continues: None,
+                repo_root: PathBuf::from("/Users/you/code/example"),
+                base_branch: Some("main".into()),
+                base_commit: "8b41d07aa".into(),
+                uncommitted: vec![],
+                uncommitted_included: false,
+                settings_sha256: String::new(),
+                settings: serde_json::Value::Null,
+                overrides: vec![],
+                cli_versions: Default::default(),
+                version: "0.2.1".into(),
+                outside_agent: None,
+                instructions: Vec::new(),
+                required_steps: Vec::new(),
+                starts_from: None,
+            }))),
+        };
+        let seated = RunEvent {
+            seq: 1,
+            ts: turn[0].ts,
+            run_id: turn[0].run_id.clone(),
+            task_id: None,
+            session: None,
+            source: "argonauts-code".into(),
+            kind: RunEventKind::Council(council::CouncilEvent {
+                talk: argonauts_core::workflows::workflow::StepRef {
+                    workflow: argonauts_core::base::names::WorkflowId::numbered(1),
+                    phase: 1,
+                    path: vec![0],
+                },
+                kind: council::CouncilEventKind::Seated(council::Seating {
+                    seats: vec![council::Seat {
+                        id: argonauts_core::base::names::SeatId::numbered(1),
+                        model: "claude-code/haiku".parse().expect("a model"),
+                        role: council::SeatRole::Proposer,
+                        number: None,
+                    }],
+                    notes: None,
+                }),
+            }),
+        };
+        let mut events = vec![started, seated];
+        for mut event in turn {
+            if let RunEventKind::Session(
+                argonauts_core::runs::events::session::SessionEvent::Started(started),
+            ) = &mut event.kind
+            {
+                started.seat = None;
+                started.role = argonauts_core::base::names::RoleName::Judge;
+                started.label = Some("talk:1".into());
+                started.worker = "claude-code/opus".parse().expect("a model");
+            }
+            events.push(event);
+        }
+        let printed = printed(events);
+        assert!(
+            !printed.contains("Done") && !printed.contains("Read") && !printed.contains("talk:"),
+            "{printed}"
+        );
+    }
+
     /// What the conversation prints once `events` are in.
     fn printed(events: Vec<RunEvent>) -> String {
         plain_text(&printed_lines(events))
@@ -1688,7 +1868,6 @@ mod tests {
             include_str!("../../../tests/golden/transcript/writer_not_waited_for.txt"),
             include_str!("../../../tests/golden/transcript/writer_not_waited_for.html"),
             &theme,
-            &[],
         );
     }
 }

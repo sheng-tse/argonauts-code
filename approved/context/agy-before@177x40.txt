@@ -11,20 +11,20 @@ text
      Context Usage
      ⛁ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ￼￼ 3.8 Flash (Low)
      ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   gemini-3.8-flash-low
-     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~5.4k/1m tokens (1%) · from your last session
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~5.3k/1M tokens (1%) · from your last session
      ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
      ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   Estimated usage by category
-     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ agy's own prompt and tools: ~4.2k tokens (0.4%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ agy's own prompt and tools: ~4.1k tokens (0.4%)
      ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Instruction files: ~1.2k tokens (0.1%)
-     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Free space: ~994.6k (99.5%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Free space: ~1M (99.5%)
      ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
      ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   agy's own count replaces it when its first step ends.
 
  ╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
- │ ◆ context                                                                                                                       ~5.4k of 1M · from your last session   ~1%  │
+ │ ◆ context                                                                                                                       ~5.3k of 1M · from your last session   ~1%  │
  │                                                                                                                                                                             │
  │                                                                                                                                                                             │
- │ ▌ agy's own prompt and tools   ~4.2k  0.4%      ▌ Instruction files   ~1.2k  0.1%      ▌ Free space   ~995k  99.5%                                                          │
+ │ ▌ agy's own prompt and tools   ~4.1k  0.4%      ▌ Instruction files   ~1.2k  0.1%      ▌ Free space   ~1M  99.5%                                                            │
  ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
  tab · ←  →  tabs · ↓  into the list · enter opens one · esc closes
@@ -41,7 +41,7 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 .....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...jjjjjjjjj.jjjjj.jj.jjjjjjjj
 .....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...g.ccccc.ccc.cccccc.ccc.cccccc.fffff.ffffff.ffffff
 .....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...h.ccccccccccc.cccccc.fffff.ffffff.ffffff
-.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...f.cccc.cccccc.fffffff.fffffff
+.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...f.cccc.cccccc.fff.fffffff
 .....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f
 .....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...fffff.fff.fffff.ffffffff.ff.ffff.fff.fffff.ffff.fffff
 
@@ -49,27 +49,27 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 .k.l.mmmmmmm.......................................................................................................................mmmmm.ff.ff.f.ffff.ffff.ffff.fffffff..nooon.k
 .k.pqrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr.k
 .k.............................................................................................................................................................................k
-.k.g.ccccc.ccc.cccccc.ccc.ccccc...mmmmm..ffff......h.ccccccccccc.ccccc...mmmmm..ffff......s.cccc.ccccc...mmmmm..fffff..........................................................k
+.k.g.ccccc.ccc.cccccc.ccc.ccccc...mmmmm..ffff......h.ccccccccccc.ccccc...mmmmm..ffff......s.cccc.ccccc...mmm..fffff............................................................k
 .kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk
 
 .fff.f.f..f..ffff.f.f..ffff.fff.ffff.f.fffff.fffff.fff.f.fff.ffffff
 key
 . blank
-a fg=#b1b9f9  ; Code, Question, BarFill, CatMcp
+a fg=#b1b9f9  ; Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp
 b fg=#c8d3f5 bold  ; the terminal's own
 c fg=#c8d3f5  ; the terminal's own
-d bg=#b1b9f9  ; Code, Question, BarFill, CatMcp
-e fg=#14161f bg=#b1b9f9 bold  ; BadgeText, on Code, on Question, on BarFill, on CatMcp
-f fg=#999999  ; Dim, ModeSupervised, SyntaxComment
+d bg=#fb923c
+e fg=#14161f bg=#fb923c bold  ; BadgeText
+f fg=#999999  ; Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment
 g fg=#888888  ; Rule
 h fg=#d77757
 i logo=antigravity
-j fg=#999999 italic  ; Dim, ModeSupervised, SyntaxComment
+j fg=#999999 italic  ; Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment
 k fg=#4f5468  ; ModBorder
 l fg=#e6a23c  ; Accent, CatBrief
 m fg=#ffffff bold  ; Bright
-n bg=#4eba65  ; Success, CatAgents
-o fg=#14161f bg=#4eba65 bold  ; BadgeText, on Success, on CatAgents
+n bg=#4eba65  ; Success, CatAgents, Success, CatAgents
+o fg=#14161f bg=#4eba65 bold  ; BadgeText, on Success, on CatAgents, on Success, on CatAgents
 p bg=#888888  ; Rule
 q bg=#d77757
 r bg=#3a3f55  ; CatFree

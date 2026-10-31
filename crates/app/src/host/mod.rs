@@ -24,6 +24,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use anyhow::{Context as _, anyhow, bail};
+use argonauts_core::base::clock;
 use argonauts_core::base::layout;
 use argonauts_core::base::paths::write_private_file;
 use argonauts_core::look::display_names::DisplayNames;
@@ -36,8 +37,8 @@ use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::runs::hidden_git::CLEARED_STALE_LOCK;
 use argonauts_core::runs::journal::{Journal, RunLock, read_all, read_since_snapshot};
 use argonauts_core::settings::Settings;
+use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::{Note, NoteLevel, Paths, RunId};
-use time::OffsetDateTime;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
@@ -550,6 +551,8 @@ impl Host {
                 services: services.clone(),
                 shutdown: shutdown.clone(),
                 reopen: std::mem::take(&mut reopen),
+                starts_supervised: self.start.request.approval_mode
+                    == Some(ApprovalMode::Supervised),
             };
             let engine = (self.options.engine)(&self.settings, mode);
             let running = tokio::spawn(engine.run(context));
@@ -647,7 +650,7 @@ impl Host {
                 &self.env.repo_root,
                 &self.run,
                 &back.events,
-                OffsetDateTime::now_utc(),
+                clock::now_utc(),
             ),
             Err(err) => tracing::warn!("couldn't add run {} to the usage ledger: {err}", self.run),
         }
@@ -669,7 +672,7 @@ impl Host {
             &self.env.repo_root,
             &self.env.state_dir,
             services.policy.as_ref(),
-            OffsetDateTime::now_utc(),
+            clock::now_utc(),
         );
         match notices {
             Ok(notices) => {
@@ -870,7 +873,7 @@ mod tests {
                 interactive: true,
                 replay: false,
                 repo_root: env.repo_root.clone(),
-                created: OffsetDateTime::now_utc(),
+                created: clock::now_utc(),
             };
             files::write_start(&run_dir, &start).unwrap();
             let settings = SettingsRecord {
@@ -1247,7 +1250,7 @@ mod tests {
         use argonauts_testkit::{FakeKind, FakeModelServer};
 
         let test = TestRun::new();
-        let ollama = FakeModelServer::start(FakeKind::Ollama, &["qwen3-coder:30b-64k"]).unwrap();
+        let ollama = FakeModelServer::start(FakeKind::Ollama, &["sample-coder:30b-64k"]).unwrap();
         ollama.set_load(25_311_000_000, 65_536);
         let server = Server {
             endpoint: "ollama".to_owned(),
@@ -1257,10 +1260,10 @@ mod tests {
         };
         let memory = ServerMemory::new(&test.paths);
         memory
-            .hold(&server, "qwen3-coder:30b-64k", &Holder::run(&test.run))
+            .hold(&server, "sample-coder:30b-64k", &Holder::run(&test.run))
             .await;
-        memory.load(&server, "qwen3-coder:30b-64k").await;
-        memory.touch(&server, "qwen3-coder:30b-64k").await;
+        memory.load(&server, "sample-coder:30b-64k").await;
+        memory.touch(&server, "sample-coder:30b-64k").await;
 
         let exit = test
             .host(test.options(Duration::from_secs(5), finish(RunOutcome::Merged)))
@@ -1277,7 +1280,7 @@ mod tests {
             .collect();
         assert!(
             said.iter()
-                .any(|text| text == "Freed Qwen3 Coder 30B 64K from Ollama (25 GB of RAM)"),
+                .any(|text| text == "Freed Sample Coder 30B 64K from Ollama (25 GB of RAM)"),
             "{said:?}"
         );
     }

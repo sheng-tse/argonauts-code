@@ -12,24 +12,28 @@ use serde_json::{Value, json};
 use tokio::sync::oneshot;
 
 use argonauts_core::TaskId;
-use argonauts_core::agents::session_runner::SessionControl;
 use argonauts_core::agents::session_runner::{Access, SessionSpec};
+use argonauts_core::agents::session_runner::{RunnerEvent, SessionControl};
 use argonauts_core::base::names::{MessageId, SeatId, WorkflowId};
 use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::models::meter::LimitDimension;
 use argonauts_core::runs::engine::EngineCommand;
 use argonauts_core::runs::engine::EngineExit;
+use argonauts_core::runs::event::AgentEvent;
 use argonauts_core::runs::events::approval::{
     AnswerAction, ApprovalEvent, ApprovalKind, ApprovalPacket, CouncilQuestion,
 };
 use argonauts_core::runs::events::council::{
     CouncilAction, CouncilEvent, CouncilEventKind, CouncilMessage, FloorReason, HeldChoice,
-    HeldWhy, MessageKind, PointState, Seat, SeatRole, Seating, Speaker, Stance, TalkStop, TextPart,
+    HeldWhy, MessageKind, Missed, MissedTurn, PointState, Seat, SeatRole, Seating, Speaker, Stance,
+    TalkStop, TextPart,
 };
 use argonauts_core::runs::events::plan::PlanEvent;
 use argonauts_core::runs::events::run::RunMode;
-use argonauts_core::runs::events::session::SessionEvent;
+use argonauts_core::runs::events::session::{EndReason, SessionEvent};
 use argonauts_core::runs::events::task::{TaskEvent, TaskKind, TaskLimit, TaskSpec};
 use argonauts_core::runs::events::{RunEvent, RunEventKind};
+use argonauts_core::safety::macos_folders::{Folder, FolderBlocked};
 use argonauts_core::settings::council::{CouncilSeat, WhenYouWrite};
 use argonauts_core::workflows::steps::StepName;
 use argonauts_core::workflows::workflow::StepRef;
@@ -273,6 +277,282 @@ fn open_council_question(events: &[RunEvent]) -> Option<()> {
     (!open.is_empty()).then_some(())
 }
 
+fn misses(events: &[RunEvent]) -> Vec<Missed> {
+    council_events(events)
+        .into_iter()
+        .filter_map(|kind| match kind {
+            CouncilEventKind::Missed(missed) => Some(missed),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A seat whose reaction runs past its 2 minutes sits that turn out, and the talk goes on to
+/// agreement rather than ending the run.
+#[tokio::test]
+async fn a_seat_that_runs_out_of_time_sits_that_turn_out() -> anyhow::Result<()> {
+    let slow = Arc::new(AtomicBool::new(true));
+    let (crew, _seats) = talking_crew(move |worker, asked, _| {
+        let second = worker == SEATS[1].0;
+        match asked {
+            Asked::Points => points(),
+            Asked::Tapback if second && slow.swap(false, Ordering::SeqCst) => {
+                FakeSession::ended(EndReason::LimitHit {
+                    dimension: LimitDimension::Minutes,
+                })
+            }
+            Asked::Tapback | Asked::Message => turn(
+                "Agreed.",
+                json!([stance(1, "agree", None), stance(2, "agree", None)]),
+                json!({}),
+            ),
+            Asked::Plan => plan(),
+            _ => turn("My answer.", json!([]), json!({})),
+        }
+    })?;
+    let (exit, events) = drive(&crew, None).await?;
+    assert!(matches!(exit, EngineExit::Finished(_)), "{exit:?}");
+    let missed = misses(&events);
+    assert_eq!(missed.len(), 1, "{missed:?}");
+    assert_eq!(missed[0].seat, SeatId::numbered(2));
+    assert!(matches!(missed[0].turn, MissedTurn::Reaction { .. }));
+    assert_eq!(missed[0].limit_secs, Some(120));
+    assert!(!missed[0].for_good);
+    assert!(
+        council_events(&events)
+            .iter()
+            .any(|kind| matches!(kind, CouncilEventKind::Agreed { .. })),
+        "the talk went on to agree"
+    );
+    Ok(())
+}
+
+/// A seat whose CLI says macOS keeps it out of your Downloads folder gets the two lines that
+/// say where to let it in, once in the run however often it says so, and the talk goes on.
+#[tokio::test]
+async fn a_seat_macos_keeps_out_of_a_folder_is_told_once_where_to_let_it_in() -> anyhow::Result<()>
+{
+    // Read under the run's own environment, which other tests change while they run.
+    let blocked = move |session: FakeSession| {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let notes = format!("{home}/Downloads/notes");
+        [
+            AgentEvent::ToolStarted {
+                id: "list".to_owned(),
+                name: "list_dir".to_owned(),
+                input: json!({ "DirectoryPath": notes }),
+                parent: None,
+            },
+            AgentEvent::ToolFinished {
+                id: "list".to_owned(),
+                ok: false,
+                output: Some(format!(
+                    "failed to read directory {notes}. macOS privacy settings are blocking \
+                     Antigravity"
+                )),
+                parent: None,
+            },
+        ]
+        .into_iter()
+        .fold(session, |session, event| {
+            session.with_event(RunnerEvent::Agent(event))
+        })
+    };
+    let (crew, _seats) = talking_crew(move |worker, asked, _| {
+        let second = worker == SEATS[1].0;
+        let session = match asked {
+            Asked::Points => points(),
+            Asked::Tapback | Asked::Message => turn(
+                "Agreed.",
+                json!([stance(1, "agree", None), stance(2, "agree", None)]),
+                json!({}),
+            ),
+            Asked::Plan => plan(),
+            _ => turn("My answer.", json!([]), json!({})),
+        };
+        if second { blocked(session) } else { session }
+    })?;
+    let _env = crew.repo.env_guard();
+    let (exit, events) = drive(&crew, None).await?;
+    assert!(matches!(exit, EngineExit::Finished(_)), "{exit:?}");
+    let told: Vec<(SeatId, FolderBlocked)> = council_events(&events)
+        .into_iter()
+        .filter_map(|kind| match kind {
+            CouncilEventKind::FolderBlocked { seat, blocked, .. } => Some((seat, blocked)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        told,
+        [(
+            SeatId::numbered(2),
+            FolderBlocked {
+                folder: Folder::Downloads,
+                app: "Antigravity".to_owned(),
+            }
+        )]
+    );
+    Ok(())
+}
+
+/// A seat that fails twice sits out the rest of the talk, and the seats still in agree without
+/// it.
+#[tokio::test]
+async fn a_seat_that_fails_twice_sits_out_and_the_rest_agree() -> anyhow::Result<()> {
+    let (crew, seats) = talking_crew(move |worker, asked, _| {
+        let second = worker == SEATS[1].0;
+        match asked {
+            Asked::Points => points(),
+            Asked::Tapback | Asked::Message if second => FakeSession::ended(EndReason::Crashed {
+                message: "segfault".to_owned(),
+            }),
+            Asked::Tapback | Asked::Message => turn(
+                "Agreed.",
+                json!([stance(1, "agree", None), stance(2, "agree", None)]),
+                json!({}),
+            ),
+            Asked::Plan => plan(),
+            _ => turn("My answer.", json!([]), json!({})),
+        }
+    })?;
+    let (exit, events) = drive(&crew, None).await?;
+    let missed = misses(&events);
+    assert!(
+        missed
+            .iter()
+            .all(|missed| missed.seat == SeatId::numbered(2)),
+        "{missed:?}"
+    );
+    assert_eq!(
+        missed
+            .iter()
+            .map(|missed| missed.for_good)
+            .collect::<Vec<_>>(),
+        [false, true],
+        "{missed:?}"
+    );
+    assert!(
+        council_events(&events)
+            .iter()
+            .any(|kind| matches!(kind, CouncilEventKind::Agreed { .. })),
+        "the seat still in agreed: {exit:?}"
+    );
+    // The plan says who sat out and why, and gives that seat no task.
+    let plans: Vec<String> = seats
+        .iter()
+        .flat_map(|fake| fake.specs())
+        .filter(|spec| asked(spec) == Some(Asked::Plan))
+        .map(|spec| text(&spec))
+        .collect();
+    assert!(!plans.is_empty(), "the note keeper wrote a plan");
+    assert!(
+        plans.iter().all(|plan| {
+            plan.contains("Seats that sat out the rest of the talk:")
+                && plan.contains(", after missing 2 turns")
+                && plan.contains("Give them no task")
+        }),
+        "{plans:?}"
+    );
+    Ok(())
+}
+
+/// A crew whose second seat's first reaction ends with `reason`, then answers as the others do.
+fn ending_once(reason: EndReason) -> anyhow::Result<support::Crew> {
+    let once = Arc::new(AtomicBool::new(true));
+    let (crew, _seats) = talking_crew(move |worker, asked, _| {
+        let second = worker == SEATS[1].0;
+        match asked {
+            Asked::Points => points(),
+            Asked::Tapback if second && once.swap(false, Ordering::SeqCst) => {
+                FakeSession::ended(reason.clone())
+            }
+            Asked::Tapback | Asked::Message => turn(
+                "Agreed.",
+                json!([stance(1, "agree", None), stance(2, "agree", None)]),
+                json!({}),
+            ),
+            Asked::Plan => plan(),
+            _ => turn("My answer.", json!([]), json!({})),
+        }
+    })?;
+    Ok(crew)
+}
+
+/// A seat's session that a pause ended is the run's pause, never a turn the seat missed: the
+/// step comes back and the seat reacts.
+#[tokio::test]
+async fn a_paused_seat_pauses_the_run_and_misses_no_turn() -> anyhow::Result<()> {
+    let crew = ending_once(EndReason::Paused)?;
+    let (exit, events) = drive(&crew, None).await?;
+    assert_eq!(misses(&events), [], "{exit:?}");
+    Ok(())
+}
+
+/// A seat's session you stopped goes back to the run as it would for any other step, and the
+/// talk doesn't go on without it.
+#[tokio::test]
+async fn a_stopped_seat_misses_no_turn_and_the_talk_doesnt_go_on() -> anyhow::Result<()> {
+    let crew = ending_once(EndReason::Stopped)?;
+    let (exit, events) = drive(&crew, None).await?;
+    assert_eq!(misses(&events), [], "{exit:?}");
+    assert!(
+        !council_events(&events)
+            .iter()
+            .any(|kind| matches!(kind, CouncilEventKind::Agreed { .. })),
+        "{exit:?}"
+    );
+    Ok(())
+}
+
+/// A note keeper whose plan turn fails twice sits out, and the next seat still in writes the
+/// plan, so the council goes on to your plan approval instead of ending.
+#[tokio::test]
+async fn a_keeper_that_misses_the_plan_hands_it_to_the_next_seat() -> anyhow::Result<()> {
+    let keeper = Arc::new(std::sync::Mutex::new(None::<String>));
+    let (crew, _seats) = talking_crew(move |worker, asked, spec| match asked {
+        Asked::Points => points(),
+        _ if text(spec).contains("Every point is settled")
+            && *keeper
+                .lock()
+                .unwrap()
+                .get_or_insert_with(|| worker.to_owned())
+                == worker =>
+        {
+            FakeSession::ended(EndReason::Crashed {
+                message: "segfault".to_owned(),
+            })
+        }
+        _ if text(spec).contains("Every point is settled") => plan(),
+        Asked::Tapback | Asked::Message => turn(
+            "Agreed.",
+            json!([stance(1, "agree", None), stance(2, "agree", None)]),
+            json!({}),
+        ),
+        _ => turn("My answer.", json!([]), json!({})),
+    })?;
+    let (exit, events) = drive(&crew, None).await?;
+    assert!(matches!(exit, EngineExit::Finished(_)), "{exit:?}");
+    let missed = misses(&events);
+    assert_eq!(
+        missed
+            .iter()
+            .map(|missed| (missed.turn.clone(), missed.for_good))
+            .collect::<Vec<_>>(),
+        [(MissedTurn::Plan, false), (MissedTurn::Plan, true)],
+        "{missed:?}"
+    );
+    let keeper = missed[0].seat.clone();
+    let writers: Vec<SeatId> = council_events(&events)
+        .into_iter()
+        .filter_map(|kind| match kind {
+            CouncilEventKind::Writing { seat, .. } => Some(seat),
+            _ => None,
+        })
+        .collect();
+    assert_ne!(writers.last(), Some(&keeper), "{writers:?}");
+    Ok(())
+}
+
 /// The seats answer alone, the note keeper lists two points, the second seat objects to one,
 /// and the first rewords it until both agree. The plan goes on to your approval, and the run
 /// builds it.
@@ -315,6 +595,17 @@ async fn the_seats_talk_until_every_seat_agrees_on_every_point() -> anyhow::Resu
     })?;
     let (exit, events) = drive(&crew, None).await?;
     assert!(matches!(exit, EngineExit::Finished(_)), "{exit:?}");
+    // Nothing asks you before the talk: the plan is your first stop.
+    let first_asked = events.iter().find_map(|event| match &event.kind {
+        RunEventKind::Approval(ApprovalEvent::Opened(opened)) => Some(opened.kind),
+        _ => None,
+    });
+    assert_eq!(
+        first_asked,
+        Some(ApprovalKind::Plan),
+        "{:?}",
+        support::names(&events)
+    );
 
     let council = council_events(&events);
     assert!(!council.is_empty(), "{:?}", support::names(&events));
@@ -323,6 +614,28 @@ async fn the_seats_talk_until_every_seat_agrees_on_every_point() -> anyhow::Resu
     };
     assert_eq!(seating.seats.len(), 2);
     assert!(seating.notes.is_some());
+    // Your request is the talk's first message, and each seat reads it as it starts writing.
+    let request = council
+        .iter()
+        .find_map(|kind| match kind {
+            CouncilEventKind::Message(message) => Some(message),
+            _ => None,
+        })
+        .expect("a message");
+    assert_eq!(request.from, Speaker::You, "{council:?}");
+    let first_writing = council
+        .iter()
+        .position(|kind| matches!(kind, CouncilEventKind::Writing { .. }))
+        .expect("a seat writing");
+    let readers: Vec<&SeatId> = council[..first_writing]
+        .iter()
+        .filter_map(|kind| match kind {
+            CouncilEventKind::Read { message, seat } if *message == request.id => Some(seat),
+            _ => None,
+        })
+        .collect();
+    let seated: Vec<&SeatId> = seating.seats.iter().map(|seat| &seat.id).collect();
+    assert_eq!(readers, seated);
 
     let firsts: Vec<&str> = council
         .iter()
@@ -618,6 +931,74 @@ async fn the_seats_talk_until_every_seat_agrees_on_every_point() -> anyhow::Resu
 
 /// A way your request names for a task sits as a point of yours from the start, before any
 /// seat answers, and the note keeper's list goes on after it.
+/// Every session a seat starts runs the seat's model, whatever its move and whether it carries
+/// on the seat's CLI session: a Claude Code seat set to Haiku never falls to its CLI's default.
+#[tokio::test]
+async fn every_session_of_a_seat_runs_the_seats_model() -> anyhow::Result<()> {
+    const ALIASED: [(&str, &str); 2] = [
+        ("claude-code/haiku", "anthropic"),
+        ("codex/gpt-5.6-luna", "openai"),
+    ];
+    /// Each ask a seat got: its worker, its move, the model it ran and whether it carried on.
+    type Asks = Vec<(String, Asked, String, bool)>;
+    let seen: Arc<std::sync::Mutex<Asks>> = Arc::default();
+    let log = Arc::clone(&seen);
+    let (crew, _seats) = seated_crew(&ALIASED, move |worker, asked, spec| {
+        if let Ok(mut seen) = log.lock() {
+            let resumed = spec.resume.is_some();
+            seen.push((worker.to_owned(), asked, spec.model.to_string(), resumed));
+        }
+        let first = worker == ALIASED[0].0;
+        match asked {
+            Asked::First => turn("A token bucket per key, in Redis.", json!([]), json!({})),
+            Asked::Points => points(),
+            Asked::Tapback if first => turn(
+                "",
+                json!([stance(1, "agree", None), stance(2, "agree", None)]),
+                json!({}),
+            ),
+            Asked::Tapback => turn(
+                "",
+                json!([stance(1, "agree", None), stance(2, "object", None)]),
+                json!({}),
+            ),
+            Asked::Message => turn(
+                "Redis is already here for sessions.",
+                json!([stance(1, "agree", None), stance(2, "agree", None)]),
+                json!({}),
+            ),
+            Asked::Plan => plan(),
+            Asked::Private => turn("", json!([]), json!({})),
+        }
+    })?;
+    let (exit, _) = drive(&crew, None).await?;
+    assert!(matches!(exit, EngineExit::Finished(_)), "{exit:?}");
+
+    let seen = seen
+        .lock()
+        .map_err(|_| anyhow::anyhow!("the log of asks"))?;
+    for (worker, asked, model, _) in seen.iter() {
+        assert_eq!(model, worker, "{asked:?} ran another model than its seat's");
+    }
+    for asked in [
+        Asked::First,
+        Asked::Points,
+        Asked::Tapback,
+        Asked::Message,
+        Asked::Plan,
+    ] {
+        assert!(
+            seen.iter().any(|(_, seen, _, _)| *seen == asked),
+            "no {asked:?} session: {seen:?}"
+        );
+    }
+    assert!(
+        seen.iter().any(|(_, _, _, resumed)| *resumed),
+        "no session carried on a seat's own: {seen:?}"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_way_your_request_names_is_your_point_from_the_start() -> anyhow::Result<()> {
     let (crew, _seats) = talking_crew(|_, asked, _| {
@@ -1327,7 +1708,10 @@ async fn a_talk_that_moves_nobody_stops_and_you_settle_what_is_open() -> anyhow:
         .iter()
         .filter(|kind| matches!(kind, CouncilEventKind::Message(m) if m.from == Speaker::You))
         .count();
-    assert_eq!(yours, 0);
+    assert_eq!(
+        yours, 1,
+        "your request opens the talk, and you wrote nothing after it"
+    );
     Ok(())
 }
 
@@ -1505,13 +1889,21 @@ async fn eventually<T>(what: &str, mut found: impl FnMut() -> Option<T>) -> anyh
 fn holding_crew(
     then: impl Fn(&str, Asked, &SessionSpec) -> FakeSession + Send + Sync + Clone + 'static,
 ) -> anyhow::Result<(support::Crew, Vec<Arc<FakeRunner>>)> {
+    objecting_crew(SEATS[0].0, then)
+}
+
+/// [`holding_crew`], with `objector`'s seat the one that objects and writes the held message.
+fn objecting_crew(
+    objector: &'static str,
+    then: impl Fn(&str, Asked, &SessionSpec) -> FakeSession + Send + Sync + Clone + 'static,
+) -> anyhow::Result<(support::Crew, Vec<Arc<FakeRunner>>)> {
     let holding = Arc::new(AtomicBool::new(true));
     talking_crew(move |worker, asked, spec| {
-        let first = worker == SEATS[0].0;
+        let objects = worker == objector;
         match asked {
             Asked::First => turn("My answer.", json!([]), json!({})),
             Asked::Points => points(),
-            Asked::Tapback if first => turn(
+            Asked::Tapback if objects => turn(
                 "",
                 json!([stance(1, "agree", None), stance(2, "object", None)]),
                 json!({}),
@@ -1521,7 +1913,7 @@ fn holding_crew(
                 json!([stance(1, "agree", None), stance(2, "agree", None)]),
                 json!({}),
             ),
-            Asked::Message if first && holding.swap(false, Ordering::SeqCst) => {
+            Asked::Message if objects && holding.swap(false, Ordering::SeqCst) => {
                 FakeSession::until_stopped(Vec::new())
             }
             _ => then(worker, asked, spec),
@@ -1529,21 +1921,23 @@ fn holding_crew(
     })
 }
 
-/// Starts the run, approves its goal, and goes on in a task of its own until seat one is
-/// writing its held message.
+/// Starts the run and goes on in a task of its own until seat one is writing its held message.
 async fn while_seat_one_writes(
     crew: &support::Crew,
     seats: &[Arc<FakeRunner>],
 ) -> anyhow::Result<support::Spawned> {
-    let first = crew
-        .start(RunMode::Crew, "add per-key rate limiting to the public API")
-        .await?;
-    let (approve, _reply) =
-        support::recommended(&first.events).ok_or_else(|| anyhow::anyhow!("no goal question"))?;
-    let run = crew.resume_spawned(first.events, vec![approve]).await?;
-    eventually("seat one writing", || {
-        seats[0]
-            .specs()
+    while_writing(crew, &seats[0]).await
+}
+
+/// Starts the run and goes on in a task of its own until `seat` is writing its held message. A
+/// council asks nothing before its talk, so that is soon.
+async fn while_writing(
+    crew: &support::Crew,
+    seat: &FakeRunner,
+) -> anyhow::Result<support::Spawned> {
+    let run = crew.spawn(RunMode::Crew, "add per-key rate limiting to the public API")?;
+    eventually("the seat writing", || {
+        seat.specs()
             .iter()
             .any(|spec| asked(spec) == Some(Asked::Message))
             .then_some(())
@@ -2002,15 +2396,18 @@ async fn a_private_message_to_the_writing_seat_has_it_write_again() -> anyhow::R
 #[tokio::test]
 async fn a_plan_that_repeats_your_private_words_waits_for_you() -> anyhow::Result<()> {
     const PRIVATE: &str = "Between us, the billing team wants the window kept until March.";
-    let (mut crew, seats) = holding_crew(|worker, asked, spec| {
-        let first = worker == SEATS[0].0;
+    // The note keeper is drawn from the run and the talk's place, and in this run it is seat
+    // two, so seat two is the one that objects and writes.
+    let keeper = SeatId::numbered(2);
+    let (mut crew, seats) = objecting_crew(SEATS[1].0, |worker, asked, spec| {
+        let objects = worker == SEATS[1].0;
         match asked {
             Asked::Private => turn(
                 "Understood, I'll keep that to myself.",
                 json!([]),
                 json!({}),
             ),
-            Asked::Message if first => turn(
+            Asked::Message if objects => turn(
                 "Then a bucket.",
                 json!([stance(2, "agree", Some("three nodes share one count"))]),
                 json!({}),
@@ -2039,9 +2436,20 @@ async fn a_plan_that_repeats_your_private_words_waits_for_you() -> anyhow::Resul
     })?;
     crew.settings.council.when_you_write = WhenYouWrite::Restart;
     let _env = crew.repo.env_guard();
-    let run = while_seat_one_writes(&crew, &seats).await?;
+    let run = while_writing(&crew, &seats[1]).await?;
+    let seated = council_events(&run.sink.events())
+        .into_iter()
+        .find_map(|kind| match kind {
+            CouncilEventKind::Seated(seating) => seating.notes,
+            _ => None,
+        });
+    assert_eq!(
+        seated.as_ref(),
+        Some(&keeper),
+        "the seat that keeps the notes"
+    );
     let private = CouncilAction::Private {
-        seat: SeatId::numbered(1),
+        seat: keeper.clone(),
         text: PRIVATE.to_owned(),
     };
     // The keeper is writing, so your private message stops it and it writes again with yours.
@@ -2077,8 +2485,8 @@ async fn a_plan_that_repeats_your_private_words_waits_for_you() -> anyhow::Resul
         unreachable!()
     };
     assert!(
-        matches!(&packet.about, CouncilQuestion::HeldPlan { keeper, wrote_at: Some(_), .. }
-            if *keeper == SeatId::numbered(1)),
+        matches!(&packet.about, CouncilQuestion::HeldPlan { keeper: held, wrote_at: Some(_), .. }
+            if *held == keeper),
         "{:?}",
         packet.about
     );
@@ -2119,7 +2527,7 @@ async fn a_plan_that_repeats_your_private_words_waits_for_you() -> anyhow::Resul
         ["A token bucket per key, its counters in Redis."],
         "the plan sealed is the one written again"
     );
-    let asked_again = seats[0]
+    let asked_again = seats[1]
         .specs()
         .iter()
         .any(|spec| asked(spec) == Some(Asked::Plan) && text(spec).contains("Your plan repeated"));

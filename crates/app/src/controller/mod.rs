@@ -770,6 +770,7 @@ impl Controller {
             }
             UiCommand::DeepStart { start } => crate::behaviors::deep::tab::start(ctx, start),
             UiCommand::DeepStop => crate::behaviors::deep::tab::stop(ctx),
+            UiCommand::DeepUpdate => crate::behaviors::deep::tab::update(ctx),
         }
     }
 
@@ -1227,7 +1228,7 @@ impl Controller {
                 settings::command(ctx, &mut self.settings, area_command(area), None).await
             }
             ViewRequest::Issues => crate::issue::list(ctx),
-            ViewRequest::DeepOffer => crate::behaviors::deep::tab::offer(ctx),
+            ViewRequest::DeepOffer { start } => crate::behaviors::deep::tab::offer(ctx, start),
             ViewRequest::SeatKey {
                 run,
                 talk,
@@ -1399,10 +1400,13 @@ impl Controller {
             }
             Internal::ModelsRefreshed => {
                 clis::names::send(&mut self.ctx);
+                // A list that came in may give the main session's window; sent only if it did.
+                self.tell_main_start().await;
                 settings::models_refreshed(&self.ctx, &mut self.settings)
             }
             Internal::ModelSourceListed { cli } => {
                 clis::names::send(&mut self.ctx);
+                self.tell_main_start().await;
                 settings::model_source_listed(&self.ctx, &mut self.settings, &cli)
             }
             Internal::ModelsTick => settings::models_tick(&self.ctx, &mut self.settings),

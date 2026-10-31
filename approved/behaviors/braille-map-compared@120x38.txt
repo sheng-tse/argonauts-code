@@ -1,0 +1,118 @@
+Behaviors on a terminal without pictures, Haiku 5.5 compared: the braille map in 0.1.0's picture look
+screen 120x38
+at 6,0
+size 120x32
+terminal fg=#c8d3f5 bg=#222436
+text
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats     All time  Last 7 days  Last 30 days
+
+  Overview    Models    Behaviors             By model    By CLI    By role    By workflow    By project    By outcome
+
+         ⣀ ⣤⣀⣴⣦⣄⣀⣀⡀⢀⣤     ⢠⣤⣀⣠⣄⣰⣆ ⣠⣄⣀                  ⢀⡀           Comparing Haiku 5.5                        Actions
+       ⢠⡄⠿⢠⡝⠛⢿⣿⣽⣯⠹⠇⠾⠏     ⠈⠙⣿⠿⠿⢣⡿⣿⣿⣿⣿⡆          ⢠⣴⣦⣤⣄⣠⡄⠈⠁           With the other models
+       ⠈⠁    ⠘⠛⠿⠿⠃     ⣤⣶⣿⣷⣾⣷⣆ ⢀⡀⣤⠈⠙⠃           ⠛⠿⣿⢿⣿⠛ ⢠⣴⣦⣶⣦⣀       red: Haiku 5.5 does this more
+         ⠛             ⠉⠙⠛⠻⠟⠻⠏ ⠘⠳⠿⠆                ⠈⠁  ⠘⢻⡿⠿⠟⠛       blue: Haiku 5.5 does this less
+         ⣤⣤⣄⡀                   ⢠⡄⣤⢀⣀⢠⡄
+       ⠘⣿⠿⠛⠙⠃  ⢀⡀            ⢀⣾⣷⣾⡷⠉⠸⠿⠎⠁                ⠛     ⣤⡄     ● Haiku 5.5                                    636
+               ⠘⠃            ⠈⠉⠘⣃⣀          ⢀⣤⣄⣀⣀⡀        ⢠⣄⣶⣬⠁⣤    ○ GPT 6.1 Sol                                   74
+                           ⣤⢠⣤⣤⣰⣿⡟⠷⢻⣿⢿⣿⠶⠆  ⠸⢿⣿⣿⣿⣿⡿⣶       ⠈⠉⠛⠉ ⠉    ○ GPT 6 Luna                                    64
+   ⢰⣦⣿⣿⣿⣤⢶⡄    ⢠⡄⢸⣿⣷⡆      ⠉⠸⠟⠛⠿⢿⣟⣃⡈⠁   ⢰⡿⣾⠇⢠⡝⠋⠉⠉   ⢠⣾⣿⣿⣿⣿⣾⣷⣀⡀      ○ Opus 5.5                                      53
+   ⢠⣬⣭⣉⢀⡉      ⠈⠁ ⠈⠉⠁          ⣾⣿⣿⣿⣿⡆         ⠛     ⠈⠛⠿⠿⠟⠻⢿⡿⢿⣿⣶⠿⣤   ○ Qwen3 Coder 30B                               45
+    ⠹⣿⠻⠏⠿               ⣶⣤⣤⡄   ⠈⣉⠉⠉⠉⣥⣿⣴⣦⣶⣶        ⣿⣿⣶     ⠈⠁⣤⣶⣭⣤⠉   ○ GPT 6 Astra                                   36
+                       ⠛⠛⠋⠁   ⠰⠿⠟   ⠙⣿⠛⠉          ⠈⠁⠛ ⠿   ⠸⠇⠛⠙⠛⠋    ↓  5 more below
+
+  Point at a dot to see the action under it
+
+
+  Label map · 961 actions in 41 runs and 27 conversations across 6 projects
+  Distinctive to Haiku 5.5 · 636 actions; the others 325
+    Wrote a workflow script                                13   (2.0%)   others   0   (0.0%)
+    Gave a structured answer that didn't fit               20   (3.1%)   others   1   (0.3%)
+    Used an MCP tool                                       16   (2.5%)   others   1   (0.3%)
+    Asked another agent to review or judge                  8   (1.3%)   others   0   (0.0%)
+    Edited a test file: added tests                        12   (1.9%)   others   1   (0.3%)
+    Wrote a doc                                            99  (15.6%)   others  16   (4.9%)
+  ↓  20 more below
+
+   r to cycle dates · s this project · d summaries · tab grouping · h  l  compare · j  the list · esc back
+paint
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+.bbbbbbbb..cddddddddc...eeeeee....eeeeee....eeeee....eeeeeee....eeeeee....eeeee.....fff.ffff..eeee.e.eeee..eeee.ee.eeee
+
+..eeeeeeee....eeeeee...cdddddddddc...........ghhghhhhhg...ee.eee....ee.eeee....ee.eeeeeeee....ee.eeeeeee....ee.eeeeeee
+
+..iiiiiiijijkjjkkkkllmmmmijjkjkjjijkjmmmmmmmmmmiiiiiiiikkiiiiiiiii..nnnnnnnnn.bbbbb.bbb........................nnnnnnn
+..iiiiijjjojjjjjjjjllmmmmmllljjojjjjjjmmmmmmmmmikojpjookkiiiiiiiii..nnnn.nnn.nnnnn.nnnnnn
+..iiiiijjiiiijjjjqmmmmrsssssstrsslluqmmmmmmmmmmikjjjjjikjjjjjiiiii..nnnn.eeeee.eee.eeee.eeee.eeee
+..iiiiiiipiimmmmmmmmrrrsvvswvtrsxvvrrrrrrrrrmmmmmmijjiijjjjjjiiiii..nnnnn.eeeee.eee.eeee.eeee.eeee
+..iiiiiiijjjjiimmmmmmmmrrrrrrrrrssswtssrrrrrmmmmmmmmmiiiiiiiiiiiii
+..iiiiiojjjjjiijjiiimmmmmmmmmqlllullqllmmmmiiimmmmmmmmmymmmmijjiii..z.eeeee.eee....................................nnn
+..iiiiiiiiiiiiijjiiiiiiiiiimmqlullmmiiiiAAABCCCCCCAAiiiiiijpojjpii..D.nnn.nnn.nnn...................................nn
+..iiiiiiiiiiiiiiiiiiiiiiiiijjjjjjjpjjojEEBBFFGGGHHHIIIJJJBCCKjipii..D.nnn.n.nnnn....................................nn
+..ijjLjLjkkiiiijjjjjjiiiAAAMMCCCCNMMjiiijjjENCFFGOOPQQQQQHHHGFBBAi..z.nnnn.nnn......................................nn
+..ikjjjojiiiiiijjijjjiiiiAAABBBCFFFCCBAAiiiiiipABBBJGGHRHHHHGGFFCB..S.nnnnn.nnnnn.nnn...............................nn
+..iikjjjjiiiiiiiiiiiiiiijjkkiiAMCCCCCCCCMMAiiiiiiijMMABBBBCCCCCCCA..D.nnn.n.nnnnn...................................nn
+..iiiiiiiiiiiiiiiiiiiiipjjjiiipjjiiijjjjiiiiiiiiiijjjijiiijjMMMjii..n..n.nnnn.nnnnn
+
+..nnnnn.nn.n.nnn.nn.nnn.nnn.nnnnnn.nnnnn.nn
+
+
+..nnnnn.nnn.n.nnn.nnnnnnn.nn.nn.nnnn.nnn.nn.nnnnnnnnnnnnn.nnnnnn.n.nnnnnnnn
+..bbbbbbbbbbb.bb.bbbbb.bbb.n.nnn.nnnnnnnn.nnn.nnnnnn.nnn
+....eeeee.e.eeeeeeee.eeeeee................................bb...nnnnnn...nnnnnn...n...nnnnnn
+....eeee.e.eeeeeeeeee.eeeeee.eeee.eeeeee.eee...............bb...nnnnnn...nnnnnn...n...nnnnnn
+....eeee.ee.eee.eeee.......................................bb...nnnnnn...nnnnnn...n...nnnnnn
+....eeeee.eeeeeee.eeeee.ee.eeeeee.ee.eeeee..................b...nnnnnn...nnnnnn...n...nnnnnn
+....eeeeee.e.eeee.eeeee.eeeee.eeeee........................bb...nnnnnn...nnnnnn...n...nnnnnn
+....eeeee.e.eee............................................bb..nnnnnnn...nnnnnn..nn...nnnnnn
+..n..nn.nnnn.nnnnn
+
+...n.nn.nnnnn.nnnnn.n.n.nnnn.nnnnnnn.n.n.nnnnnnnnn.n.nnn.nnnnnnnn.n.n..n..nnnnnnn.n.n..nnn.nnnn.n.nnn.nnnn
+key
+. blank
+a fg=#b1b9f9
+b fg=#c8d3f5 bold  ; the terminal's own
+c bg=#b1b9f9
+d fg=#14161f bg=#b1b9f9 bold
+e fg=#c8d3f5  ; the terminal's own
+f fg=#b1b9f9 bold
+g bg=#fb923c
+h fg=#14161f bg=#fb923c bold
+i bg=#1f202f
+j fg=#f7a07f bg=#1f202f bold
+k fg=#5276ac bg=#1f202f
+l fg=#f7a07f bg=#242a3f bold
+m bg=#242a3f
+n fg=#999999
+o fg=#8e5f8a bg=#1f202f
+p fg=#b27766 bg=#1f202f
+q fg=#5479b1 bg=#242a3f
+r bg=#2a3450
+s fg=#f7a07f bg=#2a3450 bold
+t fg=#926594 bg=#2a3450
+u fg=#90628f bg=#242a3f
+v fg=#567cb6 bg=#2a3450
+w fg=#6b728c bg=#2a3450
+x fg=#b67e70 bg=#2a3450
+y fg=#b47a6b bg=#242a3f
+z fg=#f7a07f
+A bg=#322534
+B bg=#452a39
+C fg=#f7a07f bg=#452a39 bold
+D fg=#6a9ee6
+E fg=#b87967 bg=#322534
+F fg=#f7a07f bg=#58303e bold
+G fg=#f7a07f bg=#6b3543 bold
+H fg=#f7a07f bg=#7f3a48 bold
+I bg=#6b3543
+J bg=#58303e
+K fg=#5877ad bg=#322534
+L fg=#6a9ee6 bg=#1f202f bold
+M fg=#f7a07f bg=#322534 bold
+N fg=#5e79af bg=#452a39
+O bg=#7f3a48
+P bg=#923f4d
+Q fg=#f7a07f bg=#923f4d bold
+R fg=#6a9ee6 bg=#7f3a48 bold
+S fg=#c27cb4

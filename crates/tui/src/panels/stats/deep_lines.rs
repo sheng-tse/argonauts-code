@@ -18,7 +18,15 @@ pub fn summarizing(kit: &Kit<'_>, actions: usize, summarizer: &str) -> Line<'sta
     ))])
 }
 
-/// `✻ Summarizing… 312 of 562 · about 5 min left · esc keeps it going in the background · x stops it`.
+/// `Summaries · downloading Qwen3.5 27B on Ollama first`.
+pub fn downloading(kit: &Kit<'_>, summarizer: &str) -> Line<'static> {
+    Line::from(vec![kit.dim(format!(
+        "{MARGIN}Summaries · downloading {summarizer} first"
+    ))])
+}
+
+/// `✻ Summarizing… 312 of 562 · about 5 min left · esc keeps it going in the background · x stops it`,
+/// or `✻ Downloading… 4.1 of 17 GB · …` while the summarizer downloads.
 pub fn progress(kit: &Kit<'_>, progress: &DeepProgress) -> Line<'static> {
     let warn = kit.style(Role::Warn);
     let left = progress
@@ -29,8 +37,21 @@ pub fn progress(kit: &Kit<'_>, progress: &DeepProgress) -> Line<'static> {
     // them, so each has two blanks after it and one always shows, as the arrows do.
     Line::from(vec![
         Span::styled(format!("{MARGIN}✻  "), warn),
-        Span::styled("Summarizing…  ", warn),
-        kit.dim(format!("{} of {} · {left}", progress.done, progress.total)),
+        Span::styled(
+            match progress.downloading {
+                true => "Downloading…  ",
+                false => "Summarizing…  ",
+            },
+            warn,
+        ),
+        kit.dim(match progress.downloading {
+            true => format!(
+                "{:.1} of {:.0} GB · ",
+                progress.done as f64 / 1000.0,
+                progress.total as f64 / 1000.0
+            ),
+            false => format!("{} of {} · {left}", progress.done, progress.total),
+        }),
         kit.span("esc", Role::Question),
         kit.dim(" keeps it going in the background · "),
         kit.span("x", Role::Question),
@@ -57,6 +78,13 @@ pub fn ended(done: &DeepDone) -> String {
     if done.stopped {
         return format!("Stopped: {made}. Every summary written is kept.");
     }
+    if let Some(fewer) = done.fewer {
+        return format!(
+            "The map is as it was, since the new one had {} of its {} dots: {made}. Every \
+             summary written is kept.",
+            fewer.made, fewer.shown
+        );
+    }
     if let Some(why) = &done.failed {
         return format!(
             "The summarizer stopped answering ({why}): {made}. Every summary written is kept."
@@ -77,6 +105,50 @@ pub fn ended(done: &DeepDone) -> String {
         "Made: {made}. {} dots, {} of them new{words}.{waits}",
         done.placed, done.new_places
     )
+}
+
+/// The two lines under the headline after an update that left the map as it was:
+/// `Redo stopped: Haiku 5.5 didn't answer after 40 of 823 summaries.`, then what was kept.
+pub fn kept(
+    kit: &Kit<'_>,
+    done: &DeepDone,
+    summarizer: &str,
+    total: usize,
+    redo: bool,
+) -> Vec<Line<'static>> {
+    let kind = if redo { "Redo" } else { "Update" };
+    let who = if summarizer.is_empty() {
+        "the summarizer"
+    } else {
+        summarizer
+    };
+    let how = if done.stopped {
+        format!(
+            " you stopped it after {} of {total} summaries.",
+            done.written
+        )
+    } else if let Some(fewer) = done.fewer {
+        format!(
+            " its new map had {} dots, fewer than this map's {}.",
+            fewer.made, fewer.shown
+        )
+    } else {
+        format!(
+            " {who} didn't answer after {} of {total} summaries.",
+            done.written
+        )
+    };
+    let kept = match done.written {
+        0 => "The map is as it was.".to_owned(),
+        written => format!("The map is as it was, and the {written} are kept for the next try."),
+    };
+    vec![
+        Line::from(vec![
+            Span::styled(format!(" {kind} stopped:"), kit.style(Role::Warn)),
+            kit.dim(how),
+        ]),
+        Line::from(vec![kit.dim(format!(" {kept}"))]),
+    ]
 }
 
 /// Under the map while it fills in.
@@ -132,6 +204,33 @@ mod tests {
             "{}",
             ended(&waiting)
         );
+    }
+
+    #[test]
+    fn a_new_map_with_fewer_dots_says_the_map_was_kept_and_why() {
+        let theme = crate::base::theme::Theme::default();
+        let kit = Kit::new(&theme);
+        let done = DeepDone {
+            written: 120,
+            placed: 823,
+            fewer: Some(argonauts_core::behaviors::deep_map::FewerDots {
+                made: 120,
+                shown: 823,
+            }),
+            ..DeepDone::default()
+        };
+        let lines: Vec<String> = kept(&kit, &done, "Haiku 5.5", 120, true)
+            .iter()
+            .map(|line| line.to_string())
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                " Redo stopped: its new map had 120 dots, fewer than this map's 823.",
+                " The map is as it was, and the 120 are kept for the next try.",
+            ]
+        );
+        assert!(ended(&done).starts_with("The map is as it was, since the new one had 120"));
     }
 
     #[test]

@@ -4,7 +4,7 @@
 use argonauts_core::app::NOT_CHANGED;
 use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::runs::events::approval::{
-    AnswerAction, ApprovalDecided, ApprovalKind, ApprovalOpened, ApprovalPacket,
+    AnswerAction, ApprovalDecided, ApprovalKind, ApprovalOpened, ApprovalPacket, CouncilQuestion,
 };
 use argonauts_core::runs::events::run::Party;
 use argonauts_core::runs::hidden_git::MergedInto;
@@ -51,9 +51,13 @@ pub fn record(
     names: &DisplayNames,
     tasks: &dyn Fn(&TaskId) -> String,
 ) -> Notice {
+    let clock = at.map(|at| words::clock(at, offset));
+    if let Some(settled) = council_point(opened, decided, clock.as_deref(), names) {
+        return settled;
+    }
     let mut who = words::party(&decided.by, names);
-    if let Some(at) = at {
-        who.push_str(&format!(", {}", words::clock(at, offset)));
+    if let Some(clock) = &clock {
+        who.push_str(&format!(", {clock}"));
     }
     // Carry on without me. What the agent was told isn't your words, so it isn't quoted.
     if decided.by == Party::Declined {
@@ -79,6 +83,54 @@ pub fn record(
     }
     notice
 }
+
+/// A point the council left open, once it is settled: the point, the way taken, and who took
+/// it, so an answer auto mode gave in your place never reads as yours. `◆ Calls with no key:
+/// “Warn them for 30 days” · you chose, 2:21 AM`, or `· auto mode chose for you (the judge,
+/// Opus 5.5), 2:21 AM`. Carry on without me keeps its own record.
+fn council_point(
+    opened: &ApprovalOpened,
+    decided: &ApprovalDecided,
+    clock: Option<&str>,
+    names: &DisplayNames,
+) -> Option<Notice> {
+    let ApprovalPacket::Council(packet) = &opened.packet else {
+        return None;
+    };
+    if !matches!(packet.about, CouncilQuestion::Point { .. }) || decided.by == Party::Declined {
+        return None;
+    }
+    let point = opened.title.trim();
+    let point = point.strip_suffix(WHICH_WAY).unwrap_or(point).trim_end();
+    let way = match &decided.action {
+        AnswerAction::Choose { value } => value.trim(),
+        _ => decided.text.as_deref().map_or("", str::trim),
+    };
+    let what = if way.is_empty() {
+        point.to_owned()
+    } else {
+        format!("{point}: “{way}”")
+    };
+    let mut who = match &decided.by {
+        Party::User => "you chose".to_owned(),
+        Party::Judge { model } => {
+            format!(
+                "auto mode chose for you (the judge, {})",
+                names.worker(model)
+            )
+        }
+        Party::Rules => "auto mode chose for you (your rules)".to_owned(),
+        Party::Autopilot => "autopilot chose for you".to_owned(),
+        other => format!("{} chose for you", words::party(other, names)),
+    };
+    if let Some(clock) = clock {
+        who.push_str(&format!(", {clock}"));
+    }
+    Some(Notice::answered(what, who))
+}
+
+/// How a council question about an open point ends its title.
+const WHICH_WAY: &str = ": which way?";
 
 /// What the answer did, in a few words: `Approved merging build:redis into main`, `Plan
 /// approved`, each task as `tasks` names it.
@@ -389,6 +441,87 @@ mod tests {
         cell.lines(&RenderCtx::new(118, theme, Clock::still(Instant::now())))
     }
 
+    fn point_question() -> ApprovalOpened {
+        use argonauts_core::base::names::ApprovalId;
+        use argonauts_core::base::names::WorkflowId;
+        use argonauts_core::runs::events::approval::{CouncilPacket, FreeText};
+        use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
+        use argonauts_core::workflows::workflow::StepRef;
+        ApprovalOpened {
+            id: ApprovalId::numbered(1),
+            kind: ApprovalKind::Question,
+            title: "Eviction waits for a later change: which way?".to_owned(),
+            task: None,
+            packet: ApprovalPacket::Council(CouncilPacket {
+                talk: StepRef {
+                    workflow: WorkflowId::numbered(1),
+                    phase: 0,
+                    path: vec![0, 0],
+                },
+                about: CouncilQuestion::Point { point: 3 },
+                text: "Pick a side, let them talk on, or write your own.".to_owned(),
+            }),
+            evidence_sha256: "0".repeat(64),
+            mode: ApprovalMode::Auto,
+            decide_with: DecideWith::Rules,
+            when_declined: WhenDeclined::Decide,
+            options: Vec::new(),
+            free_text: FreeText::Answer,
+            needs_you: true,
+        }
+    }
+
+    fn settled_by(by: Party) -> String {
+        let decided = ApprovalDecided {
+            id: argonauts_core::base::names::ApprovalId::numbered(1),
+            action: AnswerAction::Choose {
+                value: "Leave eviction for later".to_owned(),
+            },
+            text: None,
+            by,
+            evidence_sha256: "0".repeat(64),
+            auto_preview: None,
+            tasks: Vec::new(),
+        };
+        let at = OffsetDateTime::from_unix_timestamp(1_790_000_000).expect("a time");
+        let notice = record(
+            &point_question(),
+            &decided,
+            None,
+            Some(at),
+            UtcOffset::UTC,
+            &DisplayNames::default(),
+            &by_id,
+        );
+        let lines = drawn(&Cell::Notice(notice), &theme());
+        crate::base::text::plain_text(&lines)
+    }
+
+    /// A settled point reads as the point, the way taken, and who took it: you, or auto mode in
+    /// your place, never "you" for an answer you didn't give.
+    #[test]
+    fn a_settled_point_says_the_way_and_who_chose_it() {
+        let yours = settled_by(Party::User);
+        assert!(
+            yours.contains(
+                "Eviction waits for a later change: “Leave eviction for later” · you chose,"
+            ),
+            "{yours}"
+        );
+        assert!(
+            !yours.contains("which way") && !yours.contains("answered"),
+            "{yours}"
+        );
+        let judged = settled_by(Party::Judge {
+            model: argonauts_core::base::names::ModelRef::new("claude-code", Some("opus".into())),
+        });
+        assert!(
+            judged.contains("· auto mode chose for you (the judge, "),
+            "{judged}"
+        );
+        assert!(!judged.contains("you chose"), "{judged}");
+    }
+
     /// A second `/setup` closes as `setup_after` draws it: the command, with its one line under it.
     #[test]
     fn a_later_setup_closes_in_one_row() {
@@ -396,7 +529,7 @@ mod tests {
         let outcome = "/setup ⎿  Captain · Claude Code · auto mode · Usage reports on · saved to \
                        ~/.argonauts/config.toml";
         let lines = drawn(&choice_closed_cell(None, outcome), &theme);
-        assert_rows_match("setup_after", &lines, PICTURE, 8..10, &theme, &[]);
+        assert_rows_match("setup_after", &lines, PICTURE, 8..10, &theme);
     }
 
     /// Each of its questions leaves nothing, so the row stands alone.

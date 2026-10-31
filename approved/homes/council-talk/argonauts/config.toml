@@ -8,6 +8,11 @@ worker = ["claude-code", "codex", "antigravity-cli", "opencode"]
 reviewer = ["claude-code", "codex", "antigravity-cli", "opencode"]
 judge = ["claude-code", "codex", "antigravity-cli", "opencode"]
 
+# The plan's tasks are the note keeper's pieces alone, with no contracts or acceptance-test
+# tasks before them.
+[divide]
+contracts_first = false
+
 [approvals]
 start_mode = "supervised"
 

@@ -1221,16 +1221,26 @@ async fn a_seats_objection_to_your_way_is_shown_and_recorded_and_yours_stands() 
     ends(step).await?;
 
     let events = stage.sink.events();
-    let (shown, offer) = events
+    let (shown, offer, whys) = events
         .iter()
         .find_map(|e| match &e.kind {
             RunEventKind::Approval(ApprovalEvent::Opened(opened)) => match &opened.packet {
-                ApprovalPacket::Plan(plan) => Some((plan.objections.clone(), plan.offer.clone())),
+                ApprovalPacket::Plan(plan) => Some((
+                    plan.objections.clone(),
+                    plan.offer.clone(),
+                    plan.graph
+                        .tasks
+                        .iter()
+                        .filter_map(|task| task.way.as_ref()?.why.clone())
+                        .collect::<Vec<_>>(),
+                )),
                 _ => None,
             },
             _ => None,
         })
         .context("no plan approval")?;
+    // The plan says why each task is done its way, yours as you asked.
+    assert!(whys.iter().any(|why| why == "You asked"), "{whys:?}");
     // Approve with edits offers the ways the council's setup allows, own session first.
     let offer = offer.context("a plan with ways offers them")?;
     assert_eq!(offer.ways.first(), Some(&Way::OwnSession));

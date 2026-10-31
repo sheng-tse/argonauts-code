@@ -95,6 +95,9 @@ pub struct WorkflowDeclared {
     /// conversation and the view can mark them as yours where a phase has one of them as its name.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required: Vec<String>,
+    /// It seats a council, whose own conversation opens the run, so no Workflow row does.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub talks: bool,
 }
 
 /// A phase as the workflow declares it.
@@ -171,6 +174,7 @@ impl WorkflowDeclared {
                 })
                 .collect(),
             required: Vec::new(),
+            talks: workflow.talks(),
         }
     }
 

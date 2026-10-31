@@ -14,6 +14,7 @@ use crate::app::model::ViewModel;
 use crate::base::mascot::graphics::pictures_in;
 use crate::base::theme::{Glyphs, Theme};
 use crate::frame::state::AppState;
+use crate::panels::stats::behaviors::Drawings;
 use crate::panels::stats::behaviors::sample::three_models;
 use crate::panels::{OverviewView, Tab, UsageWatch};
 use crate::terminal::InlineTerminal;
@@ -445,6 +446,49 @@ fn inline_the_map_says_once_that_shift_selects() {
     );
 }
 
+/// A picture of the map whose drawing panicked is said on the bottom line, once, with what
+/// the drawing said, and the map goes on.
+#[test]
+fn a_picture_that_couldnt_be_drawn_is_said_once() {
+    let mut open = Open::new(Some(Graphics::Kitty), true);
+    open.frame();
+    open.ui
+        .map
+        .whole_packing
+        .draw(1, |_| -> Option<(Position, Vec<u8>)> {
+            panic!("no pixels")
+        });
+    // The worker's wake, as the screen hears it.
+    open.ui.pictures_arrived();
+    open.frame();
+    let hint = open.ui.model.bottom.hint.take().map(|hint| hint.text);
+    assert_eq!(
+        hint.as_deref(),
+        Some("The map's picture couldn't be drawn: no pixels")
+    );
+    assert!(open.ui.map.shown.is_some(), "the map goes on");
+    open.frame();
+    assert_eq!(open.ui.model.bottom.hint, None, "once");
+}
+
+/// A scene of the world whose drawing panicked is said on the bottom line, once, with what the
+/// drawing said.
+#[test]
+fn a_scene_that_couldnt_be_drawn_is_said_once() {
+    let mut screen = LinedScreen::new(Graphics::Kitty);
+    screen.frame();
+    screen.drawings.want(1, None, |_, _| panic!("no stars"));
+    screen.ui.pictures_arrived();
+    screen.frame();
+    let hint = screen.ui.model.bottom.hint.take().map(|hint| hint.text);
+    assert_eq!(
+        hint.as_deref(),
+        Some("The map's picture couldn't be drawn: no stars")
+    );
+    screen.frame();
+    assert_eq!(screen.ui.model.bottom.hint, None, "once");
+}
+
 /// iTerm2 keeps no pictures, so the map goes out drawn whole over its cells, and again only
 /// when what it shows changed: a frame that changes nothing on the map sends nothing.
 #[test]
@@ -552,10 +596,12 @@ fn a_zoom_into_a_galaxy_sends_each_picture_once_and_then_only_places_them() {
     );
 }
 
-/// A docked map of one blank picture, with a picture beside its line while `beside` holds one.
+/// A docked map of one blank picture, with a picture beside its line while `beside` holds one,
+/// and the world's drawings to ask for scenes on.
 #[derive(Debug)]
 struct Lined {
     beside: Arc<std::sync::Mutex<Option<crate::world::Picture>>>,
+    drawings: Arc<Drawings>,
 }
 
 impl crate::frame::view::View for Lined {
@@ -611,13 +657,19 @@ impl MapView for Lined {
             picture,
         })
     }
+
+    fn take_failure(&self) -> Option<String> {
+        self.drawings.take_failure()
+    }
 }
 
-/// A screen of `Lined` through `graphics`, and the picture beside its line to change.
+/// A screen of `Lined` through `graphics`, the picture beside its line to change and the
+/// drawings its map asks for scenes on.
 struct LinedScreen {
     ui: Ui<Vec<u8>>,
     at: Instant,
     beside: Arc<std::sync::Mutex<Option<crate::world::Picture>>>,
+    drawings: Arc<Drawings>,
 }
 
 impl LinedScreen {
@@ -628,10 +680,17 @@ impl LinedScreen {
         ui.use_fullscreen();
         ui.use_pictures(Some(graphics), Some(CELL));
         let beside = Arc::new(std::sync::Mutex::new(Some(Self::picture(7))));
+        let drawings = Arc::new(Drawings::default());
         ui.push_view(Box::new(Lined {
             beside: Arc::clone(&beside),
+            drawings: Arc::clone(&drawings),
         }));
-        Self { ui, at, beside }
+        Self {
+            ui,
+            at,
+            beside,
+            drawings,
+        }
     }
 
     /// A picture the size the line's pictures are drawn at.

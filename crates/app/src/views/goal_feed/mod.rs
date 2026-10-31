@@ -11,6 +11,7 @@ use argonauts_core::app::agent_goal::{
     AgentGoal, CliGoal, GoalCheck, GoalKeeper, GoalLine, GoalState, GoalTry,
 };
 use argonauts_core::app::views::{AgentRow, PhaseRow, WorkflowRow};
+use argonauts_core::base::clock;
 use argonauts_core::base::names::ModelRef;
 use argonauts_core::look::display_names::builtin_cli_name;
 use argonauts_core::models::model_catalog::display_name_from_id;
@@ -31,7 +32,7 @@ const CHECKER: &str = "Argonauts Code";
 /// itself, and the two can be different. A goal whose agent has no row of its own here keeps the
 /// engine's label.
 pub(crate) fn agent_goals(events: &[RunEvent], phases: &[PhaseRow]) -> Vec<AgentGoal> {
-    let mut goals = goals_at(events, OffsetDateTime::now_utc());
+    let mut goals = goals_at(events, clock::now_utc());
     for goal in &mut goals {
         let mut rows = phases
             .iter()
@@ -50,7 +51,7 @@ pub(crate) fn agent_goals(events: &[RunEvent], phases: &[PhaseRow]) -> Vec<Agent
 
 /// The goal the agent on `row` works toward, when it has one, under that row's label.
 pub(crate) fn goal_of(events: &[RunEvent], row: &AgentRow) -> Option<Box<AgentGoal>> {
-    let mut goal = goals_at(events, OffsetDateTime::now_utc())
+    let mut goal = goals_at(events, clock::now_utc())
         .into_iter()
         .find(|goal| goal.session == row.session)?;
     goal.label.clone_from(&row.label);

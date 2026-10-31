@@ -38,27 +38,51 @@ struct Opened {
     theme: crate::base::theme::Theme,
     state: AppState,
     size: (u16, u16),
+    pictures: bool,
 }
 
 impl Opened {
     /// The panel opened on Behaviors over `overview`, `map` taken for its period. With
     /// `into_map`, ↓ twice: onto the groupings, then into the map.
     fn new(overview: OverviewData, map: &BehaviorMap, size: (u16, u16), into_map: bool) -> Self {
+        Self::docked(overview, map, size, into_map, true)
+    }
+
+    /// [`Opened::new`] on a terminal that shows no pictures, so the map is braille and the
+    /// legend's logos are colour dots.
+    fn braille(overview: OverviewData, map: &BehaviorMap, size: (u16, u16)) -> Self {
+        Self::docked(overview, map, size, true, false)
+    }
+
+    fn docked(
+        overview: OverviewData,
+        map: &BehaviorMap,
+        size: (u16, u16),
+        into_map: bool,
+        pictures: bool,
+    ) -> Self {
         let mut state = crate::frame::view::list::keys_state(true);
         state.names = crate::testing::sample::names();
-        let view = OverviewView::new(
+        let mut view = OverviewView::new(
             Tab::Overview,
             UsageWatch::default(),
             crate::panels::view::NoConfig::boxed(),
         )
-        .at(datetime!(2026-10-20 08:40 -4))
-        .with_cell(ASSUMED_CELL)
-        .with_map_picture();
+        .at(datetime!(2026-10-20 08:40 -4));
+        if pictures {
+            view = view.with_cell(ASSUMED_CELL).with_map_picture();
+        }
+        let theme = if pictures {
+            super::pictured_theme()
+        } else {
+            crate::testing::pictures::golden::theme()
+        };
         let mut opened = Opened {
             view,
-            theme: super::pictured_theme(),
+            theme,
             state,
             size,
+            pictures,
         };
         assert!(opened.view.accept(&ViewData::Overview {
             overview: Box::new(overview)
@@ -111,7 +135,8 @@ impl Opened {
 
     /// The panel's rows as the app docks it, its pictures placed.
     fn draw(&mut self) -> Buffer {
-        self.view.place_pictures(Some(ASSUMED_CELL));
+        self.view
+            .place_pictures(self.pictures.then_some(ASSUMED_CELL));
         let ctx = ViewCtx {
             theme: &self.theme,
             state: &self.state,
@@ -235,12 +260,7 @@ const LABELLED: [Group; 11] = [
     ("GPT 6.1 Sol", "codex", "gpt-6.1-sol", 80),
     ("GPT 6 Luna", "codex", "gpt-6-luna", 67),
     ("Opus 5.5", "claude-code", "claude-opus-5-5", 63),
-    (
-        "Qwen3 Coder 30B (64k)",
-        "opencode",
-        "ollama/qwen3-coder:30b-64k",
-        52,
-    ),
+    ("Qwen3 Coder 30B", "opencode", "ollama/qwen3-coder:30b", 52),
     ("GPT 6 Astra", "codex", "gpt-6-astra", 36),
     ("Haiku 4.5", "claude-code", "claude-haiku-4-5", 22),
     (
@@ -319,12 +339,7 @@ fn summaries() -> BehaviorMap {
         ("GPT 6 Luna", "codex", "gpt-6-luna", 67),
         ("GPT 6.1 Sol", "codex", "gpt-6.1-sol", 49),
         ("Haiku 4.5", "claude-code", "claude-haiku-4-5", 22),
-        (
-            "Qwen3 Coder 30B (64k)",
-            "opencode",
-            "ollama/qwen3-coder:30b-64k",
-            22,
-        ),
+        ("Qwen3 Coder 30B", "opencode", "ollama/qwen3-coder:30b", 22),
         (
             "Gemini 3.8 Flash (Low)",
             "antigravity-cli",
@@ -379,7 +394,7 @@ fn summaries() -> BehaviorMap {
         .collect();
     let mut map = crew(&groups, &fixed, &behaviors).map;
     map.placing = Placing::Summaries {
-        by: "Qwen3 Coder 30B (64k)".to_owned(),
+        by: "Qwen3 Coder 30B".to_owned(),
     };
     map.unsummarized = 173;
     map.offer_summaries = false;
@@ -442,6 +457,39 @@ fn beside_the_map_summaries_compare_a_model_as_drawn() {
     opened.holds("deeper-map-compared", &compared);
 }
 
+/// A redo with Haiku 5.5 that stopped answering after 40 summaries leaves the map as it was,
+/// and says so under the headline.
+fn kept_after_a_failed_redo(size: (u16, u16)) {
+    use argonauts_core::behaviors::deep_map::{DeepDone, DeepProgress};
+
+    let mut opened = Opened::new(super::models(), &summaries(), size, true);
+    opened.press_times(KeyCode::Char('l'), 7);
+    opened.state.deep.running = Some(DeepProgress {
+        done: 40,
+        total: 823,
+        seconds_left: None,
+        summarizer: "Haiku 5.5 on Claude Code".to_owned(),
+        short: "Haiku 5.5".to_owned(),
+        redo: true,
+        downloading: false,
+    });
+    opened.draw();
+    opened.state.deep.done(&DeepDone {
+        written: 40,
+        placed: 650,
+        failed: Some("the summarizer stopped answering".to_owned()),
+        ..DeepDone::default()
+    });
+    let kept = opened.draw();
+    opened.holds("deeper-map-kept", &kept);
+}
+
+#[test]
+fn a_failed_redo_keeps_the_map_and_says_so_as_drawn() {
+    kept_after_a_failed_redo(SMALL);
+    kept_after_a_failed_redo(WIDE);
+}
+
 #[test]
 fn the_label_list_steps_down_as_drawn() {
     let mut opened = Opened::new(super::models(), &labels(), SMALL, true);
@@ -501,6 +549,73 @@ fn the_label_map_opens_with_nothing_compared_and_the_mouse_on_the_hurricane_as_d
     }
 }
 
+/// The hurricane's line, whole at both sizes, leaves with the pointer: once it moves off the
+/// map, the hint takes its place again.
+#[test]
+fn the_hurricane_line_leaves_when_the_pointer_leaves_the_map() {
+    crate::base::format::set_clock(ClockStyle::TwentyFourHour);
+    const HINT: &str = "Point at anything on the map to see what it is.";
+    let text = |buf: &Buffer| super::text_rows(buf).join("\n");
+    let map = crew_r();
+    for size in [SMALL, WIDE] {
+        let mut opened = Opened::new(ranked_by(&map), &map, size, false);
+        assert!(text(&opened.draw()).contains(HINT), "{size:?}");
+        let ctx = ViewCtx {
+            theme: &opened.theme,
+            state: &opened.state,
+            now: Instant::now(),
+        };
+        super::point_at_the_hurricane(&mut opened.view, &map, ASSUMED_CELL, &ctx);
+        let pointed = text(&opened.draw());
+        assert!(pointed.contains("Hurricane"), "{size:?}: {pointed}");
+        assert!(!pointed.contains(HINT), "{size:?}");
+        assert!(
+            !pointed.contains('…'),
+            "{size:?}: the line is cut\n{pointed}"
+        );
+        assert!(opened.view.point(None), "{size:?}: leaving redraws");
+        assert!(text(&opened.draw()).contains(HINT), "{size:?}");
+    }
+}
+
+/// Crew R's map on a terminal without pictures, Haiku 5.5 compared: 0.1.0's picture in cells,
+/// the comparison soft behind the dots and the legend in 0.1.0's words.
+#[test]
+fn without_pictures_the_map_is_braille_in_the_pictures_look_as_drawn() {
+    crate::base::format::set_clock(ClockStyle::TwentyFourHour);
+    let map = crew_r();
+    let haiku = map
+        .groups
+        .iter()
+        .position(|group| group.name == "Haiku 5.5")
+        .expect("crew R has Haiku 5.5");
+    let map = super::compared::compared(map, haiku);
+    for size in [SMALL, WIDE] {
+        let mut opened = Opened::braille(ranked_by(&map), &map, size);
+        let compared = opened.press(KeyCode::Char('l'));
+        opened.holds("braille-map-compared", &compared);
+        let models: Vec<String> = map.groups.iter().map(|group| group.name.clone()).collect();
+        let look = argonauts_testkit::screen::Look::new()
+            .models(&models)
+            .whole(&models);
+        // The map's cells hold dots and no names: left beside the legend they would read as
+        // its swatches, as a picture's cells would.
+        let mut named = compared.clone();
+        if let Some(map) = opened.view.map_cells().map(|cells| cells.area) {
+            for y in map.top()..map.bottom() {
+                for x in map.left()..map.right() {
+                    named[(x, y)].reset();
+                }
+            }
+        }
+        argonauts_testkit::screen::laws::assert_kept(
+            &crate::base::stability::grid::grid(&named),
+            &look,
+            &format!("the braille map at {size:?}"),
+        );
+    }
+}
+
 /// The crew the colours are drawn for: the label map's, and three models more, each with the
 /// tokens it ran through the app, which rank each CLI's models for their shades.
 fn colours_crew() -> (OverviewData, BehaviorMap) {
@@ -520,7 +635,7 @@ fn colours_crew() -> (OverviewData, BehaviorMap) {
         "gpt-6.1-sol" => 630_000,
         "gpt-6-astra" => 390_000,
         "gpt-5.6-terra" => 80_000,
-        "ollama/qwen3-coder:30b-64k" => 1_430_000,
+        "ollama/qwen3-coder:30b" => 1_430_000,
         "ollama/devstral:24b" => 310_000,
         "ollama/gemma4:e2b" => 90_000,
         "gemini-3.8-flash-low" => 200_000,
@@ -550,4 +665,25 @@ fn the_legend_draws_each_model_of_the_colours_crew_in_its_clis_shade() {
     let mut opened = Opened::new(overview, &map, SMALL, false);
     let frame = opened.draw();
     opened.holds("legend-sample-crew", &frame);
+}
+
+/// The world steps 16 times a second in the drawn window and 12 in the wider one, the
+/// rates that keep its motion inside its cost at each size. The tab and the docked map's clock
+/// both take the rate from the map's cells.
+#[test]
+fn the_world_steps_16_times_a_second_at_120_by_38_and_12_at_177_by_40() {
+    use crate::frame::view::map::MapView;
+    use crate::world::deliver::clock::Rate;
+    let map = crew_r();
+    for (size, rate) in [(SMALL, Rate::QUICK), (WIDE, Rate::STEADY)] {
+        let mut opened = Opened::new(ranked_by(&map), &map, size, false);
+        opened.draw();
+        let cells = opened.view.map_cells().expect("the map shows").area;
+        let shown = Rate::for_map(usize::from(cells.width), usize::from(cells.height));
+        assert_eq!(
+            shown, rate,
+            "{size:?}: a map of {}x{}",
+            cells.width, cells.height
+        );
+    }
 }

@@ -77,10 +77,10 @@ fn each_galaxy_carries_its_makers_logo_or_its_colour_dot() {
     assert_eq!(
         marks,
         [
-            Some(LogoMark::ClaudeCode),
+            Some(LogoMark::Claude),
             Some(LogoMark::OpenAi),
             Some(LogoMark::Qwen),
-            Some(LogoMark::Antigravity),
+            Some(LogoMark::Gemini),
             Some(LogoMark::Kimi),
             None,
         ]
@@ -88,16 +88,16 @@ fn each_galaxy_carries_its_makers_logo_or_its_colour_dot() {
 }
 
 #[test]
-fn each_star_carries_the_logo_of_whoever_serves_its_model() {
+fn each_star_carries_its_lines_logo_else_whoever_serves_it() {
     let crew = crews::r();
     let universe = crew.universe();
     let mark = |id: &str| star(&crew, &universe, id).logo.mark;
-    assert_eq!(mark("claude-haiku-5-5"), Some(LogoMark::ClaudeCode));
-    assert_eq!(mark("gpt-6-luna"), Some(LogoMark::Codex));
-    assert_eq!(mark("gemini-3.8-flash"), Some(LogoMark::Antigravity));
-    // Through OpenCode: Ollama for a model it runs here, OpenCode for one its own cloud runs.
-    assert_eq!(mark("ollama/qwen3-coder:30b"), Some(LogoMark::Ollama));
-    assert_eq!(mark("opencode/kimi-k2.6"), Some(LogoMark::OpenCode));
+    assert_eq!(mark("claude-haiku-5-5"), Some(LogoMark::Claude));
+    assert_eq!(mark("gpt-6-luna"), Some(LogoMark::OpenAi));
+    assert_eq!(mark("gemini-3.8-flash"), Some(LogoMark::Gemini));
+    assert_eq!(mark("ollama/qwen3-coder:30b"), Some(LogoMark::Qwen));
+    assert_eq!(mark("opencode/kimi-k2.6"), Some(LogoMark::Kimi));
+    // No logo ships for GLM's line, so OpenCode, whose own cloud runs it, stands for it.
     assert_eq!(mark("opencode/glm-5"), Some(LogoMark::OpenCode));
 }
 
@@ -147,7 +147,7 @@ fn r_has_a_binary_of_6_luna_and_6_astra_and_three_tidal_streams() {
 }
 
 #[test]
-fn t_quiet_nine_days_has_three_red_giants_and_nothing_that_moves() {
+fn t_quiet_nine_days_has_three_red_giants_and_no_body_that_moves() {
     let crew = crews::t();
     let universe = crew.universe();
     let giants: Vec<&str> = universe
@@ -165,8 +165,9 @@ fn t_quiet_nine_days_has_three_red_giants_and_nothing_that_moves() {
         ]
     );
     assert_eq!(kind_of(&crew, &universe, "opencode/glm-5"), StarKind::Star);
-    assert!(!universe.moves());
     assert!((0..universe.makers.len()).all(|m| !universe.galaxy_moves(m)));
+    assert!(universe.comets.is_empty() && universe.meteors.is_empty());
+    assert!(universe.moves(), "its galaxies' glow breathes all the time");
 }
 
 #[test]

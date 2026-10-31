@@ -52,7 +52,7 @@ fn pinned_mods_stack_in_order_each_with_its_fold_toggle() {
     assert!(plan < spend, "{rows:#?}");
     assert!(rows[plan - 1].ends_with("╮ [-]"), "{rows:#?}");
     assert!(rows[spend - 1].ends_with("╮ [-]"), "{rows:#?}");
-    assert!(rows.iter().any(|row| row.contains("Claude Code    Max")));
+    assert!(rows.iter().any(|row| row.contains("Claude Code    Pro")));
     // A row per plan window leaves the spend card its bar, not its rows.
     assert!(rows[spend + 1].contains("████"), "{rows:#?}");
     assert!(rows.len() <= 14, "{rows:#?}");
@@ -80,7 +80,7 @@ fn a_folded_mod_is_one_line_with_its_number() {
     let line = rows.last().unwrap();
     assert!(line.starts_with(" ▸ ◆ spend  ~$1.86 today"), "{rows:#?}");
     assert!(line.ends_with("[+]"), "{rows:#?}");
-    assert!(rows.iter().any(|row| row.contains("Claude Code    Max")));
+    assert!(rows.iter().any(|row| row.contains("Claude Code    Pro")));
 }
 
 #[test]
@@ -90,7 +90,11 @@ fn short_of_rows_the_last_mod_steps_down_first_then_the_band_hides() {
     // One row short: spend loses its legend, and plan usage keeps every row.
     let stepped = rows_in(&band, 110, full - 1, false);
     assert!(stepped.len() < full, "{stepped:#?}");
-    assert!(stepped.iter().any(|row| row.contains("agy            Pro")));
+    assert!(
+        stepped
+            .iter()
+            .any(|row| row.contains("agy            Ultra"))
+    );
     assert!(!stepped.iter().any(|row| row.contains("on Claude Code")));
 
     let lines = rows_in(&band, 110, 2, false);

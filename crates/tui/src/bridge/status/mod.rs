@@ -15,7 +15,7 @@ use argonauts_core::settings::approvals::ApprovalMode as CoreApproval;
 use argonauts_core::settings::bottom_line::AWAKE;
 use argonauts_core::settings::ui::{NarratorMode, Notices, UiSettings, VerbTheme};
 use argonauts_core::{KeyScheme, TodoStatus};
-use time::{OffsetDateTime, UtcOffset};
+use time::UtcOffset;
 
 use crate::base::format;
 use crate::base::input::keymap::{Action, Keymap};
@@ -104,7 +104,7 @@ pub fn sync(cx: &mut Cx<'_>) {
     bottom.send_now_hint = send_now_hint(state, cx.settings);
     sync_notice(state, cx.settings, bottom);
 
-    let now = OffsetDateTime::now_utc();
+    let now = argonauts_core::base::clock::now_utc();
     let clock = bottom_line::Clock {
         now,
         utc_offset: state.terminal.utc_offset.unwrap_or(UtcOffset::UTC),
@@ -795,20 +795,25 @@ fn title(state: &AppState) -> Option<String> {
     Some(title.to_owned())
 }
 
-/// `☕ awake until you quit`, or until a time, while `/awake` holds the computer's sleep off.
+/// `☕` while `/awake` holds the computer's sleep off, and `☕ 3:45pm` for a hold until a time,
+/// which shows nowhere else on screen.
 fn awake_part(state: &AppState, clock: &bottom_line::Clock) -> Option<PartBody> {
     let until = match state.status.as_ref()?.awake.as_ref()? {
-        AwakeHold::UntilQuit => "you quit".to_owned(),
+        AwakeHold::UntilQuit => None,
         AwakeHold::Until { at } if *at <= clock.now => return None,
-        AwakeHold::Until { at } => bottom_line::clock_time(*at, clock),
+        AwakeHold::Until { at } => Some(bottom_line::clock_time(*at, clock)),
     };
-    // The ASCII glyph set is for fonts that draw symbols at the wrong width, so the cup goes.
+    // The ASCII glyph set is for fonts that draw symbols at the wrong width, so the cup is a word.
     let ascii = state.ui.as_ref().is_some_and(|ui| {
         crate::base::theme::Glyphs::for_settings(ui.glyphs, ui.ambiguous_width).is_ascii()
     });
-    let cup = if ascii { "" } else { "☕ " };
+    let cup = if ascii { "awake" } else { "☕" };
+    let text = match until {
+        Some(time) => format!("{cup} {time}"),
+        None => cup.to_owned(),
+    };
     Some(PartBody::Words {
-        text: format!("{cup}awake until {until}"),
+        text,
         tone: Tone::Code,
     })
 }
@@ -892,6 +897,7 @@ mod tests {
     use argonauts_core::runs::events::workflow::StepEnd;
     use argonauts_core::workflows::workflow::{StandardPhase, StepKind, StepRef};
     use argonauts_core::{AgentEvent, RunId};
+    use time::OffsetDateTime;
 
     use super::*;
     use crate::frame::state::{StepState, WorkflowState};
@@ -1346,7 +1352,6 @@ mod tests {
             (&txt.join("\n"), &read("html")),
             7..8,
             &theme,
-            &[],
         );
     }
 
@@ -1450,7 +1455,7 @@ mod tests {
 
     #[test]
     fn a_conversation_turns_plan_usage_reading_is_kept_for_the_bottom_line() {
-        let wall = OffsetDateTime::now_utc();
+        let wall = argonauts_core::base::clock::now_utc();
         let mut state = AppState::default();
         assert!(state.plan_windows.is_empty());
         let reading = PlanUsageReading {
@@ -1517,14 +1522,11 @@ mod tests {
             state.status = Some(status_with(awake));
             awake_words(&state, wall)
         };
-        assert_eq!(
-            words(Some(AwakeHold::UntilQuit)).as_deref(),
-            Some("☕ awake until you quit")
-        );
+        assert_eq!(words(Some(AwakeHold::UntilQuit)).as_deref(), Some("☕"));
         let later = wall + time::Duration::hours(2);
         assert_eq!(
             words(Some(AwakeHold::Until { at: later })).as_deref(),
-            Some("☕ awake until 3:45pm")
+            Some("☕ 3:45pm")
         );
         // A time that's up, or no hold of yours, shows nothing.
         assert_eq!(words(Some(AwakeHold::Until { at: wall })), None);
@@ -1532,7 +1534,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ascii_glyph_set_drops_the_cup() {
+    fn the_ascii_glyph_set_puts_a_word_for_the_cup() {
         let mut state = AppState::default();
         state.ui = Some(UiSettings {
             glyphs: argonauts_core::settings::ui::Glyphs::Ascii,
@@ -1540,10 +1542,7 @@ mod tests {
         });
         state.status = Some(status_with(Some(AwakeHold::UntilQuit)));
         let wall = time::macros::datetime!(2026-10-07 13:45 UTC);
-        assert_eq!(
-            awake_words(&state, wall).as_deref(),
-            Some("awake until you quit")
-        );
+        assert_eq!(awake_words(&state, wall).as_deref(), Some("awake"));
     }
 
     #[test]

@@ -48,7 +48,6 @@ fn a_model_its_cli_no_longer_lists_is_said_in_one_line() {
         include_str!("../../../../tests/golden/transcript/waiting_nearest.txt"),
         include_str!("../../../../tests/golden/transcript/waiting_nearest.html"),
         &Screen::theme(),
-        &[],
     );
 }
 
@@ -85,7 +84,6 @@ fn a_run_that_cant_go_on_says_why_what_was_tried_and_how_to_carry_on() {
         include_str!("../../../../tests/golden/transcript/waiting_stopped.txt"),
         include_str!("../../../../tests/golden/transcript/waiting_stopped.html"),
         &Screen::theme(),
-        &[],
     );
 }
 
@@ -170,6 +168,5 @@ fn only_a_pause_you_asked_for_says_paused() {
         include_str!("../../../../tests/golden/transcript/waiting_paused.txt"),
         include_str!("../../../../tests/golden/transcript/waiting_paused.html"),
         &Screen::theme(),
-        &[],
     );
 }

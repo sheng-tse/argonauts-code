@@ -878,7 +878,10 @@ fn open_picker(view: &mut OverviewView, state: &AppState, label: &str, offer: &D
     key(view, state, KeyCode::Enter);
     let outcome = key(view, state, KeyCode::Enter);
     assert!(
-        matches!(outcome, ViewOutcome::Request(ViewRequest::DeepOffer)),
+        matches!(
+            outcome,
+            ViewOutcome::Request(ViewRequest::DeepOffer { start: None })
+        ),
         "{label}: {outcome:?}"
     );
     assert_eq!(view.tab(), Tab::Config, "{label}");

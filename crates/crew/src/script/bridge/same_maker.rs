@@ -20,7 +20,6 @@ use super::reading::Change;
 use crate::approvals::{self, ApprovalRequest, autopilot};
 use crate::engine::error::EngineResult;
 use crate::engine::job_fallback;
-use crate::roles::display_name;
 use crate::script::tasks;
 
 const YES: &str = "yes";
@@ -100,7 +99,7 @@ impl Bridge<'_> {
         };
         let title = host.read(|state| crate::sessions::labels::task_label(state, &task));
         let maker_name =
-            job_fallback::model_name(host, maker).unwrap_or_else(|| display_name(maker));
+            job_fallback::model_name(host, maker).unwrap_or_else(|| host.names().worker(maker));
         let request = ApprovalRequest {
             at: Some(self.call.at.clone()),
             kind: ApprovalKind::Question,

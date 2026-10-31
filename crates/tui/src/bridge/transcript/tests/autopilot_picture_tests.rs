@@ -277,7 +277,7 @@ fn autopilot_the_workers_row_counts_its_decisions_and_the_answer_lists_them() {
         .expect("the closing answer");
     lines.push(Line::default());
     lines.extend_from_slice(&ended[answer..]);
-    assert_matches("autopilot", &lines, PICTURE, COLOURS, &theme, &[]);
+    assert_matches("autopilot", &lines, PICTURE, COLOURS, &theme);
     let screen: String = ended.iter().map(|line| format!("{line}\n")).collect();
     assert!(!screen.contains('?'), "nothing is asked: {screen}");
 }

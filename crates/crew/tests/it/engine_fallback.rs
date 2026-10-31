@@ -13,6 +13,7 @@ use tokio::sync::mpsc;
 
 use argonauts_core::agents::session_runner::{Access, RunnerEvent, RunnerKind};
 use argonauts_core::base::names::{ApprovalId, ModelRef, RoleName, SessionKey, WorkflowId};
+use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::models::limits::{
     Candidate, CandidateQuery, CostEstimate, FallbackNote, FallbackPlanner, HealthState,
     PlanUsageBoard, PlanUsageReading, PlanUsageSource, PlanUsageStatus, RecoveryAction, Shortlist,
@@ -55,7 +56,6 @@ use argonauts_crew::engine::host::Host;
 use argonauts_crew::fallback::on_return::Applied;
 use argonauts_crew::fallback::{self, on_return, rewind};
 use argonauts_crew::merge::branch::ensure_run_branch;
-use argonauts_crew::roles::display_name;
 use argonauts_crew::state::RunState;
 use argonauts_crew::state::blackboard::Addressee;
 use argonauts_testkit::engine::runner::{FakeRunner, FakeSession, session_end};
@@ -2336,7 +2336,7 @@ async fn the_engine_that_wakes_acts_on_the_answer_about_a_cli_that_is_down() -> 
 async fn a_tasks_fallback_is_said_for_its_workflows_view() -> anyhow::Result<()> {
     let bench = Bench::new().await?;
     let c1 = task(1);
-    let name = |model: &str| display_name(&worker(model));
+    let name = |model: &str| DisplayNames::default().worker(&worker(model));
     bench.built_until(&c1, 1, OPUS, EndReason::UsageLimit { resets_at: None })?;
     bench.fallback(&c1, CODEX).await?;
     let after_a_limit = format!(
@@ -2385,7 +2385,10 @@ async fn a_task_given_back_is_said_for_its_workflows_view() -> anyhow::Result<()
     let said = bench.workflow_notes();
     let (about, line) = said.last().context("a line about the workflow")?;
     assert_eq!(about, &Some(WorkflowId::numbered(1)));
-    let back = format!("{} is back · ", display_name(&worker(OPUS)));
+    let back = format!(
+        "{} is back · ",
+        DisplayNames::default().worker(&worker(OPUS))
+    );
     assert!(
         line.starts_with(&back) && line.ends_with(" carries on with it"),
         "{line}"
@@ -2448,8 +2451,8 @@ async fn a_tasks_line_names_same_cli_only_where_it_kept_another_cli_out() -> any
     };
     let stayed = format!(
         "{} is overloaded · fell back to {}",
-        display_name(&worker(OPUS)),
-        display_name(&worker(SONNET))
+        DisplayNames::default().worker(&worker(OPUS)),
+        DisplayNames::default().worker(&worker(SONNET))
     );
     // Opus stopped on an overload, and Sonnet is the one fallback on its CLI.
     let on_its_cli = |elsewhere: Option<&'static str>| async move {
@@ -2492,8 +2495,8 @@ async fn a_tasks_line_names_same_cli_only_where_it_kept_another_cli_out() -> any
     bench.fallback(&task(1), CODEX).await?;
     let elsewhere = format!(
         "{} is overloaded · fell back to {}",
-        display_name(&worker(OPUS)),
-        display_name(&worker(CODEX))
+        DisplayNames::default().worker(&worker(OPUS)),
+        DisplayNames::default().worker(&worker(CODEX))
     );
     assert_eq!(said(&bench), Some(elsewhere));
     Ok(())

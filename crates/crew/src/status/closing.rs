@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use argonauts_core::TaskId;
 use argonauts_core::agents::session_runner::Access;
 use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::runs::events::RunEventKind;
 use argonauts_core::runs::events::approval::{AnswerAction, ApprovalKind, ApprovalPacket};
 use argonauts_core::runs::events::run::{
@@ -165,8 +166,9 @@ async fn gather(host: &Host, outcome: RunOutcome, detail: Option<&str>) -> Closi
     if let Some(committed) = &committed {
         answer.left = answered_by_the_commit(std::mem::take(&mut answer.left), committed);
     }
-    answer.decided = host.read(|state| decided_alone(state, host.settings(), &run_merged));
-    if let Some(reviews) = host.read(reviews_line) {
+    answer.decided =
+        host.read(|state| decided_alone(host.names(), state, host.settings(), &run_merged));
+    if let Some(reviews) = host.read(|state| reviews_line(host.names(), state)) {
         answer.checks.push(reviews);
     }
     if !answer.decided.is_empty() {
@@ -182,6 +184,7 @@ async fn gather(host: &Host, outcome: RunOutcome, detail: Option<&str>) -> Closi
 /// delivered task's worker says it assumed, each question a worker asked with what it got, and
 /// each approval autopilot ended. Nothing off autopilot, where those came to you.
 fn decided_alone(
+    names: &DisplayNames,
     state: &RunState,
     settings: &Settings,
     run_merged: &BTreeSet<TaskId>,
@@ -218,7 +221,7 @@ fn decided_alone(
             }),
             Party::Agent { worker, .. } => decided.push(DecidedAlone {
                 what: format!("{asked} {}", one_line(&answer.text)),
-                whose: format!("{}'s answer", crate::roles::display_name(worker)),
+                whose: format!("{}'s answer", names.worker(worker)),
             }),
             _ => {}
         }
@@ -724,7 +727,7 @@ async fn main_agent_answer(
         (
             request,
             digests(state, outcome),
-            asked(state),
+            asked(host.names(), state),
             needed_you(state),
         )
     });
@@ -782,7 +785,7 @@ async fn main_agent_answer(
 }
 
 /// Each reviewer and sign-off that answered, in order, with what it said.
-fn asked(state: &RunState) -> Vec<String> {
+fn asked(names: &DisplayNames, state: &RunState) -> Vec<String> {
     state
         .sessions
         .in_order()
@@ -802,7 +805,7 @@ fn asked(state: &RunState) -> Vec<String> {
                 None => answer.get("verdict")?.as_str()? == "approve",
             };
             let said = if accepted { "accepted" } else { "sent it back" };
-            let who = crate::roles::display_name(&session.started.worker);
+            let who = names.worker(&session.started.worker);
             Some(match session.started.label.as_deref() {
                 Some(label) => format!("{label} ({who}): {said}"),
                 None => format!("{who}: {said}"),
@@ -814,7 +817,7 @@ fn asked(state: &RunState) -> Vec<String> {
 /// Who reviewed, for whom, and what each said, from the reviews themselves, so a fallback is
 /// named as one whatever a worker's report says: "Codex asked for changes · Claude Code, in place
 /// of Codex, accepted it". `None` when nothing was reviewed.
-fn reviews_line(state: &RunState) -> Option<CheckLine> {
+fn reviews_line(names: &DisplayNames, state: &RunState) -> Option<CheckLine> {
     use argonauts_core::runs::events::task::ReviewEvent;
     use argonauts_core::workflows::steps::judgment::ReviewVerdict;
     let in_place_of = |reviewer: &ModelRef| {
@@ -835,9 +838,9 @@ fn reviews_line(state: &RunState) -> Option<CheckLine> {
             else {
                 continue;
             };
-            let mut who = crate::roles::display_name(reviewer);
+            let mut who = names.worker(reviewer);
             if let Some(asked) = in_place_of(reviewer) {
-                who = format!("{who}, in place of {}", crate::roles::display_name(&asked));
+                who = format!("{who}, in place of {}", names.worker(&asked));
             }
             let yes = review.verdict == ReviewVerdict::Approve;
             let line = format!(

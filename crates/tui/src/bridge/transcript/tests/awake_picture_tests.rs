@@ -22,7 +22,6 @@ fn awake_says_what_it_holds_and_what_a_closed_lid_still_does() {
         include_str!("../../../../tests/golden/transcript/awake.txt"),
         include_str!("../../../../tests/golden/transcript/awake.html"),
         &Screen::theme(),
-        &[],
     );
 }
 
@@ -43,6 +42,5 @@ fn awake_again_says_what_still_holds_while_agents_work() {
         include_str!("../../../../tests/golden/transcript/awake_off.txt"),
         include_str!("../../../../tests/golden/transcript/awake_off.html"),
         &Screen::theme(),
-        &[],
     );
 }

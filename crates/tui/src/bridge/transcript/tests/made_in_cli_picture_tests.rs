@@ -65,7 +65,6 @@ fn coming_back_from_the_cli_draws_the_turns_made_there_under_one_line() {
         include_str!("../../../../tests/golden/transcript/back_from_cli.txt"),
         include_str!("../../../../tests/golden/transcript/back_from_cli.html"),
         &Screen::theme(),
-        &[],
     );
 }
 
@@ -90,6 +89,5 @@ fn resuming_draws_the_turns_made_in_the_cli_since_you_left() {
         include_str!("../../../../tests/golden/transcript/made_since_you_left.txt"),
         include_str!("../../../../tests/golden/transcript/made_since_you_left.html"),
         &Screen::theme(),
-        &[],
     );
 }

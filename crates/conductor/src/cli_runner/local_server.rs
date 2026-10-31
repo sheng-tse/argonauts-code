@@ -92,11 +92,10 @@ mod tests {
         let settings = Settings::default();
         let mut spec = spec();
         spec.run = Some(RunId::new("r-0001").unwrap());
-        let local =
-            LocalModel::of(&settings, &spec, &request("ollama/qwen3-coder:30b-64k")).unwrap();
+        let local = LocalModel::of(&settings, &spec, &request("ollama/qwen3-coder:30b")).unwrap();
         assert_eq!(
             (local.id, local.model.as_str()),
-            ("ollama", "qwen3-coder:30b-64k")
+            ("ollama", "qwen3-coder:30b")
         );
         assert!(local.loads_first());
         assert_eq!(local.holder.key, "run r-0001");
@@ -171,7 +170,7 @@ mod tests {
         let taken = requests.take().await.unwrap();
         let dir = tempfile::tempdir().unwrap();
         let mut spec = spec_in(dir.path(), &dir.path().join("session"), "hi");
-        spec.model = "fake/ollama/qwen3-coder:30b-64k".parse().unwrap();
+        spec.model = "fake/ollama/qwen3-coder:30b".parse().unwrap();
         let mut handle = driver.worker.start(spec).await.unwrap();
         tokio::time::sleep(Duration::from_millis(700)).await;
         assert!(matches!(
@@ -181,7 +180,7 @@ mod tests {
         // Held at once, but not loaded while another session has the server.
         assert_eq!(
             *asked.0.lock().unwrap(),
-            ["hold ollama qwen3-coder:30b-64k for conversation"]
+            ["hold ollama qwen3-coder:30b for conversation"]
         );
 
         drop(taken);
@@ -190,9 +189,9 @@ mod tests {
         assert_eq!(
             *asked.0.lock().unwrap(),
             [
-                "hold ollama qwen3-coder:30b-64k for conversation",
-                "load ollama qwen3-coder:30b-64k",
-                "touch ollama qwen3-coder:30b-64k",
+                "hold ollama qwen3-coder:30b for conversation",
+                "load ollama qwen3-coder:30b",
+                "touch ollama qwen3-coder:30b",
             ]
         );
     }

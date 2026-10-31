@@ -680,10 +680,7 @@ const PLAN: [&str; 6] = [
     "The store sits behind a RateStore interface; tests use an in-memory one",
 ];
 
-pub const RULE: &str = "Where you said how, that binds: a seat may object, only you change it. \
-    For the rest: small or one file, own session. Risky, like every request, money or logins, \
-    Maker-checker. Parts that share no files, one agent each. Each task goes to the seat whose \
-    idea it was; code picks a checker from another maker.";
+pub use crate::council::work::plan::RULE;
 
 pub fn plan_tasks() -> Vec<PlanTask> {
     let task = |name: &str, seat: SeatId, way: &str, why: Vec<Piece>, check: SeatId| PlanTask {
@@ -732,16 +729,12 @@ pub fn plan_tasks() -> Vec<PlanTask> {
 }
 
 fn who_message() -> SeatSays {
-    let mut message = says(
-        opus(),
-        &[
-            "As note keeper I propose who does what. Where you said how, I kept it; any seat can object, and you approve.",
-        ],
-    );
+    let mut message = says(opus(), &[crate::council::work::plan::PROPOSING]);
     message.inset = Some(Inset::Plan {
         tasks: plan_tasks(),
         columns: Columns::PROPOSED,
         rule: Some(RULE.to_owned()),
+        sat_out: Vec::new(),
     });
     message.taps = taps(&[
         (luna(), Mark::Agree),
@@ -956,6 +949,7 @@ fn who_does_what(tasks: Vec<PlanTask>, marks: &[(SeatId, Mark)]) -> Item {
         tasks,
         columns: Columns::AGREED,
         rule: None,
+        sat_out: Vec::new(),
     });
     message.taps = marks.to_vec();
     Item::Seat(vec![message])

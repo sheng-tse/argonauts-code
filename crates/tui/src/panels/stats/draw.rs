@@ -16,14 +16,39 @@ use super::fills::table_swatch;
 pub(in crate::panels) use super::fills::{Fill, swatch};
 use crate::base::kit::legend::{self, Columns, Figure, TableRow};
 use crate::base::kit::logo::logo_spans;
-use crate::base::kit::{Kit, merge};
-use crate::base::text::{str_width, truncate_spans};
+use crate::base::kit::{Kit, fit, merge};
+use crate::base::text::{self, At, spans_width, str_width, truncate_spans};
 pub(in crate::panels) use crate::base::theme::shades::shade;
 use crate::base::theme::{Brightness, ColorLevel, Role, nearest_ansi256};
 
 /// The most cells of a model's name on a card or in a legend, the longest the drawings write
 /// whole. A longer one is cut with `…`, as a provider's own id for a model often has to be.
 pub(super) const MODEL_NAME: usize = 16;
+
+/// The fewest cells a card's column of swatches and model names takes.
+const LEAST_NAMES: usize = 16;
+
+/// The column a card gives the swatches and `names` of its models, `gap` blanks before their
+/// bars, alike on every card so the bars line up. A name longer than the drawings write whole
+/// is cut with `…`.
+pub(super) fn names_column<'a>(names: impl Iterator<Item = &'a str>, gap: usize) -> usize {
+    let longest = names.map(str_width).max().unwrap_or(0);
+    (2 + longest + gap).clamp(LEAST_NAMES, 2 + MODEL_NAME + gap)
+}
+
+/// `fill`'s swatch and `name` in a [`names_column`] `(cells, gap)`, the name cut with `…`
+/// where it would come nearer its bar than `gap`.
+pub(super) fn swatch_and_name(
+    kit: &Kit<'_>,
+    fill: Fill,
+    name: &str,
+    (cells, gap): (usize, usize),
+) -> Vec<Span<'static>> {
+    let mut row = swatch(kit, fill);
+    let room = cells.saturating_sub(spans_width(&row) + gap);
+    row.push(Span::raw(text::cut(name, room, At::Char)));
+    fit(row, cells)
+}
 
 /// A model's name as a legend writes it, cut as [`cut_name`] cuts it.
 pub(super) fn model_name(name: &str) -> String {

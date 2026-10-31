@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context as _;
 use argonauts_core::NoteLevel;
 use argonauts_core::app::AppEvent;
+use argonauts_core::base::clock;
 use argonauts_core::runs::events::run::RunMode;
 use time::OffsetDateTime;
 
@@ -181,7 +182,7 @@ pub(crate) fn export(
         ctx.notice(NoteLevel::Info, "Nothing to export yet.");
         return Ok(Vec::new());
     };
-    let now = OffsetDateTime::now_utc();
+    let now = clock::now_utc();
     let title = if conversation.title.is_empty() {
         past.summary.title.clone()
     } else {

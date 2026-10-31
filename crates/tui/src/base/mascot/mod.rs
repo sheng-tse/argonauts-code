@@ -26,6 +26,9 @@ pub use send::Sent;
 /// A mascot fills 9 cells across and 3 down.
 pub const WIDTH: usize = 9;
 pub const ROWS: usize = 3;
+/// The rows an ultra look's picture takes above the mascot's own, the blank row over the
+/// header, so its mark rises there and the mascot keeps one size in every look.
+pub const ULTRA_ROWS_ABOVE: usize = 1;
 /// The pictures a cycle iTerm2 gets, which takes each one whole: fewer than the frames, so
 /// it isn't sent more than it can show.
 pub const ITERM_FRAMES: usize = 18;
@@ -114,6 +117,16 @@ impl Look {
     /// Whether it animates, with the gold mark of the ultra looks.
     pub fn is_ultra(self) -> bool {
         matches!(self, Look::Ultracode | Look::Codex)
+    }
+
+    /// The rows its picture starts above the mascot's first.
+    pub fn rows_above(self) -> usize {
+        if self.is_ultra() { ULTRA_ROWS_ABOVE } else { 0 }
+    }
+
+    /// The rows its picture takes.
+    pub fn picture_rows(self) -> usize {
+        ROWS + self.rows_above()
     }
 
     fn name(self) -> &'static str {

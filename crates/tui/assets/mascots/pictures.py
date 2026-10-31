@@ -3,9 +3,10 @@ as a PNG that fills its 9 x 3 cells, and each ultra look as the frames its anima
 through, one every 50 ms of its cycle. They are drawn for one cell size; the header sends them
 as drawn for a terminal of that size, and scales them to fit any other.
 
-A mascot keeps one drawn area in every state, its ultra mark included, so it doesn't move when
-the look changes. The area is fitted to the 9 x 3 cells by its height, or by its width when it
-would be too wide, and centred.
+A mascot keeps one size in every state, so it doesn't move when the look changes. Its own
+height fills the 3 rows; across, its area keeps the room its ultra marks take at the side. An
+ultra look's picture is one row taller and starts in the blank row above the header, so the
+mark's top rises into it. Where the area would be too wide, its width fits the 9 cells instead.
 
 pictures.json lists what was written, with each mascot's area, cycle and frames, for the header
 to read.
@@ -33,6 +34,8 @@ OUT = HERE / "pictures"
 # is scaled from it.
 CELLS = [(18, 42)]
 COLUMNS, ROWS = 9, 3
+# The rows an ultra look's picture takes above the mascot's own.
+ABOVE = 1
 # Seconds between an ultra look's frames, quicker than Claude Code's own 64 ms shimmer step.
 STEP = 0.05
 STILL = ("normal", "light")
@@ -74,25 +77,40 @@ def bounds(svg_text):
     return (x + left * sx, y + top * sy, (right - left) * sx, (bottom - top) * sy)
 
 
-def area(name):
-    """The drawn area with the ultra mark included, so a mascot keeps its size in every state."""
-    bx, by, bw, bh = bounds((argonauta.OUT / f"{name}-ultracode.svg").read_text())
-    pad = 0.04 * max(bw, bh)
-    return (round(bx - pad, 2), round(by - pad, 2), round(bw + 2 * pad, 2), round(bh + 2 * pad, 2))
+def area(name, ultra_svgs):
+    """The mascot's own height, down to the lowest any frame reaches, and across, the room its
+    ultra looks take at the side: the still and every ultra frame, so nothing moving is cut."""
+    nx, ny, nw, nh = bounds((argonauta.OUT / f"{name}.svg").read_text())
+    top, left, right, bottom = ny, nx, nx + nw, ny + nh
+    for svg in ultra_svgs:
+        x, y, w, h = bounds(svg)
+        top, left, right, bottom = min(top, y), min(left, x), max(right, x + w), max(bottom, y + h)
+    rise = (ny - top) / (bottom - ny) * ROWS
+    if rise > ABOVE:
+        sys.exit(f"{name}: an ultra mark rises {rise:.2f} rows, more than the {ABOVE} above")
+    return (round(left, 2), round(ny, 2), round(right - left, 2), round(bottom - ny, 2))
 
 
-def png(svg_text, box, size):
-    """The mascot's area fitted into a transparent picture of `size` pixels."""
+def png(svg_text, box, size, above=0):
+    """The mascot's area fitted into the bottom ROWS rows of a transparent picture of `size`
+    pixels, by its height or by its width when that would be too wide, and centred there. A
+    picture `above` rows taller shows as much more of the drawing over the area."""
     bx, by, bw, bh = box
     box_w, box_h = size
-    height = box_h
+    lift = box_h * above // (ROWS + above)
+    rows_h = box_h - lift
+    height = rows_h
     width = height * bw / bh
     if width > box_w:
         width, height = box_w, box_w * bh / bw
-    cropped = re.sub(r'viewBox="[^"]+"', f'viewBox="{bx} {by} {bw} {bh}"', svg_text, count=1)
-    art = Image.open(io.BytesIO(render(cropped, round(width), round(height))))
+    width, height = round(width), round(height)
+    rise = lift * bh / height
+    cropped = re.sub(
+        r'viewBox="[^"]+"', f'viewBox="{bx} {by - rise} {bw} {bh + rise}"', svg_text, count=1
+    )
+    art = Image.open(io.BytesIO(render(cropped, width, height + lift)))
     canvas = Image.new("RGBA", (box_w, box_h), (0, 0, 0, 0))
-    canvas.alpha_composite(art, ((box_w - art.width) // 2, (box_h - art.height) // 2))
+    canvas.alpha_composite(art, ((box_w - width) // 2, (rows_h - height) // 2))
     out = io.BytesIO()
     canvas.save(out, "PNG", optimize=True)
     return out.getvalue()
@@ -103,23 +121,28 @@ def main(given=()):
     OUT.mkdir(exist_ok=True)
     for old in OUT.glob("*.png"):
         old.unlink()
-    listing = {"cells": CELLS, "step": STEP, "mascots": {}}
+    listing = {"cells": CELLS, "step": STEP, "above": ABOVE, "mascots": {}}
     for make in argonauta.MASCOTS:
         probe = make(argonauta.Motion("off"), "x", False)
         name = probe["name"]
-        box = area(name)
         frames = frames_of(probe["cycle"])
+        ultra = {
+            state: [frame_svg(make, state, k, frames, given) for k in range(frames)]
+            for state in argonauta.STATES
+            if state not in STILL
+        }
+        box = area(name, [svg for drawn in ultra.values() for _, svg in drawn])
         listing["mascots"][name] = {"area": box, "cycle": probe["cycle"], "frames": frames}
         for cw, ch in CELLS:
             size = (COLUMNS * cw, ROWS * ch)
-            for state in argonauta.STATES:
-                if state in STILL:
-                    stem, svg = argonauta.build(make, state)
-                    (OUT / f"{stem}-{cw}x{ch}.png").write_bytes(png(svg, box, size))
-                    continue
-                for k in range(frames):
-                    stem, svg = frame_svg(make, state, k, frames, given)
-                    (OUT / f"{stem}-{cw}x{ch}-{k:02d}.png").write_bytes(png(svg, box, size))
+            tall = (COLUMNS * cw, (ROWS + ABOVE) * ch)
+            for state in STILL:
+                stem, svg = argonauta.build(make, state)
+                (OUT / f"{stem}-{cw}x{ch}.png").write_bytes(png(svg, box, size))
+            for drawn in ultra.values():
+                for k, (stem, svg) in enumerate(drawn):
+                    picture = png(svg, box, tall, ABOVE)
+                    (OUT / f"{stem}-{cw}x{ch}-{k:02d}.png").write_bytes(picture)
     (HERE / "pictures.json").write_text(json.dumps(listing, indent=1) + "\n")
     write_list(listing)
     print("wrote", len(list(OUT.glob("*.png"))), "pictures")
@@ -143,7 +166,7 @@ def write_list(listing):
         "",
         "macro_rules! picture {",
         "    ($name:literal) => {",
-        '        include_bytes!(concat!("../../assets/mascots/pictures/", $name)).as_slice()',
+        '        include_bytes!(concat!("../../../assets/mascots/pictures/", $name)).as_slice()',
         "    };",
         "}",
     ]
@@ -159,7 +182,7 @@ def write_list(listing):
                 lines.append(f'        picture!("{name}-{state}-{cw}x{ch}-{k:02d}.png"),')
             lines.append("    ],")
         lines.append("};")
-    (HERE.parent.parent / "src" / "mascot" / "frames.rs").write_text("\n".join(lines) + "\n")
+    (HERE.parent.parent / "src" / "base" / "mascot" / "frames.rs").write_text("\n".join(lines) + "\n")
 
 
 if __name__ == "__main__":

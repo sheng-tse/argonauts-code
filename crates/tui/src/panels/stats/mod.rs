@@ -360,6 +360,34 @@ impl StatsState {
         self.in_table() && self.table.claims(code)
     }
 
+    /// The cards have rows the keys move through: the crew did something in the period.
+    pub fn has_rows(
+        &self,
+        usage: Option<&UsageSummary>,
+        names: &DisplayNames,
+        now: OffsetDateTime,
+    ) -> bool {
+        usage.is_some_and(|usage| {
+            usage
+                .stats
+                .as_ref()
+                .is_some_and(|stats| self.picks(&Crew::of(usage, stats, names, now.date())) > 0)
+        })
+    }
+
+    /// A letter that regroups puts the keys in the cards; with no rows there they go to the
+    /// sub-tabs, which show what it chose.
+    fn leave_empty_cards(
+        &mut self,
+        usage: Option<&UsageSummary>,
+        names: &DisplayNames,
+        now: OffsetDateTime,
+    ) {
+        if self.level == Level::Cards && !self.has_rows(usage, names, now) {
+            self.level = Level::SubTabs;
+        }
+    }
+
     /// How many cards the keys move over.
     fn picks(&self, crew: &Crew) -> usize {
         match self.group {
@@ -408,10 +436,12 @@ impl StatsState {
         match code {
             KeyCode::Char('c') => {
                 self.regroup(StatsGroup::Cli, Level::Cards);
+                self.leave_empty_cards(usage, names, now);
                 return Some(StatsKey::Moved);
             }
             KeyCode::Char('m') => {
                 self.regroup(StatsGroup::Model, Level::Cards);
+                self.leave_empty_cards(usage, names, now);
                 return Some(StatsKey::Moved);
             }
             KeyCode::Char('u') => {
@@ -434,7 +464,7 @@ impl StatsState {
             KeyCode::Left if self.level == Level::SubTabs => return Some(self.step_group(-1)),
             KeyCode::Right if self.level == Level::SubTabs => return Some(self.step_group(1)),
             KeyCode::Down | KeyCode::Enter if self.level != Level::Cards => {
-                self.level = self.level.down();
+                self.level = self.level.down(self.has_rows(usage, names, now));
                 return Some(StatsKey::Moved);
             }
             KeyCode::Up if self.level != Level::Cards || self.on_first() => {
@@ -600,8 +630,9 @@ impl StatsState {
     }
 
     /// The keys, in display order, after the period's: on the tabs and the sub-tabs how to
-    /// move on, and in the cards what each key does there.
-    pub fn keys(&self) -> Vec<&'static str> {
+    /// move on, and in the cards what each key does there. Without `rows` in the cards, ↓
+    /// stops at the sub-tabs and Enter there opens nothing.
+    pub fn keys(&self, rows: bool) -> Vec<&'static str> {
         const ALONG: &str = "tab By CLI, By model, By role";
         let into = if self.no_total {
             "↓  into the cards"
@@ -613,11 +644,16 @@ impl StatsState {
         match (self.level, self.group) {
             (Level::Tabs, _) => vec![
                 "tab · ←  →  tabs",
-                "↓  sub-tabs, then cards",
+                if rows {
+                    "↓  sub-tabs, then cards"
+                } else {
+                    "↓  sub-tabs"
+                },
                 MEASURE,
                 "enter open",
                 "p pin",
             ],
+            (Level::SubTabs, _) if !rows => vec![ALONG, "↑  tabs"],
             (Level::SubTabs, StatsGroup::Cli) => vec![ALONG, into, "↑  tabs"],
             (Level::SubTabs, StatsGroup::Model) => vec![ALONG, into, "enter opens a model"],
             (Level::SubTabs, StatsGroup::Role) => vec![ALONG, into, "enter opens a role"],
@@ -719,5 +755,6 @@ mod golden_by_model_and_role;
 pub mod deep_flow;
 pub mod deep_lines;
 pub mod deep_map;
+pub mod deep_open;
 #[cfg(test)]
 mod golden_many_models;

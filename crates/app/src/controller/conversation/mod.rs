@@ -1575,7 +1575,7 @@ fn request(
     // The main session is the CLI itself: your message goes to it as its CLI takes it, with
     // no estimate first, and it hands work over by calling a tool. With plan first on, the
     // session plans before it changes anything.
-    if is_the_cli(ctx, conversation) {
+    if is_the_cli(ctx, conversation) && !standing::reads_the_verdict(ctx, conversation) {
         let mut effects = effects;
         if conversation.prefs.plan_first {
             effects.extend(direct::plan(
@@ -2175,7 +2175,7 @@ pub(crate) fn command_typed(ctx: &Ctx, conversation: &mut ConversationState, tex
     if !text.is_empty() {
         let typed = ConversationEvent::CommandTyped {
             text: text.to_owned(),
-            at: Some(time::OffsetDateTime::now_utc()),
+            at: Some(argonauts_core::base::clock::now_utc()),
         };
         record(ctx, conversation, &typed);
     }

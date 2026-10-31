@@ -868,22 +868,22 @@ mod tests {
     fn at_80_columns_a_row_lets_go_of_its_tokens_before_its_model() {
         let local = cells(
             "build:d-plain-mode",
-            "Qwen3 Coder 30B (64k)",
+            "Sample Coder 30B (64k)",
             &[],
             "102.4k tok",
         );
         assert_eq!(
             drawn(&local, 49),
-            " ✔ build:d-plain-mode  Qwen3 Coder 30B…    31m45s"
+            " ✔ build:d-plain-mode  Sample Coder 30B…   31m45s"
         );
         let row = drawn(&local, 63);
         assert!(
-            row.contains("Qwen3 Coder 30B (64k) ") && !row.contains("tok"),
+            row.contains("Sample Coder 30B (64k) ") && !row.contains("tok"),
             "{row:?}"
         );
         let row = drawn(&local, 70);
         assert!(
-            row.contains("Qwen3 Coder 30B (64k) ") && row.ends_with(" 102.4k tok  31m45s"),
+            row.contains("Sample Coder 30B (64k) ") && row.ends_with(" 102.4k tok  31m45s"),
             "{row:?}"
         );
 

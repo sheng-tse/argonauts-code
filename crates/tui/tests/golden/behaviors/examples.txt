@@ -19,8 +19,8 @@
                                                                     ○  ◧◨ 5.6 Luna     49
                                                                     ↓  2 more below
 
-  ◉ Read git history · ◧◨ 6 Luna · build:per-api-key · git show --stat --oneline ef3f187 && git show ef3f187 --
-    ratelimit/bucket.py
+  ◉ Read git history · ◧◨ 6 Luna · build:per-api-key
+    git show --stat --oneline ef3f187 && git show ef3f187 -- ratelimit/bucket.py
   Label map · 562 actions in 19 runs across 6 projects
   ◧◨ 6 Luna · read git history · 9 times
 

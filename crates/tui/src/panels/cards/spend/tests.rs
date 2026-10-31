@@ -426,7 +426,7 @@ fn local_spend_reads_as_local() {
     let mut usage = the_pictures_week();
     let mut qwen = share(
         "opencode",
-        Some("ollama/qwen3-coder:30b-64k"),
+        Some("ollama/qwen3-coder:30b"),
         spent(0.0, 490_538, false),
         [0.0; 7],
     );

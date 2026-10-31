@@ -3,13 +3,9 @@
 
 use std::collections::BTreeMap;
 
-use argonauts_core::behaviors::behavior_world::{CrewFacts, MonthActions, QuietStretch};
+use argonauts_core::behaviors::behavior_world::{CrewFacts, MonthActions, QuietStretch, at_night};
 
 use super::{Read, storm};
-
-/// Night is from 10:00 PM to 5:00 AM on your clock.
-const NIGHT_FROM: u8 = 22;
-const NIGHT_TO: u8 = 5;
 
 pub(super) fn facts(read: &Read<'_>, zone: Option<&str>) -> CrewFacts {
     let idle_days = read.active_days.first().copied().unwrap_or(0);
@@ -21,10 +17,7 @@ pub(super) fn facts(read: &Read<'_>, zone: Option<&str>) -> CrewFacts {
         night_actions: read
             .in_period
             .iter()
-            .filter(|recorded| {
-                let hour = read.period.local(recorded.at).hour();
-                !(NIGHT_TO..NIGHT_FROM).contains(&hour)
-            })
+            .filter(|recorded| at_night(read.period.local(recorded.at).hour()))
             .count() as u32,
         earlier_months: earlier_months(read),
         storm: storm::word(zone),

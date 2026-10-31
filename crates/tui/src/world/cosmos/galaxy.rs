@@ -75,6 +75,9 @@ impl Cosmos {
                 image = self.draw_groups(&image, &groups, t, draw);
                 layer_key = self.key([layer_key, motion::step_of(t)]);
             }
+        }
+        if !view.still {
+            self.add_twinkles(&mut scene, maker, frame, t);
             scene.moves = true;
         }
         scene.add_layer(Layer {

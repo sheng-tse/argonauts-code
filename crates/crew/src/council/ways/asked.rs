@@ -150,6 +150,7 @@ pub fn attach(tasks: &mut [TaskSpec], asked: &[Asked]) -> Vec<TaskId> {
             how,
             asked_by_you: true,
             steps: None,
+            why: None,
         });
         marked.push(task.id.clone());
     }
@@ -617,6 +618,7 @@ mod tests {
             how: Way::Agents { count: 3 },
             asked_by_you: false,
             steps: None,
+            why: None,
         });
         let asked = asked_in(REQUEST, &known());
         let marked = attach(&mut tasks, &asked);
@@ -657,6 +659,7 @@ mod tests {
             how: workflow("best-of-n"),
             asked_by_you: true,
             steps: None,
+            why: None,
         });
         let asked = asked_in(REQUEST, &known());
         attach(&mut tasks, &asked);
@@ -680,11 +683,13 @@ mod tests {
             how: workflow("maker-checker"),
             asked_by_you: true,
             steps: None,
+            why: None,
         });
         tasks[2].way = Some(TaskWay {
             how: workflow("best-of-n"),
             asked_by_you: true,
             steps: None,
+            why: None,
         });
         assert_eq!(
             check(&tasks, &asked, &[]),
@@ -719,6 +724,7 @@ mod tests {
             how: workflow("maker-checker"),
             asked_by_you: true,
             steps: None,
+            why: None,
         });
         let broken = check(&tasks, &asked, &[]);
         assert_eq!(
@@ -784,6 +790,7 @@ mod tests {
                 how,
                 asked_by_you: asked,
                 steps: None,
+                why: None,
             });
         };
         set(&mut tasks[0], workflow("maker-checker"), true);

@@ -288,14 +288,15 @@ pub fn line_meter(
 /// A plan window's meter, as the bottom line and the pickers draw a window: the lower half of
 /// each cell, its edge to half a cell and at least half a cell for anything used, over a thin
 /// faint line at the foot of the cells it leaves, so a row of them reads as marks beside their
-/// numbers rather than blocks, and by its shape without colour too. Without colour or block
-/// glyphs it is the block meter, which has a form for both.
+/// numbers rather than blocks, and by its shape without colour too. Only a used-up window
+/// fills its last half cell. Without colour or block glyphs it is the block meter, which has a
+/// form for both.
 pub fn window_meter(kit: &Kit<'_>, ratio: f64, cells: usize, fill: Role) -> Vec<Span<'static>> {
     let ratio = ratio.clamp(0.0, 1.0);
     if !kit.has_color() || kit.theme.glyphs.is_ascii() {
         return block_meter(kit, ratio, cells, fill, Role::BarTrack);
     }
-    let mut halves = round(ratio * (cells * 2) as f64);
+    let mut halves = short_of_full(round(ratio * (cells * 2) as f64), ratio, cells * 2);
     if ratio > 0.0 {
         halves = halves.max(1);
     }
@@ -309,7 +310,7 @@ pub fn window_meter(kit: &Kit<'_>, ratio: f64, cells: usize, fill: Role) -> Vec<
 
 /// A plan window's meter in whole cells, as the bottom line draws a window: [`window_meter`]
 /// with its edge on a cell's edge, and at least one cell for any use, so it never leaves half a
-/// cell blank before the track.
+/// cell blank before the track. The last cell fills only at 100%: 92% of six cells shows five.
 pub fn whole_window_meter(
     kit: &Kit<'_>,
     share: f64,
@@ -317,11 +318,20 @@ pub fn whole_window_meter(
     fill: Role,
 ) -> Vec<Span<'static>> {
     let share = share.clamp(0.0, 1.0);
-    let mut filled = (share * cells as f64).round();
+    let mut filled = short_of_full(round(share * cells as f64), share, cells);
     if share > 0.0 {
-        filled = filled.max(1.0);
+        filled = filled.max(1);
     }
-    window_meter(kit, filled / cells.max(1) as f64, cells, fill)
+    window_meter(kit, filled as f64 / cells.max(1) as f64, cells, fill)
+}
+
+/// `units` of `whole`, one short of all of them unless the share is the whole window.
+fn short_of_full(units: usize, share: f64, whole: usize) -> usize {
+    if share < 1.0 {
+        units.min(whole.saturating_sub(1))
+    } else {
+        units
+    }
 }
 
 /// A thin bar of `━`: the share in `fill`, the rest of the track faint, and at least one

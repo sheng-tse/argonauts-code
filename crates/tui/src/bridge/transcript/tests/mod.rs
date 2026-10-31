@@ -23,6 +23,8 @@ pub(super) mod resumed_tests;
 #[cfg(test)]
 pub(super) mod stop_picture_tests;
 #[cfg(test)]
+pub(super) mod talk_opening_tests;
+#[cfg(test)]
 pub(super) mod templates_picture_tests;
 #[cfg(test)]
 pub(super) mod update_failed_picture_tests;
@@ -217,6 +219,7 @@ fn conversation_turn(n: u32, question: &str, answer: &str) -> Vec<AppEvent> {
             uncommitted: vec![],
             settings_sha256: None,
             continues: false,
+            opens_a_talk: false,
         }),
         conversation(ConversationEvent::Agent {
             turn: turn.clone(),
@@ -1236,6 +1239,7 @@ fn the_echo_draws_the_keywords_of_the_cli_that_took_the_turn() {
                 uncommitted: vec![],
                 settings_sha256: None,
                 continues: false,
+                opens_a_talk: false,
             },
         });
         let echoed = driver
@@ -1366,6 +1370,7 @@ fn greeting_with_own_calls() -> Vec<AppEvent> {
             uncommitted: vec![],
             settings_sha256: None,
             continues: false,
+            opens_a_talk: false,
         },
     }];
     events.extend(call(
@@ -2219,6 +2224,7 @@ fn crew_workflow_driver() -> TestDriver {
                 phase(1, "Merge", "the final check, then the merge"),
             ],
             required: Vec::new(),
+            talks: false,
         }),
     ))));
     driver
@@ -2299,6 +2305,7 @@ fn the_start_says_where_to_watch_it_and_leaves_the_phases_to_the_view() {
                 phase(1, "Merge", "the final check, then the merge"),
             ],
             required: Vec::new(),
+            talks: false,
         }),
     ))));
     let printed = driver.printed_at(60);
@@ -2574,6 +2581,7 @@ fn a_run_as_you_asked_says_so_then_prints_its_workflow_then_its_closing_answer()
                 phase(1, "Review", "Claude Code reviews each task"),
             ],
             required: Vec::new(),
+            talks: false,
         }),
     ))));
     driver.send(run_event(RunEventKind::Run(RunLifecycle::ClosingAnswer(
@@ -2863,6 +2871,7 @@ fn a_joined_message_a_mods_log_and_a_mirrored_workflow_in_the_conversation() {
         uncommitted: vec![],
         settings_sha256: None,
         continues: false,
+        opens_a_talk: false,
     }));
     driver.send(agent(AgentEvent::PluginOutput {
         kind: PluginOutputKind::Log,
@@ -2953,6 +2962,7 @@ fn a_turn_stopped_alone_leaves_the_interrupted_line_once() {
             uncommitted: vec![],
             settings_sha256: None,
             continues: false,
+            opens_a_talk: false,
         })
     };
 
@@ -3000,12 +3010,13 @@ fn a_turn_a_watchdog_stopped_says_what_it_saw() {
     driver.send(conversation(ConversationEvent::TurnStarted {
         turn: turn.clone(),
         text: "fix slugify".into(),
-        worker: ModelRef::new("opencode", Some("ollama/qwen3-coder:30b-64k".into())),
+        worker: ModelRef::new("opencode", Some("ollama/qwen3-coder:30b".into())),
         read_only: false,
         commit: "8b41d07".into(),
         uncommitted: vec![],
         settings_sha256: None,
         continues: false,
+        opens_a_talk: false,
     }));
     driver.send(conversation(ConversationEvent::Agent {
         turn: turn.clone(),
@@ -3084,6 +3095,7 @@ fn handed_over_driver() -> (TestDriver, argonauts_core::base::names::WorkflowId)
             description: "The steps of the workflow in use, then the merge approval".into(),
             phases: vec![phase(0, "Work"), phase(1, "Merge")],
             required: vec!["benchmark".into()],
+            talks: false,
         }),
     ))));
     (driver, id)
@@ -3315,6 +3327,7 @@ fn an_edit_in_the_conversation_shows_the_file_numbers_its_result_reported() {
             uncommitted: vec![],
             settings_sha256: None,
             continues: false,
+            opens_a_talk: false,
         },
     });
     driver.printed();
@@ -3367,6 +3380,7 @@ fn a_file_codex_wrote_in_the_conversation_ends_at_its_patch() {
             uncommitted: vec![],
             settings_sha256: None,
             continues: false,
+            opens_a_talk: false,
         },
     });
     driver.printed();
@@ -3518,6 +3532,7 @@ fn an_answer_asked_for_again_prints_once() {
             uncommitted: vec![],
             settings_sha256: None,
             continues: false,
+            opens_a_talk: false,
         })
     };
     let finished = || {

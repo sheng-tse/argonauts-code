@@ -194,7 +194,6 @@ mod tests {
             ),
             ROW..ROW + 1,
             &theme,
-            &[],
         );
     }
 

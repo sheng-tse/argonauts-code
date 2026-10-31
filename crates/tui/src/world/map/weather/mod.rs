@@ -35,7 +35,7 @@
 //! let weather = Weather::new(&ground, &relief, &nature, &land, &placed);
 //! // Over the land: what lies under the dots, the dots, then what passes over them.
 //! let (under, over) = (weather.under_dots(Moment::Still), weather.over_dots(Moment::Still));
-//! # let _ = (under, over, weather.sprites(Moment::At(0.5), 7));
+//! # let _ = (under, over, weather.sprites(Moment::at(0.5), 7));
 //! ```
 
 mod clouds;

@@ -1,0 +1,9 @@
+# Set up with Council, and agy on gemini-3.6-pro to talk to, on a very first run: no list gives
+# that model's window. The project holds an AGENTS.md of 4,800 characters.
+workflow = "council"
+
+[crew]
+main = "antigravity-cli/gemini-3.6-pro"
+worker = ["claude-code", "codex", "antigravity-cli", "opencode"]
+reviewer = ["claude-code", "codex", "antigravity-cli", "opencode"]
+judge = ["claude-code", "codex", "antigravity-cli", "opencode"]

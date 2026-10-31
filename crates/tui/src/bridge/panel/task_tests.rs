@@ -57,6 +57,7 @@ fn task(run: &mut RunState, n: u32, title: &str, way: Way, state: TaskState, wor
         how: way,
         asked_by_you: false,
         steps: None,
+        why: None,
     });
     row.worker = Some(model(worker));
     run.tasks.insert(task_id(n), row);
@@ -490,15 +491,17 @@ fn a_task_done_by_its_clis_own_workflow_counts_that_workflows_agents() {
 }
 
 /// While a council talks, its request counts the seats that back every point: none before the
-/// first list of points, a seat once it agrees with every open point and doesn't object to
-/// yours, and all four when the talk agrees. Once it has tasks, the request counts those.
+/// note keeper's first list of points, a seat once it agrees with every open point, and all four
+/// when the talk agrees. Your points bind whoever objects, so they aren't counted and a seat that
+/// objects to one still signs, as the plan drawing's "Signed, 1 objection". Once the council has
+/// tasks, the request counts those.
 #[test]
 fn a_councils_talk_counts_the_seats_that_back_every_point() {
     use argonauts_core::app::AppEvent;
-    use argonauts_core::base::names::{SeatId, WorkflowId};
+    use argonauts_core::base::names::{MessageId, SeatId, WorkflowId};
     use argonauts_core::runs::events::council::{
-        CouncilEvent, CouncilEventKind, Point, PointStance, PointState, Seat, SeatRole, Seating,
-        Stance,
+        CouncilEvent, CouncilEventKind, CouncilMessage, MessageKind, Point, PointStance,
+        PointState, Seat, SeatRole, Seating, Speaker, Stance, TextPart,
     };
     use argonauts_core::runs::events::{RunEvent, RunEventKind};
     use argonauts_core::workflows::workflow::StepRef;
@@ -573,6 +576,37 @@ fn a_councils_talk_counts_the_seats_that_back_every_point() {
         &mut state,
         0,
         CouncilEventKind::Points {
+            points: vec![point(1, PointState::Yours)],
+        },
+    );
+    assert_eq!(
+        request_count(&state),
+        Some((0, 4)),
+        "nobody stands on your points while the seats write their first answers"
+    );
+    tell(
+        &mut state,
+        0,
+        CouncilEventKind::Message(Box::new(CouncilMessage {
+            id: MessageId::numbered(1),
+            from: Speaker::Seat(SeatId::numbered(1)),
+            kind: MessageKind::Notes,
+            text: vec![TextPart::Words("The points so far.".into())],
+            reply_to: None,
+            mentions: Vec::new(),
+            stances: Vec::new(),
+            hidden: 0,
+            hidden_names: Vec::new(),
+            guesses_hidden: 0,
+            rewritten: false,
+            declined: false,
+            started_before: None,
+        })),
+    );
+    tell(
+        &mut state,
+        0,
+        CouncilEventKind::Points {
             points: vec![point(1, PointState::Open), point(2, PointState::Yours)],
         },
     );
@@ -588,14 +622,43 @@ fn a_councils_talk_counts_the_seats_that_back_every_point() {
         stances(2, &[(1, Stance::Agree), (2, Stance::Object)]),
     );
     tell(&mut state, 0, stances(3, &[(1, Stance::Question)]));
-    assert_eq!(request_count(&state), Some((1, 4)));
+    assert_eq!(
+        request_count(&state),
+        Some((2, 4)),
+        "a seat that objects to your point still backs every point"
+    );
     // A later stance replaces the seat's last one on that point and keeps the rest.
-    tell(&mut state, 0, stances(2, &[(2, Stance::Agree)]));
-    assert_eq!(request_count(&state), Some((2, 4)));
+    tell(&mut state, 0, stances(2, &[(1, Stance::Object)]));
+    assert_eq!(request_count(&state), Some((1, 4)));
     // A talk that isn't the latest changes nothing.
     tell(&mut state, 1, stances(3, &[(1, Stance::Agree)]));
-    assert_eq!(request_count(&state), Some((2, 4)));
+    assert_eq!(request_count(&state), Some((1, 4)));
     tell(&mut state, 0, CouncilEventKind::Agreed { points: 2 });
+    assert_eq!(request_count(&state), Some((4, 4)));
+
+    // The plan's tasks are made while it waits for you, and the seats stay until work starts.
+    let names = |state: &AppState| -> Vec<String> {
+        run_rows(state, T0, Instant::now())
+            .iter()
+            .skip(1)
+            .map(|row| row.name.clone())
+            .collect()
+    };
+    let run = state.runs.get_mut(&id).unwrap();
+    task(
+        run,
+        1,
+        "Due date field",
+        Way::OwnSession,
+        TaskState::Ready,
+        "claude-code/claude-opus-5-5",
+    );
+    let waiting = names(&state);
+    assert_eq!(waiting.len(), 4, "{waiting:?}");
+    assert!(
+        !waiting.contains(&"Due date field".to_owned()),
+        "{waiting:?}"
+    );
     assert_eq!(request_count(&state), Some((4, 4)));
 
     let run = state.runs.get_mut(&id).unwrap();
@@ -607,6 +670,7 @@ fn a_councils_talk_counts_the_seats_that_back_every_point() {
         TaskState::Running,
         "claude-code/claude-opus-5-5",
     );
+    assert_eq!(names(&state), ["Due date field"]);
     assert_eq!(request_count(&state), Some((0, 1)));
 }
 
@@ -658,6 +722,7 @@ fn a_workflow_task_counts_the_steps_its_workflow_declares() {
                     how: way,
                     asked_by_you: false,
                     steps: Some(3),
+                    why: None,
                 }),
             }))),
         }),
@@ -727,6 +792,7 @@ fn a_workflow_task_counts_its_review_before_it_starts() {
                     how: way,
                     asked_by_you: false,
                     steps: None,
+                    why: None,
                 }),
             }))),
         }),

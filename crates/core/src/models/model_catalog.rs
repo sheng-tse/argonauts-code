@@ -99,6 +99,10 @@ pub struct CatalogEntry {
     /// On a CLI's own entry: the model its default runs, when the CLI doesn't say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runs: Option<String>,
+    /// The most tokens a session holds, as the model's CLI or maker says. On a CLI's own
+    /// entry, the window of whatever its default runs, where the CLI doesn't say which model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<u64>,
     /// What a level means on this model, where it is different from the catalog's notes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effort_notes: Vec<EffortNote>,
@@ -137,6 +141,7 @@ impl CatalogEntry {
             aliases: None,
             rank: None,
             runs: None,
+            window: None,
             effort_notes: Vec::new(),
         }
     }
@@ -161,6 +166,7 @@ impl CatalogEntry {
             aliases,
             rank,
             runs,
+            window,
             effort_notes,
         } = later;
         self.name = name.or(self.name.take());
@@ -171,6 +177,7 @@ impl CatalogEntry {
         self.aliases = aliases.or(self.aliases.take());
         self.rank = rank.or(self.rank);
         self.runs = runs.or(self.runs.take());
+        self.window = window.or(self.window);
         overlay_notes(&mut self.effort_notes, effort_notes);
     }
 }
@@ -246,6 +253,16 @@ impl ModelCatalog {
             }
             _ => entry.id.model.clone(),
         }
+    }
+
+    /// The window of a session of `id`: its own entry's, else that of the model an alias such
+    /// as `opus` names or a CLI named alone runs.
+    pub fn window(&self, id: &ModelRef) -> Option<u64> {
+        let own = self.models.iter().find(|entry| entry.id == *id);
+        own.and_then(|entry| entry.window).or_else(|| {
+            let runs = ModelRef::new(id.agent.clone(), Some(self.runs(id)?));
+            self.entry(&runs)?.window
+        })
     }
 
     /// Whether `id` is an alias the catalog resolves, rather than a model of its own.
@@ -481,6 +498,47 @@ mod tests {
     }
 
     #[test]
+    fn a_default_or_an_alias_takes_the_window_of_the_model_it_runs() {
+        let mut catalog: ModelCatalog = toml::from_str(
+            r#"
+            [[model]]
+            id = "claude-code"
+            runs = "claude-opus-5-5"
+
+            [[model]]
+            id = "claude-code/claude-opus-5-5"
+            aliases = ["opus"]
+            window = 1000000
+
+            [[model]]
+            id = "antigravity-cli"
+            window = 1048576
+            "#,
+        )
+        .unwrap();
+        for worker in [
+            "claude-code",
+            "claude-code/opus",
+            "claude-code/claude-opus-5-5",
+        ] {
+            assert_eq!(catalog.window(&id(worker)), Some(1_000_000), "{worker}");
+        }
+        assert_eq!(catalog.window(&id("antigravity-cli")), Some(1_048_576));
+        assert_eq!(catalog.window(&id("antigravity-cli/gemini-3.6-pro")), None);
+
+        let later: ModelCatalog = toml::from_str(
+            r#"
+            [[model]]
+            id = "claude-code/claude-opus-5-5"
+            description = "Another layer that says nothing of the window"
+            "#,
+        )
+        .unwrap();
+        catalog.merge(later);
+        assert_eq!(catalog.window(&id("claude-code")), Some(1_000_000));
+    }
+
+    #[test]
     fn names_derive_from_ids() {
         for (model, name) in [
             ("claude-opus-5-5", "Opus 5.5"),
@@ -500,7 +558,7 @@ mod tests {
             ("llama3.1:latest", "Llama3.1"),
             ("gemma4:e2b", "Gemma4 E2B"),
             ("qwen3-30b-a3b", "Qwen3 30B A3B"),
-            ("gemma3:12b-32k", "Gemma3 12B 32K"),
+            ("gemma3:4b-16k", "Gemma3 4B 16K"),
             ("gemini-2.5-pro-2025-06-05", "Gemini 2.5 Pro"),
             ("gpt-4-0613", "GPT 4 0613"),
             ("", ""),

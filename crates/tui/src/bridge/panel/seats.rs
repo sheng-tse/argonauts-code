@@ -122,6 +122,8 @@ fn words(
         SeatDoing::WritingPlan => "Writing the plan".to_owned(),
         SeatDoing::WrotePlan => "Wrote the plan".to_owned(),
         SeatDoing::CarriedOn => format!("Carries on in {}", names.cli(&seat.seat.model.agent)),
+        SeatDoing::SatTurnOut => "Sat this turn out".to_owned(),
+        SeatDoing::SitsOut => "Sits out the rest".to_owned(),
         SeatDoing::Standing if seat.signed => match objections {
             0 => "Signed the plan".to_owned(),
             1 => "Signed, 1 objection".to_owned(),
@@ -168,7 +170,8 @@ mod tests {
     use argonauts_core::base::names::{MessageId, RoleName, SeatId, SessionKey, WorkflowId};
     use argonauts_core::runs::events::council::{
         CouncilEvent, CouncilEventKind, CouncilMessage, FloorReason, Held, HeldWhy, MessageKind,
-        Point, PointStance, PointState, Seat, SeatRole, Seating, Speaker, Stance, TextPart,
+        Missed, MissedTurn, Point, PointStance, PointState, Seat, SeatRole, Seating, Speaker,
+        Stance, TextPart,
     };
     use argonauts_core::runs::events::{RunEvent, RunEventKind};
     use argonauts_core::workflows::workflow::StepRef;
@@ -306,7 +309,26 @@ mod tests {
             })));
         }
 
+        /// The ways your request names for a task, `count` of them, bind as your points from
+        /// the start.
+        fn yours(&mut self, count: u32) {
+            self.tell(CouncilEventKind::Points {
+                points: (1..=count)
+                    .map(|number| Point {
+                        number,
+                        words: format!("Your point {number}"),
+                        state: PointState::Yours,
+                        sides: Vec::new(),
+                        raised_by: None,
+                    })
+                    .collect(),
+            });
+        }
+
+        /// The note keeper lists `open` points with its notes, as the talk does once every first
+        /// answer is in.
         fn points(&mut self, open: u32) {
+            self.message(1, MessageKind::Notes);
             self.tell(CouncilEventKind::Points {
                 points: (1..=open)
                     .map(|number| Point {
@@ -427,10 +449,12 @@ mod tests {
         }
     }
 
-    /// Before the points, each seat writes its first answer alone.
+    /// Before the points, each seat writes its first answer alone, though the three ways your
+    /// request names already bind as your points.
     #[test]
     fn every_seat_writes_its_first_answer_alone() {
         let mut table = Table::seated(&[OPUS, LUNA, FLASH, QWEN], 14);
+        table.yours(3);
         for (n, model, tokens) in [
             (1, OPUS, 1_100),
             (2, LUNA, 840),
@@ -462,6 +486,7 @@ mod tests {
     #[test]
     fn the_note_keeper_gathers_the_points_once_every_seat_answered() {
         let mut table = Table::seated(&[OPUS, LUNA, FLASH, QWEN], 108);
+        table.yours(3);
         table.session(1, OPUS, 77, 9_800, true);
         table.session(2, LUNA, 52, 6_100, false);
         table.session(3, FLASH, 90, 11_200, false);
@@ -497,6 +522,45 @@ mod tests {
         assert_drawn_as(&table.rows_as(&Theme::dark(), 120), "transcript", 0);
         let pictured = crate::base::kit::logo::golden::pictured(&Theme::dark());
         assert_drawn_as(&table.rows_as(&pictured, 80), "talk_at_80_columns", 0);
+    }
+
+    /// A seat whose reaction ran out sits that turn out, back once it writes again; a seat that
+    /// failed twice sits out the rest, and the count goes over the seats still in.
+    #[test]
+    fn a_seat_that_missed_its_turn_says_it_sat_it_out() {
+        let mut table = talked(
+            &[OPUS, LUNA, FLASH, QWEN],
+            200,
+            [(118, 19_600, false); 4],
+            [&[], &[], &[], &[4]],
+        );
+        let missed = |for_good| {
+            CouncilEventKind::Missed(Missed {
+                seat: seat(4),
+                turn: MissedTurn::Reaction {
+                    message: MessageId::numbered(3),
+                },
+                limit_secs: Some(120),
+                for_good,
+            })
+        };
+        let says = |table: &Table| {
+            table
+                .rows()
+                .iter()
+                .any(|row| row.contains("Sat this turn out"))
+        };
+        table.tell(missed(false));
+        assert!(says(&table), "{:#?}", table.rows());
+        answering(&mut table, 4, 1);
+        assert!(!says(&table), "{:#?}", table.rows());
+        table.tell(missed(true));
+        let rows = table.rows();
+        assert!(
+            rows.iter().any(|row| row.contains("Sits out the rest")),
+            "{rows:#?}"
+        );
+        assert!(rows[0].contains("3/3"), "{rows:#?}");
     }
 
     /// A council of `models` `age` seconds into its request, talking over six points: each

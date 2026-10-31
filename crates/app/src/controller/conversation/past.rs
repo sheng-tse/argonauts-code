@@ -456,6 +456,7 @@ mod tests {
             uncommitted: Vec::new(),
             settings_sha256: None,
             continues: false,
+            opens_a_talk: false,
         }
     }
 

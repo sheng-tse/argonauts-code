@@ -556,7 +556,7 @@ pub(super) fn row_usage(
         model_id: row.worker.model.as_deref(),
         logo: Some(ModelLabel::of(names, &row.worker, kit.theme, NoPicture::Nothing).whose),
         used: row.used,
-        window,
+        window: Some(window),
         percent: None,
         heading,
         parts,

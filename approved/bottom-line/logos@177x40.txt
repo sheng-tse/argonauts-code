@@ -1,4 +1,4 @@
-The bottom line on Autopilot in vim's INSERT: each plan's meters after its CLI's logo, in whole cells, flush right; laid out by the app's rules from a screenshot's figures
+The bottom line on Autopilot in vim's INSERT: each plan's meters after its CLI's logo, in whole cells, flush right; laid out by the app's rules
 screen 177x40
 at ?,0
 size 177x1

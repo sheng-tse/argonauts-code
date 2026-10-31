@@ -115,8 +115,8 @@ pub enum Role {
     /// Claude Code's purple for `ultracode`: the tag on the input's rule and the typed word.
     Ultracode,
     // One hue per CLI, the same wherever it's drawn. Its first three models share it and are
-    // told apart by shape (overview/shades.rs). None of them is green, amber or red, which only
-    // ever mean state.
+    // told apart by shape, and Tokens per Day draws their lines a step deeper or lighter
+    // (shades.rs). None of them is green, amber or red, which only ever mean state.
     CliClaude,
     CliCodex,
     CliAgy,

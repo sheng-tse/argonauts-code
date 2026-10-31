@@ -80,7 +80,6 @@ fn a_question_answered_in_your_place_says_who_and_why() {
         &want,
         &colours,
         &Screen::theme(),
-        &[],
     );
 }
 
@@ -104,7 +103,6 @@ fn a_run_that_ended_without_merging_says_why() {
         &want,
         &colours,
         &Screen::theme(),
-        &[],
     );
 }
 
@@ -136,7 +134,6 @@ fn a_signed_out_cli_says_how_to_sign_in_and_who_answers_meanwhile() {
         &want,
         &colours,
         &Screen::theme(),
-        &[],
     );
 }
 

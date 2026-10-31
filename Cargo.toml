@@ -108,7 +108,7 @@ thiserror = "2.0.21"
 # Its PNG support stays off, since the tui's own encoder writes the pictures.
 tiny-skia = { version = "0.12.0", default-features = false, features = ["std", "simd"] }
 time = { version = "0.3.55", features = ["serde", "formatting", "parsing", "macros"] }
-tokio = { version = "1.53.1", features = ["full"] }
+tokio = { version = "1.53.3", features = ["full"] }
 tokio-util = { version = "0.7.19", features = ["compat"] }
 toml = "1.1.6"
 toml_edit = "0.23.9"

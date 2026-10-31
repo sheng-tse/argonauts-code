@@ -172,11 +172,24 @@ impl<W: Write> Ui<W> {
             return true;
         }
         let frame = self.mascot_frame(now).map_or(0, |(_, frame, _)| frame);
-        let Some(escapes) = self.mascot.sent.as_mut().and_then(|sent| sent.place(frame)) else {
+        let Some(sent) = self.mascot.sent.as_mut() else {
             return false;
         };
-        self.terminal.send_on_marked(FIRST_ROW, column, escapes);
+        let row = first_row(sent.look);
+        let Some(escapes) = sent.place(frame) else {
+            return false;
+        };
+        self.terminal.send_on_marked(row, column, escapes);
         true
+    }
+
+    /// The look of the picture on screen, which says the rows it takes: the normal one while
+    /// none shows.
+    pub(super) fn picture_look(&self) -> Look {
+        self.mascot
+            .sent
+            .as_ref()
+            .map_or(Look::Normal, |sent| sent.look)
     }
 
     /// How the terminal takes pictures and the pixels a cell, when it takes them.
@@ -233,18 +246,15 @@ impl<W: Write> Ui<W> {
         let (Some(graphics), Some(cell)) = (self.mascot.graphics, self.mascot.cell) else {
             return;
         };
-        let mut escapes = self
-            .mascot
-            .sent
-            .take()
-            .map(|sent| sent.forget())
-            .unwrap_or_default();
+        let before = self.mascot.sent.take();
+        let look_before = before.as_ref().map_or(look, |sent| sent.look);
+        let mut escapes = before.map(|sent| sent.forget()).unwrap_or_default();
         if self.scrollback.is_some() {
             // The full screen places it as it draws, wherever the header is by then.
             if let Some((at, _)) = self.mascot.placed.take()
                 && graphics == Graphics::Iterm
             {
-                self.terminal.redraw_cells(mascot_area(at));
+                self.terminal.redraw_cells(mascot_area(at, look_before));
             }
             if let Some((sent, stored)) =
                 Sent::stored(graphics, mascot, look, cell, self.mascot.next_id)
@@ -263,7 +273,8 @@ impl<W: Write> Ui<W> {
             self.mascot.sent = Some(sent);
         }
         let column = u16::try_from(MARK_COL).unwrap_or(0);
-        self.terminal.send_on_marked(FIRST_ROW, column, escapes);
+        self.terminal
+            .send_on_marked(first_row(look), column, escapes);
     }
 
     /// Whether the screen is wide enough for the header to draw its mascot's cells.
@@ -282,7 +293,7 @@ impl<W: Write> Ui<W> {
             if let Some((at, _)) = self.mascot.placed.take()
                 && sent.graphics == Graphics::Iterm
             {
-                self.terminal.redraw_cells(mascot_area(at));
+                self.terminal.redraw_cells(mascot_area(at, sent.look));
             }
             self.mascot.waiting.extend(escapes);
         } else {
@@ -381,7 +392,7 @@ impl<W: Write> Ui<W> {
             && let Some((before, _)) = was
             && Some(before) != at
         {
-            self.terminal.redraw_cells(mascot_area(before));
+            self.terminal.redraw_cells(mascot_area(before, sent.look));
         }
         self.mascot.placed = wanted;
         Some((at, escapes))
@@ -422,7 +433,8 @@ impl<W: Write> Ui<W> {
                 return false;
             };
             let column = u16::try_from(MARK_COL).unwrap_or(0);
-            self.terminal.send_on_marked(FIRST_ROW, column, escapes);
+            let row = first_row(sent.look);
+            self.terminal.send_on_marked(row, column, escapes);
             return true;
         }
         if frame == self.mascot.frame {
@@ -447,17 +459,28 @@ impl<W: Write> Ui<W> {
     }
 }
 
-/// The cell the picture starts from on the full screen, while the header's mascot rows show
-/// in the conversation the last frame drew.
-pub(super) fn mascot_cell(scrollback: &super::fullscreen::Scrollback) -> Option<Position> {
-    let row = scrollback.header_rows_at(usize::from(FIRST_ROW), ROWS)?;
+/// The cell a picture of `look` starts from on the full screen, while every row it takes
+/// shows in the conversation the last frame drew.
+pub(super) fn mascot_cell(
+    scrollback: &super::fullscreen::Scrollback,
+    look: Look,
+) -> Option<Position> {
+    let first = usize::from(first_row(look));
+    let row = scrollback.header_rows_at(first, look.picture_rows())?;
     Some(Position::new(u16::try_from(MARK_COL).ok()?, row))
 }
 
-/// The cells the picture takes with its first cell at `at`.
-fn mascot_area(at: Position) -> Rect {
+/// The header row a picture of `look` starts in: the mascot's first, or for an ultra look the
+/// blank one above, which its mark rises into.
+fn first_row(look: Look) -> u16 {
+    let above = u16::try_from(look.rows_above()).unwrap_or(0);
+    FIRST_ROW.saturating_sub(above)
+}
+
+/// The cells a picture of `look` takes with its first cell at `at`.
+fn mascot_area(at: Position, look: Look) -> Rect {
     let size = |cells: usize| u16::try_from(cells).unwrap_or(u16::MAX);
-    Rect::new(at.x, at.y, size(WIDTH), size(ROWS))
+    Rect::new(at.x, at.y, size(WIDTH), size(look.picture_rows()))
 }
 
 #[cfg(test)]

@@ -6,16 +6,20 @@
 use std::collections::HashMap;
 
 use argonauts_core::base::names::{MessageId, SeatId};
+use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::runs::events::council::{
-    CouncilEventKind, CouncilMessage, FloorReason, HeldWhy, HiddenName, MessageKind, MovedBecause,
-    Point, PointState, Seating, Speaker, TalkStop, TextPart, draw_held, held_parts,
+    CouncilEventKind, CouncilMessage, FloorReason, HeldWhy, HiddenName, MessageKind, Missed,
+    MissedTurn, MovedBecause, Point, PointState, Seating, Speaker, TalkStop, TextPart, draw_held,
+    held_parts,
 };
+use argonauts_core::safety::macos_folders::TO_LET_IT_IN;
 
 use super::super::screens::reply::ReplyBar;
 use super::super::screens::thread::Thread;
 use super::faces::Faces;
-use super::item::{Body, Header, Inset, Item, Quote, SeatSays, YouSay};
+use super::item::{Body, Header, Inset, Item, ProposalPoint, Quote, SeatSays, YouSay};
 use super::words::{Mark, Piece, Tone, paragraphs};
+use crate::base::format::time_in_words;
 
 /// When an event happened, as the conversation writes it: "Today" and "10:41 AM".
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,6 +92,8 @@ pub struct Conversation {
     ended: Option<Ended>,
     /// The note keeper's first list has shown as its proposal.
     proposed: bool,
+    /// How the screen names CLIs, for the lines that name one.
+    names: DisplayNames,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,7 +164,14 @@ impl Conversation {
             private: Vec::new(),
             ended: None,
             proposed: false,
+            names: DisplayNames::default(),
         }
+    }
+
+    /// The conversation, naming CLIs as `names` does.
+    pub fn named_by(mut self, names: DisplayNames) -> Self {
+        self.names = names;
+        self
     }
 
     /// Whether the council still talks, so what you write goes to its seats: from when it
@@ -399,6 +412,26 @@ impl Conversation {
                     if *missed == 1 { "" } else { "s" }
                 )),
             ])),
+            CouncilEventKind::Missed(missed) => {
+                self.writing.retain(|(writer, _)| *writer != missed.seat);
+                Said::item(Item::Line(vec![
+                    Piece::Called(missed.seat.clone(), Tone::Dim),
+                    Piece::dim(missed_words(missed)),
+                ]))
+            }
+            CouncilEventKind::FolderBlocked { seat, cli, blocked } => Said {
+                items: vec![
+                    Item::Line(vec![
+                        Piece::Called(seat.clone(), Tone::Dim),
+                        Piece::dim(blocked.words("", &self.names.cli(cli))),
+                    ]),
+                    Item::Line(vec![
+                        Piece::dim(TO_LET_IT_IN),
+                        Piece::text(blocked.where_to_allow()),
+                    ]),
+                ],
+                changed: None,
+            },
             // The run review tells you its findings in lines of its own.
             CouncilEventKind::Check(_)
             | CouncilEventKind::Worked { .. }
@@ -506,32 +539,43 @@ impl Conversation {
         if !yours.is_empty() {
             head.push_str(&format!(" · {} from you", counted(yours.len(), "way")));
         }
-        let mut rows = vec![vec![Piece::tone("Proposal", Tone::Bold), Piece::dim(head)]];
-        for point in &listed {
-            let mut row = Vec::new();
-            if point.sides.is_empty() {
-                row.push(Piece::tone("✔  ", Tone::Ok));
-                row.extend(self.kept_words(&point.words));
-            } else {
-                row.push(Piece::tone("?  ", Tone::WarnBold));
-                for (i, side) in point.sides.iter().enumerate() {
-                    if i > 0 {
-                        row.push(Piece::dim("   or   "));
-                    }
-                    row.extend(self.kept_words(&side.words));
-                    for seat in &side.backers {
-                        row.push(Piece::dim(" "));
-                        row.push(Piece::Badge(seat.clone()));
-                    }
+        let head = vec![Piece::tone("Proposal", Tone::Bold), Piece::dim(head)];
+        let drawn: Vec<ProposalPoint> = listed
+            .iter()
+            .map(|point| {
+                if point.sides.is_empty() {
+                    return ProposalPoint {
+                        mark: Piece::tone("✔  ", Tone::Ok),
+                        ways: vec![self.kept_words(&point.words)],
+                    };
                 }
-            }
-            rows.push(row);
-        }
+                let ways = point
+                    .sides
+                    .iter()
+                    .map(|side| {
+                        let mut way = self.kept_words(&side.words);
+                        for seat in &side.backers {
+                            way.push(Piece::dim(" "));
+                            way.push(Piece::Badge(seat.clone()));
+                        }
+                        way
+                    })
+                    .collect();
+                ProposalPoint {
+                    mark: Piece::tone("?  ", Tone::WarnBold),
+                    ways,
+                }
+            })
+            .collect();
         let agreed = listed.iter().filter(|point| point.sides.is_empty()).count();
         let Some(kept) = self.kept.last_mut() else {
             return Said::default();
         };
-        kept.proposal = Some(Inset::Proposal { rows, yours });
+        kept.proposal = Some(Inset::Proposal {
+            head,
+            points: drawn,
+            yours,
+        });
         let mut said = Said::changed(&kept.message.id);
         said.items.push(Item::Line(vec![Piece::dim(format!(
             "{agreed} of {} points agreed · they talk until every seat agrees",
@@ -733,52 +777,37 @@ impl Conversation {
         })
     }
 
-    /// "2/4 seats agree", for the working line.
-    pub fn agree_note(&self) -> String {
-        let (agreeing, seats) = self.seats_agreeing();
-        format!("{agreeing}/{seats} seats agree")
-    }
-
-    /// "4 of 6 points agreed": your own points bind and aren't counted.
+    /// "4 of 6 points agreed": the points every seat backs, by the rule the panel's rows and
+    /// the working line count with. Your own points bind and aren't counted.
     pub fn points_agreed(&self) -> String {
         let counted: Vec<&Point> = self
             .points
             .iter()
             .filter(|point| point.state != PointState::Yours)
             .collect();
-        let agreed = counted
-            .iter()
-            .filter(|point| {
-                matches!(
-                    point.state,
-                    PointState::Agreed | PointState::Settled | PointState::Voted
-                )
-            })
-            .count();
+        let agreed = if self.ended == Some(Ended::Agreed) {
+            counted.len()
+        } else {
+            counted
+                .iter()
+                .filter(|point| self.faces.ids().all(|seat| self.backs(seat, point)))
+                .count()
+        };
         format!("{agreed} of {} points agreed", counted.len())
     }
 
-    /// Seats that back every counted point, and all seats, for "2/4 seats agree".
-    pub fn seats_agreeing(&self) -> (usize, usize) {
-        let counted: Vec<u32> = self
-            .points
-            .iter()
-            .filter(|point| point.state != PointState::Yours)
-            .map(|point| point.number)
-            .collect();
-        let agreeing = self
-            .faces
-            .ids()
-            .filter(|seat| {
-                !counted.is_empty()
-                    && counted.iter().all(|number| {
-                        self.stances
-                            .get(*seat)
-                            .is_some_and(|stances| stances.contains(&(*number, Mark::Agree)))
-                    })
-            })
-            .count();
-        (agreeing, self.faces.len())
+    fn backs(&self, seat: &SeatId, point: &Point) -> bool {
+        let marked = |mark: Mark| {
+            self.stances
+                .get(seat)
+                .is_some_and(|stances| stances.contains(&(point.number, mark)))
+        };
+        crate::frame::state::backs(&point.state, marked(Mark::Agree), marked(Mark::Object))
+    }
+
+    /// The talk agreed or stopped, and hasn't been let talk on since.
+    pub fn has_ended(&self) -> bool {
+        self.ended.is_some()
     }
 
     /// The points still open, each by its sides ("Redis or memory") or else by its words.
@@ -946,10 +975,29 @@ fn hidden_notes(message: &CouncilMessage) -> Vec<String> {
     notes
 }
 
+/// What follows a seat's name on the line for a turn it missed: " didn't react within 2
+/// minutes, so it sits this turn out".
+fn missed_words(missed: &Missed) -> String {
+    if missed.for_good {
+        return " failed twice, so it sits out the rest of the talk".to_owned();
+    }
+    let (did, could) = match missed.turn {
+        MissedTurn::FirstAnswer => ("answer", "couldn't answer"),
+        MissedTurn::Reaction { .. } => ("react", "couldn't react"),
+        MissedTurn::Message => ("write", "couldn't write its message"),
+        MissedTurn::Plan => ("write the plan", "couldn't write the plan"),
+    };
+    let why = match missed.limit_secs {
+        Some(secs) => format!("didn't {did} within {}", time_in_words(u64::from(secs))),
+        None => could.to_owned(),
+    };
+    format!(" {why}, so it sits this turn out")
+}
+
 #[cfg(test)]
 mod tests {
     use argonauts_core::runs::events::council::{
-        Moved, PointState, ReplyTo, Stance, TextPart, held_seat,
+        Moved, PointStance, PointState, ReplyTo, Stance, TextPart, held_seat,
     };
 
     use super::*;
@@ -1240,6 +1288,137 @@ mod tests {
             "And the balancer's probe calls /health with no key, so a plain 401 takes a node out."
         );
         assert_eq!(council.newest_first().first(), Some(&id(4)));
+    }
+
+    /// A seat that ran out of time or failed sits that turn out, said in words, and a second
+    /// miss sits it out for good.
+    #[test]
+    fn a_missed_turn_says_who_sits_out_and_why() {
+        let mut council = council();
+        let line = |said: Said| match said.items.as_slice() {
+            [Item::Line(pieces)] => pieces.clone(),
+            other => panic!("{other:?}"),
+        };
+        let slow = council.on_now(&CouncilEventKind::Missed(Missed {
+            seat: qwen(),
+            turn: MissedTurn::Reaction { message: id(3) },
+            limit_secs: Some(120),
+            for_good: false,
+        }));
+        assert_eq!(
+            line(slow),
+            [
+                Piece::Called(qwen(), Tone::Dim),
+                Piece::dim(" didn't react within 2 minutes, so it sits this turn out"),
+            ]
+        );
+        let failed = council.on_now(&CouncilEventKind::Missed(Missed {
+            seat: qwen(),
+            turn: MissedTurn::Message,
+            limit_secs: None,
+            for_good: false,
+        }));
+        assert_eq!(
+            line(failed)[1],
+            Piece::dim(" couldn't write its message, so it sits this turn out")
+        );
+        let twice = council.on_now(&CouncilEventKind::Missed(Missed {
+            seat: qwen(),
+            turn: MissedTurn::FirstAnswer,
+            limit_secs: None,
+            for_good: true,
+        }));
+        assert_eq!(
+            line(twice)[1],
+            Piece::dim(" failed twice, so it sits out the rest of the talk")
+        );
+    }
+
+    /// macOS keeping a seat's CLI out of the folder reads as two lines: who can't read it and
+    /// why, then where you let it in.
+    #[test]
+    fn a_folder_macos_keeps_a_cli_out_of_says_where_to_allow_it() {
+        use argonauts_core::safety::macos_folders::{Folder, FolderBlocked};
+        let said = council().on_now(&CouncilEventKind::FolderBlocked {
+            seat: qwen(),
+            cli: "antigravity-cli".to_owned(),
+            blocked: FolderBlocked {
+                folder: Folder::Downloads,
+                app: "Antigravity".to_owned(),
+            },
+        });
+        let [Item::Line(first), Item::Line(second)] = said.items.as_slice() else {
+            panic!("{:?}", said.items);
+        };
+        assert_eq!(
+            first[1],
+            Piece::dim(" can't read this folder: macOS keeps agy out of Downloads")
+        );
+        assert_eq!(
+            second.as_slice(),
+            [
+                Piece::dim("To let it in: "),
+                Piece::text(
+                    "System Settings › Privacy & Security › Files and Folders › Antigravity › \
+                     Downloads Folder"
+                ),
+            ]
+        );
+    }
+
+    /// The talk's own count follows the panel's rule: a settled point is everyone's, an open
+    /// one needs every seat's agree, and yours bind whoever objects, so they aren't counted.
+    #[test]
+    fn points_agreed_counts_by_the_rule_the_panel_counts_with() {
+        let mut council = council();
+        let point = |number, state| Point {
+            number,
+            words: format!("Point {number}"),
+            state,
+            sides: Vec::new(),
+            raised_by: None,
+        };
+        council.on_now(&CouncilEventKind::Points {
+            points: vec![
+                point(1, PointState::Open),
+                point(2, PointState::Open),
+                point(3, PointState::Settled),
+                point(4, PointState::Yours),
+            ],
+        });
+        assert_eq!(council.points_agreed(), "1 of 3 points agreed");
+        for seat in [opus(), luna(), flash(), qwen()] {
+            let objects = seat == qwen();
+            let stances = [
+                (1, Stance::Agree),
+                (
+                    2,
+                    if objects {
+                        Stance::Object
+                    } else {
+                        Stance::Agree
+                    },
+                ),
+                (
+                    4,
+                    if objects {
+                        Stance::Object
+                    } else {
+                        Stance::Agree
+                    },
+                ),
+            ];
+            council.on_now(&CouncilEventKind::Stances {
+                seat,
+                stances: stances
+                    .into_iter()
+                    .map(|(point, stance)| PointStance { point, stance })
+                    .collect(),
+            });
+        }
+        assert_eq!(council.points_agreed(), "2 of 3 points agreed");
+        council.on_now(&CouncilEventKind::Agreed { points: 3 });
+        assert_eq!(council.points_agreed(), "3 of 3 points agreed");
     }
 
     #[test]

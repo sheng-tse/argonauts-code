@@ -1,6 +1,8 @@
 //! The line chart of Claude Code's Models tab, which draws with asciichart: a scale down the
 //! left, an axis, and one line per series, each step between two days drawn in the column of
-//! the later one. Lines drawn later cross over those drawn before.
+//! the later one. The lines are drawn from the lowest-ranked series up, and a cell two lines
+//! share joins both pieces (`─` and `│` make `┼`) in the higher-ranked line's colour, so every
+//! line stays whole.
 
 /// One cell of the chart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,7 +46,7 @@ pub fn plot(series: &[Vec<u64>], height: usize) -> Chart {
     }
     // A row index from the top, for a value's height above the lowest.
     let top = |level: i64| rows - (level - low_row) as usize;
-    for (at, line) in series.iter().enumerate() {
+    for (at, line) in series.iter().enumerate().rev() {
         let Some(first) = line.first() else {
             continue;
         };
@@ -52,15 +54,22 @@ pub fn plot(series: &[Vec<u64>], height: usize) -> Chart {
         for (x, pair) in line.windows(2).enumerate() {
             let (from, to) = (scaled(pair[0] as f64, ratio), scaled(pair[1] as f64, ratio));
             let column = x + 1;
+            let mut put = |level: i64, glyph: char| {
+                let cell = &mut grid[top(level)][column];
+                *cell = match *cell {
+                    Cell::Line(under, _) => Cell::Line(joined(under, glyph), at),
+                    _ => Cell::Line(glyph, at),
+                };
+            };
             if from == to {
-                grid[top(from)][column] = Cell::Line('─', at);
+                put(from, '─');
                 continue;
             }
             let falling = from > to;
-            grid[top(to)][column] = Cell::Line(if falling { '╰' } else { '╭' }, at);
-            grid[top(from)][column] = Cell::Line(if falling { '╮' } else { '╯' }, at);
+            put(to, if falling { '╰' } else { '╭' });
+            put(from, if falling { '╮' } else { '╯' });
             for level in from.min(to) + 1..from.max(to) {
-                grid[top(level)][column] = Cell::Line('│', at);
+                put(level, '│');
             }
         }
     }
@@ -79,6 +88,48 @@ pub fn plot(series: &[Vec<u64>], height: usize) -> Chart {
             .enumerate()
             .map(|(row, cells)| (label(row), cells))
             .collect(),
+    }
+}
+
+const UP: u8 = 1;
+const DOWN: u8 = 2;
+const LEFT: u8 = 4;
+const RIGHT: u8 = 8;
+
+/// The ways a piece of a line leaves its cell.
+fn arms(glyph: char) -> u8 {
+    match glyph {
+        '─' => LEFT | RIGHT,
+        '│' => UP | DOWN,
+        '╭' => RIGHT | DOWN,
+        '╮' => LEFT | DOWN,
+        '╰' => UP | RIGHT,
+        '╯' => UP | LEFT,
+        '┬' => LEFT | RIGHT | DOWN,
+        '┴' => LEFT | RIGHT | UP,
+        '├' => UP | DOWN | RIGHT,
+        '┤' => UP | DOWN | LEFT,
+        '┼' => UP | DOWN | LEFT | RIGHT,
+        _ => 0,
+    }
+}
+
+/// The piece that leaves its cell every way `under` and `over` do: corners stay rounded, and
+/// three or four ways make a tee or a cross.
+fn joined(under: char, over: char) -> char {
+    match arms(under) | arms(over) {
+        both if both == LEFT | RIGHT => '─',
+        both if both == UP | DOWN => '│',
+        both if both == RIGHT | DOWN => '╭',
+        both if both == LEFT | DOWN => '╮',
+        both if both == UP | RIGHT => '╰',
+        both if both == UP | LEFT => '╯',
+        both if both == LEFT | RIGHT | DOWN => '┬',
+        both if both == LEFT | RIGHT | UP => '┴',
+        both if both == UP | DOWN | RIGHT => '├',
+        both if both == UP | DOWN | LEFT => '┤',
+        both if both == UP | DOWN | LEFT | RIGHT => '┼',
+        _ => over,
     }
 }
 
@@ -131,6 +182,18 @@ mod tests {
             text(&chart),
             ["     2 ┤╭─╮ ", "     1 ┤│ │ ", "     0 ┼╯ ╰ "]
         );
+    }
+
+    #[test]
+    fn a_cell_two_lines_share_joins_both_in_the_higher_ranked_colour() {
+        // The top series is flat at 1; the second rises through it from 0 to 2.
+        let chart = plot(&[vec![1, 1, 1], vec![0, 0, 2]], 2);
+        assert_eq!(text(&chart), ["     2 ┤ ╭ ", "     1 ┼─┼ ", "     0 ┼─╯ "]);
+        let crossing = chart.rows[1].1[2];
+        assert_eq!(crossing, Cell::Line('┼', 0));
+        // A corner meeting a flat line keeps both: a fall onto it makes a tee.
+        let chart = plot(&[vec![0, 0, 0], vec![2, 2, 0]], 2);
+        assert_eq!(chart.rows[2].1[2], Cell::Line('┴', 0));
     }
 
     #[test]

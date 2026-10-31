@@ -13,7 +13,7 @@
 ─────────────────────────────────────────────────────────────────────────────────────────────────────────── Opus 5.5 ─
 ❯                                                                                                                     
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  -- INSERT -- ⏵⏵ auto mode on ● Claude 5h ▁▁▁▁▁▁   2%  7d ▄▄▄▄▄▁  87%   ○ Codex 7d ▁▁▁▁▁▁   3%   ○ agy 7d ▁▁▁▁▁▁   0%
+  -- INSERT -- ⏵⏵ auto mode on ● Claude 5h ▄▁▁▁▁▁   2%  7d ▄▄▄▄▄▁  87%   ○ Codex 7d ▄▁▁▁▁▁   3%   ○ agy 7d ▁▁▁▁▁▁   0%
                                                                                                                       
  (the empty rows down to the input are shortened; the dim line shows only when the old conversation had turns)        
  (in Ghostty and Kitty the argonaut is a picture in the same 9 by 3 cells)                                            

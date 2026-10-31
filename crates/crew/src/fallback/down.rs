@@ -16,7 +16,6 @@ use std::collections::BTreeSet;
 
 use argonauts_core::TaskId;
 use argonauts_core::base::names::{AgentId, ApprovalId, ModelRef, RoleName};
-use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::models::limits::HealthState;
 use argonauts_core::runs::events::RunEventKind;
 use argonauts_core::runs::events::agent_status::{
@@ -163,7 +162,7 @@ pub fn ask_in_background(host: &Host, agent_id: &AgentId) -> EngineResult<()> {
             return;
         };
         let settled = newly_asked && result.is_ok();
-        let cli = DisplayNames::default().cli(&agent_id.0);
+        let cli = host.names().cli(&agent_id.0);
         let what = format!("The question about {cli} being down");
         report(&host, None, result, &what);
         // Another CLI may have waited its turn while this question was open. Only a question
@@ -294,7 +293,7 @@ pub fn withdraw(host: &Host, agent_id: &AgentId) -> EngineResult<()> {
     });
     match open {
         Some(id) => {
-            let cli = DisplayNames::default().cli(&agent_id.0);
+            let cli = host.names().cli(&agent_id.0);
             approvals::withdraw(host, &id, &format!("{cli} is tried again"))
         }
         None => Ok(()),
@@ -519,10 +518,7 @@ fn request(host: &Host, agent_id: &AgentId, paused: &[Paused]) -> ApprovalReques
     ApprovalRequest {
         at: host.read(rules::current_step),
         kind: ApprovalKind::AgentDown,
-        title: format!(
-            "{} is down · {count} for it",
-            DisplayNames::default().cli(&agent_id.0)
-        ),
+        title: format!("{} is down · {count} for it", host.names().cli(&agent_id.0)),
         task: None,
         packet: ApprovalPacket::AgentDown(packet),
         facts: EvidenceFacts::default(),

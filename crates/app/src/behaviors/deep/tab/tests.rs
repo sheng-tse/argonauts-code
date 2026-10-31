@@ -39,6 +39,7 @@ fn with_haiku() -> UiCommand {
             summarizer: "claude-code/haiku".parse().unwrap(),
             download_embedder: false,
             redo: false,
+            download_summarizer: false,
         },
     }
 }
@@ -59,7 +60,7 @@ async fn d_asks_with_the_recorded_actions_and_calls_no_model() {
     record_run(driver.repo.home(), &["cargo test", "git status", "ls"]);
     driver
         .send(UiCommand::Request {
-            view: ViewRequest::DeepOffer,
+            view: ViewRequest::DeepOffer { start: None },
         })
         .await;
     let offered = driver
@@ -279,4 +280,94 @@ async fn opening_the_tab_calls_no_model() {
     }
     assert_eq!(driver.agent.specs().len(), sessions, "no session started");
     assert_eq!(server.requests().len(), asked, "{:?}", server.requests());
+}
+
+mod its_own {
+    use argonauts_core::base::names::ModelRef;
+    use argonauts_core::behaviors::deep_map::{
+        DeepOffer, DeepScope, EmbedderNote, MadeBy, OfferPlace, SummarizerOffer,
+    };
+
+    use super::super::its_own_update;
+
+    fn qwen() -> ModelRef {
+        ModelRef::new("ollama", Some("qwen3-coder:30b".to_owned()))
+    }
+
+    fn haiku() -> ModelRef {
+        ModelRef::new("claude-code", Some("haiku".to_owned()))
+    }
+
+    fn offer(made_by: &ModelRef, answering: &[(ModelRef, OfferPlace)]) -> DeepOffer {
+        DeepOffer {
+            scopes: Vec::new(),
+            summarizers: answering
+                .iter()
+                .map(|(model, place)| SummarizerOffer {
+                    model: model.clone(),
+                    name: format!("{model} on its server"),
+                    short: model.to_string(),
+                    place: place.clone(),
+                })
+                .collect(),
+            embedder: EmbedderNote::Words,
+            mac: true,
+            made_by: Some(MadeBy {
+                model: made_by.clone(),
+                name: made_by.to_string(),
+                actions: 16,
+                new_actions: 4,
+                prompt_changed: false,
+            }),
+            named: None,
+            keyed_embedder: None,
+            open: Default::default(),
+        }
+    }
+
+    fn here() -> OfferPlace {
+        OfferPlace::ThisMachine {
+            bytes: None,
+            fit: None,
+        }
+    }
+
+    fn plan() -> OfferPlace {
+        OfferPlace::Plan {
+            cli: "claude-code".to_owned(),
+            plan: "Claude".to_owned(),
+            provider: "Anthropic".to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_local_summarizer_that_answers_adds_to_its_own_map() {
+        let start = its_own_update(&offer(&qwen(), &[(qwen(), here())])).unwrap();
+        assert_eq!(start.summarizer, qwen());
+        assert_eq!(start.scope, DeepScope::Everything);
+        assert!(!start.redo && !start.download_embedder);
+    }
+
+    #[test]
+    fn anything_else_goes_to_the_questions() {
+        assert!(
+            its_own_update(&offer(&haiku(), &[(haiku(), plan())])).is_none(),
+            "a plan's model asks first"
+        );
+        assert!(
+            its_own_update(&offer(&qwen(), &[(haiku(), plan())])).is_none(),
+            "a summarizer that isn't answering is said so"
+        );
+        let mut newer_prompt = offer(&qwen(), &[(qwen(), here())]);
+        if let Some(made_by) = newer_prompt.made_by.as_mut() {
+            made_by.prompt_changed = true;
+        }
+        assert!(
+            its_own_update(&newer_prompt).is_none(),
+            "a newer prompt asks to redo"
+        );
+        let mut no_map = offer(&qwen(), &[(qwen(), here())]);
+        no_map.made_by = None;
+        assert!(its_own_update(&no_map).is_none());
+    }
 }

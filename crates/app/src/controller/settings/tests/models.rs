@@ -678,6 +678,7 @@ fn conversation_turn<T>(
         fork: false,
         excerpt: None,
         notes: Vec::new(),
+        verdict_first: None,
         shell: None,
         fast,
         workdir: fixture.ctx.env.repo_root.clone(),

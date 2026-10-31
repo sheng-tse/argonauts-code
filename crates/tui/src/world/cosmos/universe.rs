@@ -1,12 +1,14 @@
 //! The universe level: a galaxy for each maker round your planet, each galaxy's actions as points
 //! along its arms and its models' stars among them, the faint ring of your whole mix, tidal
 //! streams between makers' models, comets and meteors, and each galaxy's badge. A galaxy's disc
-//! holds still in the terminal, to save sending its picture again every few seconds; its stars,
-//! binaries and newborn clouds still move.
+//! holds still in the terminal, to save sending its picture again every few seconds; its glow
+//! breathes over it and its stars twinkle all the time, and its stars, binaries and newborn
+//! clouds move as your recent work has them.
 
 use std::f64::consts::TAU;
 
-use super::model::{StarKind, rng_for};
+use super::glow::light_only;
+use super::model::{StarKind, maker_steps, rng_for, step_colour};
 use super::motion::{self, Bounds, Group};
 use super::paint::{self, AT_UNIVERSE, GIANT, Rgb, WHITE, core_radius, ink, mixc, rgb};
 use super::rules;
@@ -43,17 +45,12 @@ impl Cosmos {
         let stars: Vec<(f64, f64)> = (0..self.universe.stars.len())
             .map(|s| self.place_star(galaxies[self.universe.stars[s].maker], s, AT_UNIVERSE, None))
             .collect();
-        let badges = badges(
-            &galaxies,
-            &self
-                .shapes
-                .galaxies
-                .iter()
-                .map(|g| g.tilt)
-                .collect::<Vec<_>>(),
-            w,
-            h,
-        );
+        let rooms: Vec<(f64, f64)> = galaxies
+            .iter()
+            .zip(&self.shapes.galaxies)
+            .map(|(frame, shape)| badge_room(frame, shape))
+            .collect();
+        let badges = badges(&galaxies, &rooms, w, h);
         let home = shapes::home_radius(w, h);
         let moving: Vec<usize> = (0..self.universe.stars.len())
             .filter(|s| self.star_moves(*s))
@@ -176,10 +173,14 @@ impl Cosmos {
                 .scale(1.0, tilt);
             let brush = Brush::default().blend(add).at(placed);
             canvas.draw_sized(&disc, -size / 2.0, -size / 2.0, size, size, &brush);
+            let steps = maker_steps(&self.universe.makers[maker].key);
             for point in &self.shapes.galaxies[maker].points {
                 let (x, y) = frame.point(tilt, point.rad, point.th);
                 let star = &self.universe.stars[point.star];
-                let colour = mixc(rgb(star.rgb), WHITE, 0.25 * (1.0 - point.rad));
+                let colour = match steps {
+                    Some(steps) => rgb(step_colour(steps, point.rad)),
+                    None => mixc(rgb(star.rgb), WHITE, 0.25 * (1.0 - point.rad)),
+                };
                 let alpha = 0.95 * point.bright * if point.fresh { 1.0 } else { 0.5 };
                 let side = if point.fresh { 2.3 } else { 1.6 };
                 canvas.fill_rect(
@@ -471,6 +472,9 @@ impl Cosmos {
                 layer_key = self.key([layer_key, step]);
             }
         }
+        if !view.still {
+            self.add_galaxy_motion(&mut scene, &plan.galaxies, t);
+        }
         scene.add_layer(Layer {
             id: PartId::new("cosmos-universe", 0),
             depth: Depth::Ground,
@@ -478,9 +482,9 @@ impl Cosmos {
         });
         let mut comet_heads: Vec<(usize, (f64, f64))> = Vec::new();
         if !view.still {
-            let cycle = ((rules::COMET_TRAVEL + rules::COMET_REST) * motion::FPS).round() as u64;
+            let cycle = ((rules::COMET_TRAVEL + rules::COMET_REST) * motion::TICKS).round() as u64;
             let frame = step % cycle;
-            let looped = frame as f64 / motion::FPS;
+            let looped = frame as f64 / motion::TICKS;
             for comet in 0..self.universe.comets.len() {
                 let Some(u) = self.comet_travel(comet, Some(looped)) else {
                     continue;
@@ -516,9 +520,9 @@ impl Cosmos {
                     picture,
                 });
             }
-            let cycle = (rules::METEOR_LOOP * motion::FPS).round() as u64;
+            let cycle = (rules::METEOR_LOOP * motion::TICKS).round() as u64;
             let frame = step % cycle;
-            let looped = frame as f64 / motion::FPS;
+            let looped = frame as f64 / motion::TICKS;
             for meteor in 0..self.universe.meteors.len() {
                 let Some(u) = self.meteor_fall(meteor, Some(looped)) else {
                     continue;
@@ -626,26 +630,36 @@ impl Cosmos {
         );
         for (maker, frame) in plan.galaxies.iter().enumerate() {
             let shape = &self.shapes.galaxies[maker];
+            let galaxy = Pointed::Galaxy(index(maker));
+            // A galaxy laid along its logo is found by its shape, its core and its points.
+            let along = shape.logo.map(|_| (frame.r * 0.12).max(6.0) as f32);
             for point in &shape.points {
                 let (x, y) = frame.point(shape.tilt, point.rad, point.th);
+                let at = Shape::Point {
+                    x: x as f32,
+                    y: y as f32,
+                };
                 let action = self.universe.actions[point.action].index;
-                let mark = Mark::new(
-                    Shape::Point {
-                        x: x as f32,
-                        y: y as f32,
-                    },
-                    Pointed::Action(action),
+                hits.add(
+                    Mark::new(at.clone(), Pointed::Action(action))
+                        .reach(4.5)
+                        .tier(4),
                 );
-                hits.add(mark.reach(4.5).tier(4));
+                if let Some(reach) = along {
+                    hits.add(Mark::new(at, galaxy).reach(reach).tier(5));
+                }
             }
-            let ellipse = Shape::Ellipse {
-                x: frame.x as f32,
-                y: frame.y as f32,
-                rx: (frame.r * 0.9) as f32,
-                ry: (frame.r * 0.9 * shape.tilt) as f32,
-                angle: frame.turn as f32,
+            let outline = match along {
+                Some(_) => disc((frame.x, frame.y), frame.r * 0.25),
+                None => Shape::Ellipse {
+                    x: frame.x as f32,
+                    y: frame.y as f32,
+                    rx: (frame.r * 0.9) as f32,
+                    ry: (frame.r * 0.9 * shape.tilt) as f32,
+                    angle: frame.turn as f32,
+                },
             };
-            hits.add(Mark::new(ellipse, Pointed::Galaxy(index(maker))).tier(5));
+            hits.add(Mark::new(outline, galaxy).tier(5));
         }
         for (at, stream) in self.universe.streams.iter().enumerate() {
             let [a, b] = stream.stars;
@@ -737,6 +751,8 @@ impl Cosmos {
                 dwarf: m.dwarf,
                 strength,
                 seed,
+                logo: self.shapes.galaxies[maker].logo,
+                steps: maker_steps(&m.key),
             };
             let image = disc.picture(radius.round(), down).to_image();
             self.frames.insert(key, image.clone());
@@ -767,15 +783,6 @@ pub(super) fn add_ring(scene: &mut Scene, (x, y): (f64, f64), radius: f64) {
     });
 }
 
-/// A moving picture drawn by adding light onto a clear canvas, made to lie over what is behind
-/// it as light does: each pixel as opaque as its brightest channel.
-fn light_only(mut canvas: Canvas) -> Image {
-    for pixel in canvas.premultiplied_mut().chunks_exact_mut(4) {
-        pixel[3] = pixel[0].max(pixel[1]).max(pixel[2]);
-    }
-    canvas.to_image()
-}
-
 /// A point `u` of the way along a quadratic curve.
 pub(super) fn bezier([a, c, b]: [(f64, f64); 3], u: f64) -> (f64, f64) {
     let v = 1.0 - u;
@@ -792,16 +799,28 @@ fn stream_bend(from: (f64, f64), to: (f64, f64)) -> (f64, f64) {
     (mx + nx * 0.18, my + ny * 0.18)
 }
 
-/// Where each galaxy's badge goes: beside its disc, below rather than aside, clear of the other
-/// galaxies, the other badges and your planet.
-fn badges(galaxies: &[Frame], tilts: &[f64], width: f64, height: f64) -> Vec<(f64, f64)> {
+/// Half the width and height a galaxy's badge keeps clear of: all its points where it lies along
+/// its logo, so Anthropic's goes below its longest rays, else most of its disc.
+fn badge_room(frame: &Frame, shape: &shapes::GalaxyShape) -> (f64, f64) {
+    if shape.logo.is_some() {
+        return shape.points.iter().fold((0.0, 0.0), |(w, h), p| {
+            let (x, y) = frame.point(shape.tilt, p.rad, p.th);
+            (w.max((x - frame.x).abs()), h.max((y - frame.y).abs()))
+        });
+    }
+    let (sin, cos) = frame.turn.sin_cos();
+    (
+        (0.72 * frame.r * cos.hypot(shape.tilt * sin)).min(64.0),
+        (0.72 * frame.r * sin.hypot(shape.tilt * cos)).min(52.0),
+    )
+}
+
+/// Where each galaxy's badge goes: below its galaxy where there is room, else beside it, clear of
+/// the other galaxies, the other badges and your planet.
+fn badges(galaxies: &[Frame], rooms: &[(f64, f64)], width: f64, height: f64) -> Vec<(f64, f64)> {
     let mut placed: Vec<(f64, f64)> = Vec::new();
     let home = shapes::HOME_RADIUS;
-    for (at, galaxy) in galaxies.iter().enumerate() {
-        let tilt = tilts[at];
-        let (sin, cos) = galaxy.turn.sin_cos();
-        let half_height = 0.72 * galaxy.r * sin.hypot(tilt * cos);
-        let half_width = 0.72 * galaxy.r * cos.hypot(tilt * sin);
+    for (at, (galaxy, &(half_width, half_height))) in galaxies.iter().zip(rooms).enumerate() {
         let mut best = None;
         let mut best_score = f64::NEG_INFINITY;
         let directions = [
@@ -815,8 +834,8 @@ fn badges(galaxies: &[Frame], tilts: &[f64], width: f64, height: f64) -> Vec<(f6
             (-0.75, -0.75),
         ];
         for (dx, dy) in directions {
-            let x = galaxy.x + dx * (half_width.min(64.0) + 26.0);
-            let y = galaxy.y + dy * (half_height.min(52.0) + 26.0);
+            let x = galaxy.x + dx * (half_width + 26.0);
+            let y = galaxy.y + dy * (half_height + 26.0);
             if x < 22.0 || y < 22.0 || x > width - 22.0 || y > height - 22.0 {
                 continue;
             }

@@ -9,29 +9,29 @@ text
  What fills each session's context                                                                            none open
 
      Context Usage
-     ⛁ ⛁ ⛁ ⛁ ⛁ ⛀ ⛀ ⛀ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ￼￼ Opus 5.5
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛀ ⛀ ⛀ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ￼￼ Opus 5.5
      ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   claude-opus-5-5
-     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~32.3k/1m tokens (3%) · from your last session
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~28.8k/1m tokens (3%) · from your last session
      ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
      ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   Estimated usage by category
      ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System prompt: ~4.4k tokens (0.4%)
      ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System tools: ~19.4k tokens (1.9%)
-     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ MCP tools: ~705 tokens (0.1%)
-     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ MCP server instructions: ~960 tokens (0.1%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ MCP tools: ~2.1k tokens (0.2%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ MCP server instructions: ~318 tokens (<0.1%)
      ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝   ⛁ Memory files: ~503 tokens (0.1%)
-                                               ⛁ Skills: ~6.4k tokens (0.6%)
-                                               ⛶ Free space: ~934.7k (93.5%)
+                                               ⛁ Skills: ~2.1k tokens (0.2%)
+                                               ⛶ Free space: ~938.2k (93.8%)
                                                ⛝ Autocompact buffer: ~33k tokens (3.3%)
 
                                                Claude Code's own count replaces it when its first answer ends.
 
  ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
- │ ◆ context                                         ~32.3k of 1M · compacts at ~967k · from your last session   ~3%  │
+ │ ◆ context                                         ~28.8k of 1M · compacts at ~967k · from your last session   ~3%  │
  │    ▎▎▎▎▎                                                                                                      ▏    │
  │                                                                                                                    │
- │ ▌ System prompt             ~4.4k   0.4%      ▌ System tools   ~19.4k  1.9%      ▌ MCP tools    ~705  0.1%         │
- │ ▌ MCP server instructions    ~960   0.1%      ▌ Memory files     ~503  0.1%      ▌ Skills      ~6.4k  0.6%         │
- │ ▌ Free space                ~935k  93.5%                                                                           │
+ │ ▌ System prompt             ~4.4k   0.4%      ▌ System tools   ~19.4k  1.9%      ▌ MCP tools   ~2.1k  0.2%         │
+ │ ▌ MCP server instructions    ~318  <0.1%      ▌ Memory files     ~503  0.1%      ▌ Skills      ~2.1k  0.2%         │
+ │ ▌ Free space                ~938k  93.8%                                                                           │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
  tab · ←  →  tabs · ↓  into the list · enter opens one · esc closes
@@ -48,8 +48,8 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 .....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...mmmmmmmmm.mmmmm.mm.mmmmmmmm
 .....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...g.cccccc.ccccccc.fffff.ffffff.ffffff
 .....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...f.cccccc.cccccc.ffffff.ffffff.ffffff
-.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...h.ccc.cccccc.ffff.ffffff.ffffff
-.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...i.ccc.cccccc.ccccccccccccc.ffff.ffffff.ffffff
+.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...h.ccc.cccccc.fffff.ffffff.ffffff
+.....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...i.ccc.cccccc.ccccccccccccc.ffff.ffffff.fffffff
 .....f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f.f...j.cccccc.cccccc.ffff.ffffff.ffffff
 ...............................................k.ccccccc.fffff.ffffff.ffffff
 ...............................................f.cccc.cccccc.fffffff.fffffff
@@ -61,35 +61,35 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 .n.o.ppppppp.........................................pppppp.ff.ff.f.ffffffff.ff.fffff.f.ffff.ffff.ffff.fffffff..qrrrq.n
 .n.sttuvwxyzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzABBB.n
 .n....................................................................................................................n
-.n.g.cccccc.cccccc.............ppppp...ffff......f.cccccc.ccccc...pppppp..ffff......h.ccc.ccccc....pppp..ffff.........n
-.n.i.ccc.cccccc.cccccccccccc....pppp...ffff......j.cccccc.ccccc.....pppp..ffff......k.cccccc......ppppp..ffff.........n
+.n.g.cccccc.cccccc.............ppppp...ffff......f.cccccc.ccccc...pppppp..ffff......h.ccc.ccccc...ppppp..ffff.........n
+.n.i.ccc.cccccc.cccccccccccc....pppp..fffff......j.cccccc.ccccc.....pppp..ffff......k.cccccc......ppppp..ffff.........n
 .n.C.cccc.ccccc................ppppp..fffff...........................................................................n
 .nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn
 
 .fff.f.f..f..ffff.f.f..ffff.fff.ffff.f.fffff.fffff.fff.f.fff.ffffff
 key
 . blank
-a fg=#b1b9f9  ; Code, Question, BarFill, CatMcp
+a fg=#b1b9f9  ; Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp
 b fg=#c8d3f5 bold  ; the terminal's own
 c fg=#c8d3f5  ; the terminal's own
-d bg=#b1b9f9  ; Code, Question, BarFill, CatMcp
-e fg=#14161f bg=#b1b9f9 bold  ; BadgeText, on Code, on Question, on BarFill, on CatMcp
-f fg=#999999  ; Dim, ModeSupervised, SyntaxComment
+d bg=#fb923c
+e fg=#14161f bg=#fb923c bold  ; BadgeText
+f fg=#999999  ; Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment
 g fg=#888888  ; Rule
 h fg=#0a91b3
 i fg=#17a34a
 j fg=#d77757
 k fg=#ffc109
 l logo=claudecode
-m fg=#999999 italic  ; Dim, ModeSupervised, SyntaxComment
+m fg=#999999 italic  ; Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment
 n fg=#4f5468  ; ModBorder
 o fg=#e6a23c  ; Accent, CatBrief
 p fg=#ffffff bold  ; Bright
-q bg=#4eba65  ; Success, CatAgents
-r fg=#14161f bg=#4eba65 bold  ; BadgeText, on Success, on CatAgents
+q bg=#4eba65  ; Success, CatAgents, Success, CatAgents
+r fg=#14161f bg=#4eba65 bold  ; BadgeText, on Success, on CatAgents, on Success, on CatAgents
 s bg=#888888  ; Rule
-t bg=#999999  ; Dim, ModeSupervised, SyntaxComment
-u fg=#999999 bg=#0a91b3  ; Dim, ModeSupervised, SyntaxComment
+t bg=#999999  ; Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment
+u fg=#999999 bg=#0a91b3  ; Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment
 v fg=#0a91b3 bg=#17a34a
 w fg=#17a34a bg=#d77757
 x fg=#d77757 bg=#ffc109

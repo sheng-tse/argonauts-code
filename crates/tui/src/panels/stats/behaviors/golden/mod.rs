@@ -629,6 +629,9 @@ fn while_summaries_are_made_the_tab_says_how_far_above_the_map() {
         total: 562,
         seconds_left: Some(50),
         summarizer: "Qwen3 Coder 30B on Ollama".to_owned(),
+        short: "Qwen3 Coder 30B".to_owned(),
+        redo: false,
+        downloading: false,
     });
     let keys = [KeyCode::Right, KeyCode::Right];
     let (_, buf) = drawn_sized(&state, &label_map(), &keys, None, (WIDTH, HEIGHT), true);
@@ -651,7 +654,7 @@ fn d_on_the_first_visit_asks_in_the_tab_and_starts_on_the_answers() {
     };
     assert!(matches!(
         view.handle_key(KeyCode::Char('d').into(), &ctx),
-        ViewOutcome::Request(ViewRequest::DeepOffer)
+        ViewOutcome::Request(ViewRequest::DeepOffer { start: None })
     ));
     let offer = crate::panels::stats::deep_map::sample::page_offer();
     assert!(view.accept(&ViewData::DeepOffer {
@@ -765,9 +768,10 @@ fn the_period_and_the_grouping_show_top_right_and_their_keys_change_them() {
     let chosen = &buf[(at(&buf, 1, "All time"), 1)];
     assert_eq!(chosen.fg, accent.unwrap());
     assert!(chosen.modifier.contains(ratatui::style::Modifier::BOLD));
-    let band = theme.color(crate::base::theme::Role::UserBand).unwrap();
-    assert_eq!(buf[(at(&buf, 3, "By model"), 3)].bg, band);
-    assert_ne!(buf[(at(&buf, 3, "By CLI"), 3)].bg, band);
+    // The map is the groupings' content, so the grouping shown keeps the orange chip.
+    let orange = theme.color(crate::base::theme::Role::AgentOrange).unwrap();
+    assert_eq!(buf[(at(&buf, 3, "By model"), 3)].bg, orange);
+    assert_ne!(buf[(at(&buf, 3, "By CLI"), 3)].bg, orange);
 
     let week = asked_map(press_key(&mut view, KeyCode::Char('r').into()));
     assert_eq!(week.period, OverviewPeriod::Week);
@@ -785,7 +789,7 @@ fn the_period_and_the_grouping_show_top_right_and_their_keys_change_them() {
         argonauts_core::behaviors::behavior_map::Grouping::Cli
     );
     let buf = redrawn(&mut view, WIDTH);
-    assert_eq!(buf[(at(&buf, 3, "By CLI"), 3)].bg, band);
+    assert_eq!(buf[(at(&buf, 3, "By CLI"), 3)].bg, orange);
     let here = asked_map(press_key(&mut view, KeyCode::Char('s').into()));
     assert_eq!(
         here.scope,
@@ -802,11 +806,11 @@ fn the_period_and_the_grouping_show_top_right_and_their_keys_change_them() {
         "p changed nothing"
     );
 
-    // Up onto the groupings, the chosen one fills in the accent.
+    // Up onto the groupings, the chosen one stays orange.
     press_key(&mut view, KeyCode::Up.into());
     let buf = redrawn(&mut view, WIDTH);
     let filled = &buf[(at(&buf, 3, "By role"), 3)];
-    assert_ne!(filled.bg, band, "the row with the keys fills");
+    assert_eq!(filled.bg, orange, "the row with the keys fills");
     // Up to the tabs, the period still steps and the key line starts with Behaviors' keys.
     for _ in 0..3 {
         press_key(&mut view, KeyCode::Up.into());
@@ -1202,7 +1206,7 @@ fn state() -> AppState {
 fn deep_map() -> BehaviorMap {
     let mut map = label_map();
     map.placing = Placing::Summaries {
-        by: "Qwen3 Coder 30B (64k)".to_owned(),
+        by: "Qwen3 Coder 30B".to_owned(),
     };
     let rows = [
         (
@@ -1445,7 +1449,7 @@ fn the_pointer_on_a_hurricane_says_what_made_it() {
             .collect::<String>()
     };
     let line = (0..HEIGHT)
-        .find(|row| text(*row).trim_start().starts_with("Hurricane, "))
+        .find(|row| text(*row).trim_start().starts_with("Hurricane · "))
         .expect("the hurricane's line");
     assert_eq!(beside.area, Rect::new(2, line, 2, 1));
     let south = matches!(&grown.nature.features[storm].kind, Kind::Hurricane(h) if h.south);
@@ -1628,6 +1632,9 @@ fn beside_the_map_an_update_keeps_the_map_and_takes_the_lists_rows() {
         total: 562,
         seconds_left: Some(50),
         summarizer: "Qwen3 Coder 30B on Ollama".to_owned(),
+        short: "Qwen3 Coder 30B".to_owned(),
+        redo: false,
+        downloading: false,
     });
     let cell = super::ASSUMED_CELL;
     for size in [(177, 40), (140, 40)] {
@@ -1688,4 +1695,5 @@ fn at_80_by_24_the_legend_says_how_many_models_are_below() {
     );
 }
 
+mod compared;
 mod drawings;

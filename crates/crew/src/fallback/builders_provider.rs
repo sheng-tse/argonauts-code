@@ -8,7 +8,6 @@
 
 use argonauts_core::TaskId;
 use argonauts_core::base::names::{ModelRef, RoleName};
-use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::runs::events::RunEventKind;
 use argonauts_core::runs::events::agent_status::{FallbackEvent, JobKeeper, JobWait};
 use argonauts_core::runs::events::approval::{
@@ -25,7 +24,6 @@ use crate::engine::host::Host;
 use crate::engine::job_fallback::{verb_of, work_of};
 use crate::fallback::down::{listed_as, report};
 use crate::fallback::rules;
-use crate::roles::display_name;
 use crate::state::RunState;
 
 /// What an option that gives the job to the builder's provider says of it.
@@ -192,7 +190,7 @@ fn request(
     picking: bool,
     test_at: Option<OffsetDateTime>,
 ) -> ApprovalRequest {
-    let cli = DisplayNames::default().cli(&wait.stopped.agent);
+    let cli = host.names().cli(&wait.stopped.agent);
     let verb = verb_of(listed.role);
     let (builders, why) = match &wait.kept_by {
         JobKeeper::BuildersProvider { builders, why } => (builders.as_slice(), why.as_str()),
@@ -200,7 +198,7 @@ fn request(
     };
     let evidence = format!(
         "{why}, and nobody outside the builder's provider is left to {verb} {}",
-        work_of(builders)
+        work_of(host.names(), builders)
     );
     let providers: Vec<String> = builders
         .iter()
@@ -224,14 +222,14 @@ fn request(
     let detail = |model: &ModelRef| theirs(model).then(|| MERGE_IS_YOURS.to_owned());
     if picking {
         for (index, model) in wait.elsewhere.iter().enumerate() {
-            let mut pick = offer(key(index), display_name(model), take(model));
+            let mut pick = offer(key(index), host.names().worker(model), take(model));
             pick.detail = detail(model);
             options.push(pick);
         }
     } else if let Some(first) = wait.elsewhere.first() {
         let mut first_one = offer(
             'l',
-            format!("Let {} {verb}", display_name(first)),
+            format!("Let {} {verb}", host.names().worker(first)),
             take(first),
         );
         first_one.detail = detail(first);

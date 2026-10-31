@@ -1419,6 +1419,7 @@ fn the_conversations_context_count_is_kept_until_another_model_answers() {
         uncommitted: Vec::new(),
         settings_sha256: None,
         continues: false,
+        opens_a_talk: false,
     };
     let agent = |n: u32, event| {
         conversation(ConversationEvent::Agent {
@@ -1503,6 +1504,7 @@ fn state_folds_conversation() {
         uncommitted: Vec::new(),
         settings_sha256: None,
         continues: false,
+        opens_a_talk: false,
     }));
     let agent = |event| ConversationEvent::Agent {
         turn: turn.clone(),
@@ -1574,6 +1576,7 @@ fn the_notice_goes_when_nothing_is_drawn_or_the_conversation_is_cleared() {
             uncommitted: Vec::new(),
             settings_sha256: None,
             continues: false,
+            opens_a_talk: false,
         },
     };
     let drawn = |n, rows: Vec<DrawnRow>| AppEvent::Conversation {
@@ -1625,6 +1628,7 @@ fn conversation_queue_clears_at_turn_start() {
             uncommitted: Vec::new(),
             settings_sha256: None,
             continues: false,
+            opens_a_talk: false,
         },
     });
     assert_eq!(state.conversation.queued, vec!["second".to_owned()]);
@@ -2302,6 +2306,7 @@ fn a_conversation_turn_keeps_its_subagents_until_it_ends() {
         uncommitted: Vec::new(),
         settings_sha256: None,
         continues: false,
+        opens_a_talk: false,
     }));
     let update = |id: &str, kind, status, said: Option<&str>| {
         conversation(ConversationEvent::Agent {
@@ -2402,6 +2407,7 @@ fn a_conversation_turn_waits_on_the_background_while_its_main_agent_rests() {
             uncommitted: Vec::new(),
             settings_sha256: None,
             continues: false,
+            opens_a_talk: false,
         },
     });
     let agent = |status| {
@@ -2498,6 +2504,7 @@ fn published_artifacts_are_kept_with_who_published_them() {
         uncommitted: Vec::new(),
         settings_sha256: None,
         continues: false,
+        opens_a_talk: false,
     };
     let said = |n: u32, event| {
         conversation(ConversationEvent::Agent {
@@ -2627,6 +2634,7 @@ fn the_conversation_counts_the_lines_its_edits_changed_once() {
             uncommitted: Vec::new(),
             settings_sha256: None,
             continues: false,
+            opens_a_talk: false,
         }),
     );
     let call = |id: &str, name: &str, input: serde_json::Value| AgentEvent::ToolStarted {

@@ -338,7 +338,7 @@ impl<'a> PartRows<'a> {
     }
 }
 
-/// `● Claude Code     2.1.296   you@example.com · Max · checked · works`: the CLI's logo, or
+/// `● Claude Code     2.1.296   you@example.com · Pro · checked · works`: the CLI's logo, or
 /// where no picture draws the dot in its colour, filled for the main session's CLI, its name, its version, who it's signed in as or what it can use, dim, then how its
 /// version stands in that standing's colour. A second row, set in under the first's words,
 /// holds a provider CLI's default model and what a new major version was checked with. In a

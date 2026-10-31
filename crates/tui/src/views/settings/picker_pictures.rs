@@ -52,12 +52,11 @@ fn theme() -> Theme {
     pictured(&theme)
 }
 
-/// The picker as the bottom of the screen draws it, in the input's place, once the memory
-/// gauge has settled on the row the keys moved to.
+/// The picker as the bottom of the screen draws it, in the input's place, in the frame the
+/// last key lands in: the memory gauge already stands on the row the keys moved to.
 fn drawn(picker: &Picker) -> Vec<Line<'static>> {
     let theme = theme();
-    let settled = Instant::now() + Duration::from_secs(1);
-    let ctx = RenderCtx::new(WIDTH, &theme, Clock::still(settled));
+    let ctx = RenderCtx::new(WIDTH, &theme, Clock::still(Instant::now()));
     let mut bottom = BottomState::new();
     bottom.composer.label = Some("Opus 5.5".to_owned());
     bottom.picker = Some(picker.clone());
@@ -70,7 +69,7 @@ fn compare(
     rows: std::ops::Range<usize>,
     lines: &[Line<'static>],
 ) {
-    assert_rows_match(name, lines, (txt, html), rows, &theme(), &[]);
+    assert_rows_match(name, lines, (txt, html), rows, &theme());
 }
 
 fn key(picker: &mut Picker, code: KeyCode) {
@@ -164,21 +163,21 @@ const UP_TO_MAX: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 const THREE: &[&str] = &["low", "high", "max"];
 
 /// OpenCode's models in the order the controller sends them: Ollama's with tool use first,
-/// then by name, those without last; then OpenCode Zen's, newest first. gemma3:12b-32k's
+/// then by name, those without last; then OpenCode Zen's, newest first. sample-gemma:12b-32k's
 /// window is the 32,768 its tag holds, under OpenCode's 131,072.
 const OPENCODE: &[Listed] = &[
     tag("ollama/gemma4:e2b", "", 131_072, true),
     tag("ollama/llama3.2:latest", "", 131_072, true),
     tag("ollama/qwen3-coder:30b", "", 262_144, true),
     tag(
-        "ollama/qwen3-coder:30b-64k",
-        "Qwen3 Coder 30B (64k)",
+        "ollama/sample-coder:30b-64k",
+        "Sample Coder 30B (64k)",
         65_536,
         true,
     ),
     tag("ollama/gemma2:9b", "", 8_192, false),
     tag("ollama/gemma3:12b", "", 131_072, false),
-    tag("ollama/gemma3:12b-32k", "", 32_768, false),
+    tag("ollama/sample-gemma:12b-32k", "", 32_768, false),
     zen(
         NEMOTRON_VL,
         "Nemotron 3.5 Super VL Free",
@@ -418,7 +417,7 @@ fn opencodes_level_lists_what_opencode_can_run_in_its_groups() {
         include_str!("../../../tests/golden/opencode_models_after.html"),
     );
     let mut picker = opencode_level(&every_choice(), FRESH);
-    down_to(&mut picker, "Qwen3 Coder 30B (64k)");
+    down_to(&mut picker, "Sample Coder 30B (64k)");
     compare("opencode_models_after", &picture, 2..21, &drawn(&picker));
 
     // The same list scrolled to its end.
@@ -475,14 +474,14 @@ fn typing_an_id_finds_its_row_and_hides_the_headings() {
         ["Installed through Ollama"],
         "the first rows' heading"
     );
-    picker.filter = "qwen3-coder:30b".to_owned();
+    picker.filter = "coder:30b".to_owned();
     let mut shown: Vec<&str> = picker
         .shown()
         .into_iter()
         .map(|index| picker.rows[index].label.as_str())
         .collect();
     shown.sort_unstable();
-    assert_eq!(shown, ["Qwen3 Coder 30B", "Qwen3 Coder 30B (64k)"]);
+    assert_eq!(shown, ["Qwen3 Coder 30B", "Sample Coder 30B (64k)"]);
     assert_eq!(headings(&picker), Vec::<String>::new());
 }
 
@@ -561,7 +560,7 @@ fn opencodes_level_keeps_the_pointer_on_its_model_as_a_new_one_comes_in() {
     let asked = ["codex", "antigravity-cli", "opencode"];
     let mut picker = opened_from_the_last_lists(&every_choice(), &asked);
     key(&mut picker, KeyCode::Char('4'));
-    down_to(&mut picker, "Qwen3 Coder 30B (64k)");
+    down_to(&mut picker, "Sample Coder 30B (64k)");
     compare(
         "model_picker_live_opencode",
         &picture,
@@ -570,10 +569,10 @@ fn opencodes_level_keeps_the_pointer_on_its_model_as_a_new_one_comes_in() {
     );
 
     // OpenCode answered: Devstral 24B comes in as new, and the pointer, the effort line and
-    // the window stay on Qwen3 Coder 30B (64k), now row 6.
+    // the window stay on Sample Coder 30B (64k), now row 6.
     told(&mut picker, sources(at(21, 43), &[], &[]), at(21, 43));
     super::models::refresh(&mut picker, &with_devstral(every_choice()));
-    assert_eq!(pointed_label(&picker), "Qwen3 Coder 30B (64k)");
+    assert_eq!(pointed_label(&picker), "Sample Coder 30B (64k)");
     assert_eq!((picker.selected, picker.offset), (5, 0));
     compare(
         "model_picker_live_opencode",
@@ -606,13 +605,13 @@ const MAC_64: MachineMemory = MachineMemory {
 
 /// What each local tag takes at its window, in GB, and whether it thinks.
 const LOCAL_RAM: &[(&str, u64, bool)] = &[
-    ("ollama/qwen3-coder:30b-64k", 25, false),
+    ("ollama/sample-coder:30b-64k", 25, false),
     ("ollama/gemma4:e2b", 8, true),
     ("ollama/llama3.2:latest", 24, false),
     ("ollama/qwen3-coder:30b", 45, false),
     ("ollama/gemma2:9b", 6, false),
     ("ollama/gemma3:12b", 17, false),
-    ("ollama/gemma3:12b-32k", 11, false),
+    ("ollama/sample-gemma:12b-32k", 11, false),
 ];
 
 /// A model not installed from the short list kept with the catalog: its route, name,
@@ -663,7 +662,7 @@ fn with_memory(mut choice: ModelChoice, machine: &MachineMemory) -> ModelChoice 
     let route = choice.worker.model.clone().unwrap_or_default();
     if let Some(&(_, ram, thinking)) = LOCAL_RAM.iter().find(|(at, ..)| *at == route) {
         let ram = ram * GIB;
-        let fit = if route == "ollama/qwen3-coder:30b-64k" {
+        let fit = if route == "ollama/sample-coder:30b-64k" {
             Fit::Loaded
         } else {
             machine.fit(ram)
@@ -696,7 +695,7 @@ fn ram_choices() -> Vec<ModelChoice> {
     let mut local = local;
     let at = local
         .iter()
-        .position(|choice| choice.display_name() == "Qwen3 Coder 30B (64k)")
+        .position(|choice| choice.display_name() == "Sample Coder 30B (64k)")
         .expect("the recommended model");
     let mut recommended = local.remove(at);
     recommended.recommended = true;
@@ -737,7 +736,7 @@ fn opencodes_level_knows_this_machines_memory() {
     let mut picker = model_picker(&choices, FRESH);
     picker.flow.memory = Some(MAC_64);
     key(&mut picker, KeyCode::Char('4'));
-    down_to(&mut picker, "Qwen3 Coder 30B (64k)");
+    down_to(&mut picker, "Sample Coder 30B (64k)");
     compare("ram_after", &picture, 4..25, &drawn(&picker));
 
     // Scrolled on to OpenCode Zen's third, then back to the first model not installed, where
@@ -838,7 +837,7 @@ fn a_memory_reading_after_the_level_opened_fills_its_line() {
     let choices = ram_choices();
     let mut picker = model_picker(&choices, FRESH);
     key(&mut picker, KeyCode::Char('4'));
-    down_to(&mut picker, "Qwen3 Coder 30B (64k)");
+    down_to(&mut picker, "Sample Coder 30B (64k)");
     assert_eq!(picker.banner, None);
 
     picker.flow.memory = Some(MAC_64);
@@ -890,8 +889,8 @@ fn a_smaller_mac_warns_and_suggests_a_model_that_fits() {
     let opencode = vec![
         hosted_default(),
         local(
-            "ollama/qwen3-coder:30b-64k",
-            "Qwen3 Coder 30B (64k)",
+            "ollama/sample-coder:30b-64k",
+            "Sample Coder 30B (64k)",
             65_536,
             25,
             Fit::TooBig { at: None },
@@ -920,7 +919,7 @@ fn a_smaller_mac_warns_and_suggests_a_model_that_fits() {
     let mut picker = model_picker(&choices, FRESH);
     picker.flow.memory = Some(mac_16);
     key(&mut picker, KeyCode::Char('4'));
-    down_to(&mut picker, "Qwen3 Coder 30B (64k)");
+    down_to(&mut picker, "Sample Coder 30B (64k)");
     let lines = drawn(&picker);
     compare("ram_after", &picture, 56..76, &lines);
 }
@@ -982,7 +981,6 @@ fn codexs_list_names_its_models_as_they_read_beside_its_logo() {
         (&pictures.0, &pictures.1),
         rows,
         &theme(),
-        &[],
     );
 
     let mut plain = Theme::dark();
@@ -999,6 +997,5 @@ fn codexs_list_names_its_models_as_they_read_beside_its_logo() {
         (&words.0, &words.1),
         rows,
         &plain,
-        &[],
     );
 }

@@ -15,7 +15,6 @@ use argonauts_core::workflows::steps::instructions::{WriteInstructions, WriteIns
 
 use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::{Ask, Host};
-use crate::roles;
 
 use super::assemble;
 use super::instructions::Agent;
@@ -73,7 +72,7 @@ pub fn written<'a>(
             return Ok(task);
         }
         let leading = task.iter().take_while(|part| part.kind.instructs()).count();
-        let mut prompt = vec![parts::from_writer(instructions, roles::short_name(&model))];
+        let mut prompt = vec![parts::from_writer(instructions, host.names().short(&model))];
         prompt.extend(task.into_iter().skip(leading));
         Ok(prompt)
     })

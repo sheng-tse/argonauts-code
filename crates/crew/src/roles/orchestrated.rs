@@ -16,6 +16,7 @@ use argonauts_core::TaskId;
 use argonauts_core::agents::session_runner::Access;
 use argonauts_core::base::names::{ModelRef, RoleName, SessionKey};
 use argonauts_core::base::text::clause_case;
+use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::runs::events::RunEventKind;
 use argonauts_core::runs::events::approval::{AnswerAction, ApprovalKind};
 use argonauts_core::runs::events::plan::PlanEvent;
@@ -38,8 +39,8 @@ use crate::engine::host::{Ask, Host};
 use crate::plan::context::{self, providers};
 use crate::plan::drafts;
 use crate::prompts::plan::ORCHESTRATE;
+use crate::roles;
 use crate::roles::tasks::{TaskRoles, named_in};
-use crate::roles::{self, display_name};
 use crate::state::RunState;
 use crate::state::plan::{self, OrchestratedRecord, SealedDraft};
 use crate::task::at_start;
@@ -207,13 +208,14 @@ pub async fn run(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
         }
         if broken.is_empty() {
             let moved = repair(
+                host.names(),
                 &mut output,
                 &task_roles,
                 &ranking(host, &task_roles),
                 &provider,
             );
             moved_note(host, &moved)?;
-            broken = assignment_problems(&output, &task_roles, &provider);
+            broken = assignment_problems(host.names(), &output, &task_roles, &provider);
         }
         if !broken.is_empty() {
             reject(
@@ -578,13 +580,14 @@ fn task_limit(settings: &Settings) -> Option<usize> {
 /// Every rule the output breaks, one line each. Empty means it stands. `providers` gives a
 /// worker's model provider from the registry.
 pub fn check(
+    names: &DisplayNames,
     output: &OrchestrateOutput,
     settings: &Settings,
     providers: &dyn Fn(&ModelRef) -> String,
 ) -> Vec<String> {
-    let task_roles = roles::tasks::settle(settings, Default::default(), providers);
+    let task_roles = roles::tasks::settle(names, settings, Default::default(), providers);
     let mut broken = task_problems(&output.tasks, settings);
-    broken.extend(assignment_problems(output, &task_roles, providers));
+    broken.extend(assignment_problems(names, output, &task_roles, providers));
     broken
 }
 
@@ -735,6 +738,7 @@ fn protected_set(settings: &Settings) -> GlobSet {
 /// Every rule the assignments break, in plain words with names: "agy can't own task
 /// `tests`: only Claude Code and Codex may own tasks."
 fn assignment_problems(
+    names: &DisplayNames,
     output: &OrchestrateOutput,
     task_roles: &TaskRoles,
     providers: &dyn Fn(&ModelRef) -> String,
@@ -761,7 +765,7 @@ fn assignment_problems(
         if !task_roles.may_own(&worker) {
             broken.push(format!(
                 "{} can't own task `{key}`: {}.",
-                display_name(&worker),
+                names.worker(&worker),
                 clause_case(&task_roles.why_not_worker(&worker))
             ));
         }
@@ -773,7 +777,7 @@ fn assignment_problems(
                 ));
                 continue;
             };
-            let name = display_name(&reviewer);
+            let name = names.worker(&reviewer);
             if !seen.insert(reviewer.clone()) {
                 broken.push(format!("{name} reviews task `{key}` twice."));
             } else if reviewer == worker {
@@ -812,6 +816,7 @@ fn assignment_problems(
 /// Returns a line for each task whose worker or reviewers moved, saying who and why. A name the
 /// crew list spells another way, such as `codex/gpt` for `codex`, is the same agent, not a move.
 pub fn repair(
+    names: &DisplayNames,
     output: &mut OrchestrateOutput,
     task_roles: &TaskRoles,
     ranked: &[ModelRef],
@@ -878,11 +883,11 @@ pub fn repair(
             changes.push(match was {
                 Some(was) => format!(
                     "{} owns it, not {}, since {}",
-                    display_name(&worker),
-                    display_name(&was),
+                    names.worker(&worker),
+                    names.worker(&was),
                     clause_case(&task_roles.why_not_worker(&was))
                 ),
-                None => format!("{} owns it", display_name(&worker)),
+                None => format!("{} owns it", names.worker(&worker)),
             });
         }
         let dropped: Vec<ModelRef> = given
@@ -909,18 +914,18 @@ pub fn repair(
             } else {
                 "review"
             };
-            format!("{} {verb} it", roles::tasks::names(models))
+            format!("{} {verb} it", roles::tasks::who(names, models))
         };
         match (dropped.first(), added.is_empty()) {
             (Some(first), false) => changes.push(format!(
                 "{}, not {}, since {}",
                 reviews(&added),
-                roles::tasks::names(&dropped),
+                roles::tasks::who(names, &dropped),
                 task_roles.why_not_reviewer(first, &worker, provider)
             )),
             (Some(first), true) => changes.push(format!(
                 "{} doesn't review it, since {}",
-                roles::tasks::names(&dropped),
+                roles::tasks::who(names, &dropped),
                 task_roles.why_not_reviewer(first, &worker, provider)
             )),
             (None, false) => changes.push(reviews(&added)),
@@ -1038,7 +1043,7 @@ mod tests {
     }
 
     fn broken(output: &OrchestrateOutput) -> Vec<String> {
-        check(output, &settings(), &provider)
+        check(&DisplayNames::default(), output, &settings(), &provider)
     }
 
     /// A copy of the main session opens on its new role, in the words the orchestrator's own
@@ -1154,7 +1159,7 @@ mod tests {
         limited.limits.spend.spend_per_run = Some(20.0);
         limited.limits.spend.per_task_usd = Some(3.0);
         assert_eq!(
-            check(&output, &limited, &provider),
+            check(&DisplayNames::default(), &output, &limited, &provider),
             ["8 tasks don't fit the run limit, which holds 6."]
         );
         assert!(
@@ -1191,7 +1196,12 @@ mod tests {
             vec![worker("claude-code"), worker("codex")];
         settings.roles.entry(RoleName::Reviewer).or_default().models =
             vec![worker("antigravity-cli")];
-        roles::tasks::settle(&settings, Default::default(), &provider)
+        roles::tasks::settle(
+            &DisplayNames::default(),
+            &settings,
+            Default::default(),
+            &provider,
+        )
     }
 
     fn trial_output() -> OrchestrateOutput {
@@ -1222,9 +1232,15 @@ mod tests {
             .iter()
             .map(|w| w.parse().unwrap())
             .collect();
-        let moved = repair(&mut output, &task_roles, &ranked, &provider);
+        let moved = repair(
+            &DisplayNames::default(),
+            &mut output,
+            &task_roles,
+            &ranked,
+            &provider,
+        );
         assert_eq!(
-            assignment_problems(&output, &task_roles, &provider),
+            assignment_problems(&DisplayNames::default(), &output, &task_roles, &provider),
             Vec::<String>::new()
         );
         let given: Vec<(&str, &str, Vec<&str>)> = output
@@ -1259,16 +1275,39 @@ mod tests {
         );
         // The same plan moves the same way every time.
         let mut again = trial_output();
-        assert_eq!(repair(&mut again, &task_roles, &ranked, &provider), moved);
+        assert_eq!(
+            repair(
+                &DisplayNames::default(),
+                &mut again,
+                &task_roles,
+                &ranked,
+                &provider
+            ),
+            moved
+        );
         assert_eq!(again, output);
     }
 
     #[test]
     fn a_plan_that_keeps_the_rules_moves_nothing() {
-        let task_roles = roles::tasks::settle(&settings(), Default::default(), &provider);
+        let task_roles = roles::tasks::settle(
+            &DisplayNames::default(),
+            &settings(),
+            Default::default(),
+            &provider,
+        );
         let mut output = good();
         let ranked = task_roles.workers.clone();
-        assert!(repair(&mut output, &task_roles, &ranked, &provider).is_empty());
+        assert!(
+            repair(
+                &DisplayNames::default(),
+                &mut output,
+                &task_roles,
+                &ranked,
+                &provider
+            )
+            .is_empty()
+        );
         assert_eq!(output, good());
     }
 }

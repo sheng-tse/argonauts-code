@@ -14,7 +14,7 @@ use super::{PickedBy, Setup, TaskStep};
 use crate::council::{checks, seats};
 use crate::engine::error::EngineResult;
 use crate::engine::host::Host;
-use crate::roles::{self, display_name};
+use crate::roles;
 use crate::task::support::record_of;
 
 /// The model whose fresh session takes a check.
@@ -63,11 +63,11 @@ pub fn ladder(
 }
 
 /// A council's seats, which check before anyone else; none outside a council.
-fn seats_of(settings: &Settings) -> Vec<Seat> {
+fn seats_of(names: &DisplayNames, settings: &Settings) -> Vec<Seat> {
     if Setup::of(settings) != Setup::Council {
         return Vec::new();
     }
-    seats::seat(settings, &DisplayNames::default()).unwrap_or_default()
+    seats::seat(settings, names).unwrap_or_default()
 }
 
 /// Who checks `task` at a step of `role`. `None` when the task has no worker yet.
@@ -82,7 +82,7 @@ pub(crate) fn of_task(host: &Host, task: &TaskId, role: CrewRole) -> EngineResul
     let set_up = set_up(settings, &host.services().workers.available());
     Ok(Some(ladder(
         &worker,
-        &seats_of(settings),
+        &seats_of(host.names(), settings),
         &pool,
         &set_up,
         &provider,
@@ -103,10 +103,10 @@ pub(crate) fn set_up(settings: &Settings, available: &[ModelRef]) -> Vec<ModelRe
 }
 
 /// The line under a check a fresh session of the worker's own model took.
-pub fn same_maker_line(model: &ModelRef) -> String {
+pub fn same_maker_line(names: &DisplayNames, model: &ModelRef) -> String {
     format!(
         "Same maker: {} made it too, as no other maker is set up · it may favour its own style",
-        display_name(model)
+        names.worker(model)
     )
 }
 
@@ -120,7 +120,7 @@ pub fn checked_by_its_own_model(host: &Host, task: &TaskSpec) -> bool {
     let settings = host.settings();
     let provider = |model: &ModelRef| roles::provider(host, model);
     let set_up = set_up(settings, &host.services().workers.available());
-    let seats = seats_of(settings);
+    let seats = seats_of(host.names(), settings);
     let reviewers = roles::candidates(settings, CrewRole::Reviewer.fine_role());
     let councils_plan = host.read(|state| state.councils.newest().is_some());
     if Setup::of(settings) == Setup::Council

@@ -106,9 +106,9 @@ impl UsageTab<'_> {
                 spans.extend(logo_picture(&logo, kit.theme));
             }
             spans.push(if index == at {
-                super::view::subtabs::chosen_sub_tab(kit, name, focused)
+                super::view::subtabs::chosen(kit, name, focused)
             } else {
-                kit.dim(format!(" {name} "))
+                super::view::subtabs::unchosen(name)
             });
         }
         spans

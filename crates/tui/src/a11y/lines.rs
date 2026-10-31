@@ -39,7 +39,7 @@ pub fn lines_for(event: &AppEvent, state: &AppState) -> Vec<String> {
         AppEvent::Notice { level, text } => {
             let label = match level {
                 NoteLevel::Info | NoteLevel::Aside | NoteLevel::Quiet => "notice",
-                NoteLevel::Warn | NoteLevel::Caution => "warning",
+                NoteLevel::Warn | NoteLevel::Caution | NoteLevel::Ask => "warning",
                 NoteLevel::Error => "error",
             };
             labeled(label, text)

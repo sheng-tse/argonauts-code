@@ -4,8 +4,10 @@
 
 use crate::app_support;
 
+use anyhow::Context as _;
 use app_support::*;
 use argonauts_core::app::{AppEvent, AppMode, ChoiceKind, ConversationEvent, TurnReply, UiCommand};
+use argonauts_core::base::log::DOING_THIS_ALONE;
 use argonauts_core::input::SlashCommand;
 use argonauts_core::runs::events::run::{RunLifecycle, RunMode};
 use argonauts_core::runs::events::{RunEvent, RunEventKind};
@@ -620,8 +622,8 @@ fn app_rules_pick_crew_by_labels() -> anyhow::Result<()> {
     }
     let started = run_started(&wait_run_dir(&scenario)?)?;
     assert_eq!(started.mode, RunMode::Crew);
-    // The crew's first agent marks the start, with no row above it.
-    pty.wait_for(r"(?m)^[●⏺] main:design", WAIT)?;
+    // The Council heading marks the start, with no design step before it.
+    pty.wait_for(r"\d+ seats · each one is its own session", WAIT)?;
     scenario.shot(&pty, "app_rules_pick_crew_by_labels")?;
     Ok(())
 }
@@ -695,22 +697,37 @@ const ALONE_REQUEST: &str = "Make the rate limiter per API key, so one busy key 
 /// goes on working after its edit, so the screen holds still for its drawing.
 const ALONE_RULES: &str = "conversation/alone.toml";
 
-/// [`AGENTS`] with the rules in [`ALONE_RULES`] first, in `dir`, which the fakes read it from
-/// while the scenario runs.
-fn scenario_working_alone(dir: &tempfile::TempDir) -> anyhow::Result<Scenario> {
+/// [`AGENTS`] with the approved drawings' fake CLI rules at `rules` first, in `dir`, which the
+/// fakes read them from while the scenario runs.
+fn scenario_playing_first(dir: &tempfile::TempDir, rules: &str) -> anyhow::Result<Scenario> {
+    playing_first(dir, &approved::dir().join(rules))
+}
+
+/// [`AGENTS`] with the fake CLI rules in the file `rules` first.
+fn playing_first(dir: &tempfile::TempDir, rules: &std::path::Path) -> anyhow::Result<Scenario> {
     let agents = std::fs::read_to_string(argonauts_scenarios::scenario_file(AGENTS))?;
     let first_rule = agents
         .find("\n[[rule]]")
         .ok_or_else(|| anyhow::anyhow!("{AGENTS} has no rules"))?;
-    let (head, rules) = agents.split_at(first_rule);
-    let alone = std::fs::read_to_string(approved::dir().join(ALONE_RULES))?;
+    let (head, defaults) = agents.split_at(first_rule);
+    let first = std::fs::read_to_string(rules)?;
     let file = dir.path().join("agents.toml");
-    std::fs::write(&file, format!("{head}\n{alone}{rules}"))?;
-    let scenario = Scenario::from_file(&file)?;
+    std::fs::write(&file, format!("{head}\n{first}{defaults}"))?;
+    Scenario::from_file(&file)
+}
+
+/// The settings the main agent works alone on, with the workflow as `workflow` leaves them.
+fn working_alone_on(workflow: fn(&str) -> String) -> String {
     let config = format!("{GLOBAL_CONFIG}\n[captain_or_crew]\ncaptain_kind = \"direct\"\n");
+    as_set_up(&workflow(&config))
+}
+
+/// [`AGENTS`] with the rules in [`ALONE_RULES`] first, on the default workflow.
+fn scenario_working_alone(dir: &tempfile::TempDir) -> anyhow::Result<Scenario> {
+    let scenario = scenario_playing_first(dir, ALONE_RULES)?;
     std::fs::write(
         scenario.repo.global_config(),
-        as_set_up(&on_the_default_workflow(&config)),
+        working_alone_on(on_the_default_workflow),
     )?;
     Ok(scenario)
 }
@@ -749,6 +766,112 @@ fn app_default_workflow_says_when_the_main_agent_works_alone() -> anyhow::Result
             &format!("conversation/council-default-alone@{cols}x{rows}.txt"),
             &drawn,
         );
+    }
+    Ok(())
+}
+
+/// The line the Council's first answers start under.
+const FIRST_ANSWERS: &str = "Each seat answers alone first, without seeing the others";
+
+/// A Council you chose meets for every change: the request the main agent takes alone on the
+/// default workflow opens the Council's conversation, and nothing is changed in your checkout.
+#[test]
+fn app_a_council_you_chose_meets_for_a_small_change() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let scenario = scenario_playing_first(&dir, ALONE_RULES)?;
+    std::fs::write(
+        scenario.repo.global_config(),
+        working_alone_on(str::to_owned),
+    )?;
+    let mut pty = start(&scenario)?;
+    submit(&mut pty, ALONE_REQUEST)?;
+
+    match nth_reply(&scenario, 1)? {
+        TurnReply::Change {
+            captain_or_crew, ..
+        } => assert_eq!(captain_or_crew.mode, RunMode::Crew, "{captain_or_crew:?}"),
+        other => panic!("expected a change, got {other:?}"),
+    }
+    let started = run_started(&wait_run_dir(&scenario)?)?;
+    assert_eq!(started.mode, RunMode::Crew, "{started:?}");
+    pty.wait_for(FIRST_ANSWERS, WAIT)?;
+    scenario.shot(&pty, "app_a_council_you_chose_meets_for_a_small_change")?;
+    let text = pty.screen().text();
+    for alone in [DOING_THIS_ALONE, "Added 16 lines"] {
+        assert!(!text.contains(alone), "{alone:?} is on the screen:\n{text}");
+    }
+    assert!(
+        !scenario.repo.root().join("ratelimit/bucket.py").exists(),
+        "the main agent changed your checkout"
+    );
+    Ok(())
+}
+
+/// The fake main CLI rules where it reads and searches and writes a plan before its verdict.
+const PLANS_FIRST_RULES: &str = "app/plans-before-its-verdict.toml";
+
+/// A Council you chose opens with nothing of the main agent's turn above its heading, even when
+/// the main agent reads files and writes a whole plan before its verdict: the prompt asks for the
+/// verdict first, and its words and tool rows stay for Ctrl+O. At both real sizes.
+#[test]
+fn app_a_council_you_chose_opens_with_nothing_of_the_main_agents_turn() -> anyhow::Result<()> {
+    for (rows, cols) in [(38, 120), (40, 177)] {
+        let dir = tempfile::tempdir()?;
+        let rules = argonauts_scenarios::scenario_file(PLANS_FIRST_RULES);
+        let scenario = playing_first(&dir, &rules)?;
+        std::fs::write(scenario.repo.global_config(), as_set_up(GLOBAL_CONFIG))?;
+        let mut pty = scenario.launch_sized(&[], rows, cols)?;
+        wait_ready(&scenario, &pty)?;
+        submit(&mut pty, ALONE_REQUEST)?;
+
+        match nth_reply(&scenario, 1)? {
+            TurnReply::Change {
+                captain_or_crew, ..
+            } => assert_eq!(captain_or_crew.mode, RunMode::Crew, "{captain_or_crew:?}"),
+            other => panic!("expected a change at {cols}x{rows}, got {other:?}"),
+        }
+        let asked = sessions_of(&scenario, "claude")?
+            .into_iter()
+            .filter_map(|session| session.stdin)
+            .any(|prompt| prompt.contains("Decide this first, before you read or search anything"));
+        assert!(asked, "the main agent wasn't asked for its verdict first");
+
+        let screen = pty.wait_for(FIRST_ANSWERS, WAIT)?.text();
+        scenario.shot(
+            &pty,
+            &format!("app_a_council_you_chose_opens_with_nothing_of_the_main_agents_turn_at_{cols}x{rows}"),
+        )?;
+        let heading = screen
+            .find("each one is its own session")
+            .with_context(|| format!("the Council heading at {cols}x{rows}:\n{screen}"))?;
+        for turn in [
+            "Let me look at how the limiter works",
+            "Read(",
+            "Search(",
+            "Grep(",
+            "ratelimit/api.py",
+            "tests/test_api.py",
+            "Plan: keep one bucket",
+            "Open questions",
+        ] {
+            assert!(
+                !screen.contains(turn),
+                "{turn:?} at {cols}x{rows}:\n{screen}"
+            );
+        }
+        let request = screen.find("Make the rate limiter per API key");
+        assert!(
+            request.is_some_and(|at| heading < at),
+            "your request shows only in the Council at {cols}x{rows}:\n{screen}"
+        );
+
+        pty.press(Key::Ctrl('o'))?;
+        pty.wait_for_visible(
+            "Open questions: how long an idle key keeps its bucket",
+            WAIT,
+        )
+        .with_context(|| format!("the main agent's words in Ctrl+O at {cols}x{rows}"))?;
+        pty.press(Key::Esc)?;
     }
     Ok(())
 }

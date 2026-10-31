@@ -97,6 +97,11 @@ impl Script {
     async fn settle(&self) {
         tokio::time::sleep(SETTLE).await;
     }
+
+    /// Past the first frame's wait for a header that never comes.
+    async fn first_frame(&self) {
+        tokio::time::sleep(super::screen::HEADER_WAIT + SETTLE).await;
+    }
 }
 
 fn session() -> (
@@ -148,12 +153,77 @@ fn raw_view() -> AppEvent {
     }
 }
 
+/// The first frame waits for the header, so the input never shows alone, and draws them
+/// together once it comes.
+#[tokio::test]
+async fn the_first_frame_waits_for_the_header() {
+    let (script, io, terminal, keys) = session();
+    let run = run_with(io, inline(), terminal, keys);
+    let drive = async move {
+        script.settle().await;
+        assert!(!script.screen.shows("❯"), "{:#?}", script.screen.rows());
+        script.event(welcome()).await;
+        script.settle().await;
+        assert!(script.screen.shows("❯"), "{:#?}", script.screen.rows());
+        assert!(
+            script.screen.shows("Argonauts Code"),
+            "{:#?}",
+            script.screen.rows()
+        );
+        script.event(AppEvent::Exit).await;
+        script
+    };
+    let (ran, _script) = tokio::join!(timeout(PATIENCE, run), drive);
+    ran.expect("the loop ends").unwrap();
+}
+
+/// The controller sends the names before the header, so the header comes inside a burst of
+/// events, and the first frame still draws as soon as it is in.
+#[tokio::test]
+async fn a_header_behind_other_events_ends_the_wait() {
+    let (script, io, terminal, keys) = session();
+    script
+        .event(AppEvent::Names {
+            names: Box::default(),
+        })
+        .await;
+    script.event(welcome()).await;
+    let run = run_with(io, inline(), terminal, keys);
+    let drive = async move {
+        script.settle().await;
+        assert!(script.screen.shows("❯"), "{:#?}", script.screen.rows());
+        assert!(
+            script.screen.shows("Argonauts Code"),
+            "{:#?}",
+            script.screen.rows()
+        );
+        script.event(AppEvent::Exit).await;
+        script
+    };
+    let (ran, _script) = tokio::join!(timeout(PATIENCE, run), drive);
+    ran.expect("the loop ends").unwrap();
+}
+
+fn welcome() -> AppEvent {
+    AppEvent::Welcome {
+        version: "0.2.1".into(),
+        repo: "~/code/tasks-api".into(),
+        workflow: "council".into(),
+        agents: Vec::new(),
+        runs_going: 0,
+        runs_need_you: 0,
+        example_prompt: None,
+        main_agent: Some("claude-code/opus".parse().expect("a model id")),
+        effort: None,
+    }
+}
+
 #[tokio::test]
 async fn a_scripted_session_runs_end_to_end() {
     let (mut script, io, terminal, keys) = session();
     let run = run_with(io, inline(), terminal, keys);
     let drive = async move {
-        script.settle().await;
+        script.first_frame().await;
         assert!(script.screen.shows("❯"), "{:#?}", script.screen.rows());
 
         script.key(KeyCode::BackTab, KeyModifiers::SHIFT);
@@ -261,7 +331,7 @@ async fn fullscreen_keeps_the_alternate_screen_through_views_and_handovers() {
     script.screen.write_all(b"$ argonauts\r\n").unwrap();
     let run = run_with(io, options(), terminal, keys);
     let drive = async move {
-        script.settle().await;
+        script.first_frame().await;
         assert!(script.screen.alternate());
         assert!(script.screen.shows("❯"), "{:#?}", script.screen.rows());
 

@@ -268,18 +268,14 @@ fn greeting(usage_line: bool) -> welcome::Greeting {
 }
 
 /// The header first, unless the greeting stands on top, then the usage line when this start
-/// shows it, then the one-time notices. The names go before the header, so it names the agent
-/// as the rest of the screen will.
+/// shows it, then the notices that read only local files, so they come with the first frame.
+/// The CLI checks run after: what they find goes into the header already on screen, and the
+/// notices about the CLIs come last. The names go before the header, so it names the agent as
+/// the rest of the screen will.
 async fn greet(ctx: &mut Ctx, top: Top, opened: std::time::Instant) {
     crate::controller::clis::names::send(ctx);
-    let report = doctor(&builtin_adapters(), ctx.settings()).await;
-    let found = crate::telemetry::found(Some(&ctx.env), &report);
-    crate::telemetry::send_when_due(&ctx.env.paths, ctx.settings(), found);
-    ctx.cli_facts.checked(report.clone());
     if let Top::Header { usage_line } = top {
-        let runs = run_counts(ctx.services.conductor.as_ref()).await;
-        let hello = welcome_from(ctx, &report, runs);
-        ctx.send(hello);
+        ctx.send(header_from_settings(ctx, Vec::new(), RunCounts::default()));
         if usage_line {
             ctx.notice(NoteLevel::Quiet, crate::telemetry::notice::LINE);
         }
@@ -288,9 +284,17 @@ async fn greet(ctx: &mut Ctx, top: Top, opened: std::time::Instant) {
     for (level, text) in crate::self_update::daily::at_start(&ctx.env.paths, ctx.settings()) {
         ctx.notice(level, text);
     }
-    crate::telemetry::count(ctx, crate::telemetry::Use::started(opened.elapsed()));
     for (level, text) in start_notices(ctx) {
         ctx.notice(level, text);
+    }
+    let report = doctor(&builtin_adapters(), ctx.settings()).await;
+    let found = crate::telemetry::found(Some(&ctx.env), &report);
+    crate::telemetry::send_when_due(&ctx.env.paths, ctx.settings(), found);
+    ctx.cli_facts.checked(report.clone());
+    crate::telemetry::count(ctx, crate::telemetry::Use::started(opened.elapsed()));
+    if matches!(top, Top::Header { .. }) {
+        let runs = run_counts(ctx.services.conductor.as_ref()).await;
+        ctx.send(welcome_from(ctx, &report, runs));
     }
     for text in newer_cli_notices(ctx, &report) {
         ctx.notice(NoteLevel::Info, text);
@@ -358,13 +362,18 @@ pub(crate) async fn run_counts(conductor: &dyn ConductorApi) -> RunCounts {
 /// The startup header: version, repo, workflow, each CLI's readiness, and the runs going or
 /// waiting on you.
 pub(crate) fn welcome_from(ctx: &Ctx, report: &DoctorReport, runs: RunCounts) -> AppEvent {
+    header_from_settings(ctx, readiness(report, ctx.settings()), runs)
+}
+
+/// The header from the settings, with the CLIs' readiness and the runs as far as they're known.
+fn header_from_settings(ctx: &Ctx, agents: Vec<AgentReady>, runs: RunCounts) -> AppEvent {
     let settings = ctx.settings();
     let (main_agent, effort) = header_agent(ctx);
     AppEvent::Welcome {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         repo: ctx.env.display_repo(),
         workflow: settings.workflow.clone(),
-        agents: readiness(report, settings),
+        agents,
         runs_going: runs.going,
         runs_need_you: runs.need_you,
         example_prompt: example_prompt(&ctx.env.repo_root),

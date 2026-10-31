@@ -389,7 +389,9 @@ fn a_councils_plan_asks_to_approve_it_and_says_what_edits_and_sending_back_do() 
         story::plan_and_who(),
         story::signed(),
     ];
-    let conversation = golden::printed(&items, Look::Pictures, 120);
+    let mut conversation = golden::printed(&items, Look::Pictures, 120);
+    // The app leaves a blank row between the printed talk and the question under it.
+    conversation.push(String::new());
     let screen = above_the_runs(&mut model, conversation, None);
     golden::assert_rows_from("plan", &screen, 0);
 }
@@ -436,8 +438,8 @@ fn a_councils_plan_question_keeps_its_flags() {
     );
     tasks::happen(&mut bridge, &mut model, 2, plan, None, 0);
     let rows = asked(&mut model);
-    assert_eq!(rows[2], format!("  {}", crate::questions::COUNCIL_PLAN));
-    assert_eq!(rows[3], "  A flag above keeps it from auto-approval");
+    assert_eq!(rows[1], format!("  {}", crate::questions::COUNCIL_PLAN));
+    assert_eq!(rows[2], "  A flag above keeps it from auto-approval");
 }
 
 /// Once the plan is written and every seat backs every point it was built from, the line under

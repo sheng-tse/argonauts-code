@@ -485,20 +485,20 @@ mod tests {
             color: "promptBorder".to_owned(),
             kind,
         };
-        let mut numbers = main_session(32_298, 1_000_000);
+        let mut numbers = main_session(28_810, 1_000_000);
         if let Some(row) = numbers.context.as_mut() {
             row.categories = vec![
                 category("System prompt", 4_380, ContextKind::Used),
-                category("System tools", 27_918, ContextKind::Used),
+                category("System tools", 24_430, ContextKind::Used),
                 category("Autocompact buffer", 33_000, ContextKind::Buffer),
-                category("Free space", 934_702, ContextKind::Free),
+                category("Free space", 938_190, ContextKind::Free),
             ];
         }
         let read = reading(BuiltinSource::Context, &numbers).unwrap();
-        assert_eq!(read.summary, "32.3k of 1M · compacts at 967k");
+        assert_eq!(read.summary, "28.8k of 1M · compacts at 967k");
         let labels: Vec<&str> = read.parts.iter().map(|part| part.label.as_str()).collect();
         assert_eq!(labels, ["System prompt", "System tools", "Free space"]);
-        assert_eq!(read.parts[2].value, 934_702.0);
+        assert_eq!(read.parts[2].value, 938_190.0);
         assert!(read.parts.iter().all(|part| part.max == Some(1_000_000.0)));
     }
 

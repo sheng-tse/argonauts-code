@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 use argonauts_core::RunId;
+use argonauts_core::base::clock;
 use argonauts_core::base::future::BoxFuture;
 use argonauts_core::models::limits::CheckRunner;
 use argonauts_core::settings::Settings;
@@ -195,7 +196,7 @@ impl ReplaySet {
         let room = self.holdout()?.len() < state.holdout_tasks as usize;
         let mut entry = proposal.entry;
         entry.holdout = drawn && room;
-        entry.accepted = OffsetDateTime::now_utc();
+        entry.accepted = clock::now_utc();
         write_json(&self.entry_path(id), &entry)?;
         remove_if_present(&self.proposal_path(id))?;
         self.record_split(SplitRecord {
@@ -234,7 +235,7 @@ impl ReplaySet {
         state.follow(&settings.evolution.replay);
         state.candidates += 1;
         if state.candidates >= state.holdout_retire_after.max(1) {
-            let at = OffsetDateTime::now_utc();
+            let at = clock::now_utc();
             for mut entry in self.holdout()? {
                 entry.holdout = false;
                 write_json(&self.entry_path(&entry.id), &entry)?;
@@ -337,7 +338,7 @@ impl ReplaySet {
         append_json_line(
             &self.spend_path(),
             &SpendRecord {
-                at: OffsetDateTime::now_utc(),
+                at: clock::now_utc(),
                 usd,
                 task: task.to_owned(),
                 learned_workflow: learned_workflow.clone(),

@@ -30,6 +30,10 @@ fn main() -> ExitCode {
     // Found before an update can swap the link this program was started by, so every helper
     // it starts is this version, which no update removes while it runs.
     let _ = argonauts_core::base::paths::this_program();
+    if let Err(err) = argonauts_core::base::clock::start_from_env() {
+        eprintln!("argonauts: {err}");
+        return ExitCode::FAILURE;
+    }
     argonauts_app::self_update::hold_this_version();
     let cli = Cli::from_arg_matches(&help::command().get_matches())
         .unwrap_or_else(|err| err.format(&mut help::command()).exit());

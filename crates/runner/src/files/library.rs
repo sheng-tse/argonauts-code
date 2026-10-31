@@ -557,7 +557,7 @@ mod tests {
             .expect("reads")
             .expect("has phases");
         assert_eq!(phases.name, "my-council");
-        assert_eq!(phases.phases[1].name, "Talk");
+        assert_eq!(phases.phases[0].name, "Talk");
         let unknown = library
             .create("other", Some("no-such-workflow"), &[])
             .unwrap_err();

@@ -7,7 +7,9 @@ use std::sync::{Arc, Mutex};
 use argonauts_core::NoteLevel;
 use argonauts_core::app::{AppEvent, ViewData};
 use argonauts_core::behaviors::behavior_map::MapRequest;
-use argonauts_core::behaviors::deep_map::{DeepDone, DeepProgress, DeepStart};
+use argonauts_core::behaviors::deep_map::{
+    DeepDone, DeepOffer, DeepProgress, DeepScope, DeepStart,
+};
 use argonauts_core::settings::behaviors::{BehaviorMap, BehaviorUpdate};
 use tokio_util::sync::CancellationToken;
 
@@ -96,11 +98,22 @@ fn maps(ctx: &Ctx) -> DeepMaps {
 }
 
 /// Answers `DeepOffer` once this machine's servers have said what they serve.
-pub(crate) fn offer(ctx: &Ctx) -> anyhow::Result<Vec<Effect>> {
+/// With `start`, the server installed here that you chose to start goes first, and the offer
+/// says when it didn't answer in time.
+pub(crate) fn offer(ctx: &Ctx, start: Option<String>) -> anyhow::Result<Vec<Effect>> {
     let maps = maps(ctx);
     let out = ctx.out.clone();
     tokio::spawn(async move {
-        let offer = maps.offer().await;
+        let started = match start {
+            Some(runtime) => Some(maps.start_server(&runtime).await),
+            None => None,
+        };
+        let mut offer = maps.offer().await;
+        if started == Some(false)
+            && let Some(stopped) = offer.open.stopped.as_mut()
+        {
+            stopped.tried = true;
+        }
         out.send(AppEvent::View {
             data: Box::new(ViewData::DeepOffer {
                 offer: Box::new(offer),
@@ -116,9 +129,81 @@ pub(crate) fn start(ctx: &Ctx, start: DeepStart) -> anyhow::Result<Vec<Effect>> 
         ctx.notice(NoteLevel::Info, ALREADY_RUNNING);
         return Ok(Vec::new());
     };
-    let maps = maps(ctx);
-    let (out, work, internal) = (ctx.out.clone(), ctx.deep.clone(), ctx.internal.clone());
+    let job = Job::of(ctx);
+    tokio::spawn(job.run(start, stop));
+    Ok(Vec::new())
+}
+
+/// `u` on Summaries: the map's own summarizer adds the new actions at once when it runs on
+/// this computer, since nothing leaves it. Otherwise the offer goes to the tab, whose
+/// questions ask before sending them to a plan, or say the summarizer isn't answering. It
+/// never redoes the map with another model.
+pub(crate) fn update(ctx: &Ctx) -> anyhow::Result<Vec<Effect>> {
+    let job = Job::of(ctx);
     tokio::spawn(async move {
+        let offer = job.maps.offer().await;
+        let Some(start) = its_own_update(&offer) else {
+            job.out.send(AppEvent::View {
+                data: Box::new(ViewData::DeepOffer {
+                    offer: Box::new(offer),
+                }),
+            });
+            return;
+        };
+        let Some(stop) = job.work.begin() else {
+            job.out.send(AppEvent::Notice {
+                level: NoteLevel::Info,
+                text: ALREADY_RUNNING.to_owned(),
+            });
+            return;
+        };
+        job.run(start, stop).await;
+    });
+    Ok(Vec::new())
+}
+
+/// The update the map's own summarizer makes without asking: it answers on this computer and
+/// would add to the map rather than make it again.
+fn its_own_update(offer: &DeepOffer) -> Option<DeepStart> {
+    let made_by = offer.made_by.as_ref()?;
+    let summarizer = offer
+        .summarizers
+        .iter()
+        .find(|summarizer| summarizer.model == made_by.model)?;
+    (summarizer.local() && !made_by.redone_by(&made_by.model)).then(|| DeepStart {
+        scope: DeepScope::Everything,
+        summarizer: made_by.model.clone(),
+        download_embedder: false,
+        redo: false,
+        download_summarizer: false,
+    })
+}
+
+/// What an update the tab asked for reports to.
+struct Job {
+    maps: DeepMaps,
+    out: Outbox,
+    work: DeepWork,
+    internal: tokio::sync::mpsc::UnboundedSender<Internal>,
+}
+
+impl Job {
+    fn of(ctx: &Ctx) -> Job {
+        Job {
+            maps: maps(ctx),
+            out: ctx.out.clone(),
+            work: ctx.deep.clone(),
+            internal: ctx.internal.clone(),
+        }
+    }
+
+    async fn run(self, start: DeepStart, stop: CancellationToken) {
+        let Job {
+            maps,
+            out,
+            work,
+            internal,
+        } = self;
         let mut progress = progress_to(out.clone());
         // The first dots placed bring the tab to Summaries; later ones fill them in.
         let mut first = true;
@@ -134,10 +219,12 @@ pub(crate) fn start(ctx: &Ctx, start: DeepStart) -> anyhow::Result<Vec<Effect>> 
             .await
             .unwrap_or_else(failed);
         work.end();
+        // Only a new map brings the tab to Summaries; one that failed leaves it where it was.
+        let made = done.new_places > 0;
+        tell_unread(&out, &done);
         out.send(AppEvent::DeepDone { done });
-        let _ = internal.send(Internal::DeepMapMade { deeper: true });
-    });
-    Ok(Vec::new())
+        let _ = internal.send(Internal::DeepMapMade { deeper: made });
+    }
 }
 
 /// `x`: the update stops after the request it's on, keeping what it finished.
@@ -190,6 +277,7 @@ pub(crate) fn after_run(ctx: &Ctx) {
             .await
             .unwrap_or_else(failed);
         work.end();
+        tell_unread(&out, &done);
         out.send(AppEvent::DeepDone { done });
         let _ = internal.send(Internal::DeepMapMade { deeper: false });
     });
@@ -210,6 +298,26 @@ pub(crate) async fn made(ctx: &mut Ctx, summaries: bool) -> anyhow::Result<Vec<E
 
 fn progress_to(out: Outbox) -> impl FnMut(DeepProgress) + Send {
     move |progress| out.send(AppEvent::DeepProgress { progress })
+}
+
+/// Records that couldn't be read leave their actions out of the update, and their dots where
+/// they were, which you're told with the first folder or log and why.
+fn tell_unread(out: &Outbox, done: &DeepDone) {
+    let Some(first) = done.unread.first() else {
+        return;
+    };
+    let more = match done.unread.len() - 1 {
+        0 => String::new(),
+        1 => " and 1 more".to_owned(),
+        more => format!(" and {more} more"),
+    };
+    out.send(AppEvent::Notice {
+        level: NoteLevel::Warn,
+        text: format!(
+            "Summaries couldn't read {first}{more}, so the update left those actions out and \
+             kept their dots."
+        ),
+    });
 }
 
 fn failed(err: anyhow::Error) -> DeepDone {

@@ -602,13 +602,10 @@ fn ollama_that_reviews() -> LocalServer {
     LocalServer {
         id: "ollama".to_owned(),
         base_url: "http://127.0.0.1:9/v1".to_owned(),
-        models: vec![
-            "qwen3-coder:30b-64k".to_owned(),
-            "gemma3:12b-32k".to_owned(),
-        ],
+        models: vec!["qwen3-coder:30b".to_owned(), "gemma3:12b".to_owned()],
         windows: [
-            ("qwen3-coder:30b-64k".to_owned(), 65_536),
-            ("gemma3:12b-32k".to_owned(), 32_768),
+            ("qwen3-coder:30b".to_owned(), 65_536),
+            ("gemma3:12b".to_owned(), 32_768),
         ]
         .into(),
         sized_as_loaded: Vec::new(),

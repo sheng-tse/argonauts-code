@@ -19,6 +19,7 @@ use super::scenes::{Cosmos, Level, View};
 use super::shapes::SystemFrame;
 use super::stars::CLOUD_SECONDS;
 use super::universe::add_ring;
+use crate::world::deliver::clock::Rate;
 use crate::world::raster::noise::{fbm3_shifted, hash3, mix, smooth, vnoise3_shifted};
 use crate::world::raster::{Blend, Brush, Canvas, Cap, Colour, Path, Pen};
 use crate::world::{
@@ -190,7 +191,7 @@ impl Cosmos {
                 depth: Depth::Weather,
                 picture: Picture::new(front_key, front),
             });
-            self.add_star_sprite(&mut scene, star, &frame, t);
+            self.add_star_sprite(&mut scene, star, &frame, t, view.rate);
             for placed in &planets {
                 self.add_planet_sprite(&mut scene, star, placed);
             }
@@ -605,8 +606,18 @@ impl Cosmos {
     }
 
     /// The star, its glow and its flares as one picture for the moving system: its glow as
-    /// light that lets what is behind show, its face solid over it.
-    fn add_star_sprite(&mut self, scene: &mut Scene, star: usize, frame: &SystemFrame, t: f64) {
+    /// light that lets what is behind show, its face solid over it. Its picture changes every
+    /// second step: as big as the glow reaches, a busy star's loop at the full rate would take
+    /// more than the terminal keeps for the world (162 MB at 16 a second), so each step would
+    /// send a picture again. Its pulse and flares are slow enough to read the same.
+    fn add_star_sprite(
+        &mut self,
+        scene: &mut Scene,
+        star: usize,
+        frame: &SystemFrame,
+        t: f64,
+        rate: Rate,
+    ) {
         let rs = frame.star;
         let reach = rs * 3.9 + 4.0;
         let bounds = Bounds::around((frame.cx, frame.cy), reach, reach);
@@ -628,8 +639,9 @@ impl Cosmos {
             .into_iter()
             .map(motion::steps_for)
             .fold(1, motion::lcm);
-        let step = motion::step_of(t) % u64::from(steps);
-        let looped = step as f64 / motion::FPS;
+        let stride = 2 * motion::ticks_a_step(rate);
+        let step = motion::step_of(t) % u64::from(steps) / stride * stride;
+        let looped = step as f64 / motion::TICKS;
         let key = self.key([
             24,
             star as u64,
@@ -719,7 +731,7 @@ impl Cosmos {
             .map(motion::steps_for)
             .fold(1, motion::lcm);
         let step = motion::step_of(t) % u64::from(steps);
-        let looped = step as f64 / motion::FPS;
+        let looped = step as f64 / motion::TICKS;
         let key = self.key([26, star as u64, partner as u64, step, u64::from(side)]);
         let centre = f64::from(side) / 2.0;
         let picture = self.frame(key, |cosmos| {

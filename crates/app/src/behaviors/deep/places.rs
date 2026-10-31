@@ -27,7 +27,7 @@ pub(crate) struct KeptPlace {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct KeptPlaces {
     /// Who summarized them, as the line under the map and the legend name the model:
-    /// `Qwen3 Coder 30B (64k)`.
+    /// `Qwen3 Coder 30B`.
     pub by: String,
     /// They were placed by their words, with no embedding model.
     pub by_words: bool,
@@ -92,7 +92,7 @@ pub(crate) fn kept_maker(paths: &Paths, names: &DisplayNames) -> Option<KeptMake
     })
 }
 
-/// The summarizer as the legend names a model: `Qwen3 Coder 30B (64k)`.
+/// The summarizer as the legend names a model: `Qwen3 Coder 30B`.
 fn model_name(maker: &MapMaker, names: &DisplayNames) -> String {
     maker
         .summarizer
@@ -180,14 +180,14 @@ mod tests {
     #[test]
     fn the_map_names_its_summarizer_as_the_legend_does() {
         let maker = MapMaker {
-            summarizer: "ollama/qwen3-coder:30b-64k".to_owned(),
+            summarizer: "ollama/qwen3-coder:30b".to_owned(),
             prompt: String::new(),
             embedder: WORD_VECTORS.to_owned(),
         };
         let names = DisplayNames::default();
         assert_eq!(
             Some(model_name(&maker, &names)),
-            names.model("ollama", Some("qwen3-coder:30b-64k"))
+            names.model("ollama", Some("qwen3-coder:30b"))
         );
         assert!(summarizer_of(&maker, &names).starts_with("Qwen3 Coder 30B on "));
     }
@@ -195,7 +195,7 @@ mod tests {
     #[test]
     fn a_summarizer_is_named_as_the_questions_name_it() {
         let names = DisplayNames::default();
-        let local = "ollama/qwen3-coder:30b-64k".parse().unwrap();
+        let local = "ollama/qwen3-coder:30b".parse().unwrap();
         assert!(summarizer_name(&local, &names).starts_with("Qwen3 Coder 30B on "));
         let hosted: ModelRef = "claude-code/haiku".parse().unwrap();
         assert_eq!(summarizer_name(&hosted, &names), "Haiku on Claude Code");

@@ -104,7 +104,7 @@ pub async fn compare(host: &Host, call: &StepCall) -> EngineResult<Vec<(ModelRef
                 NoteLevel::Warn,
                 format!(
                     "Dropped {}'s comparison: {error}",
-                    crate::roles::display_name(&worker)
+                    host.names().worker(&worker)
                 ),
             )?,
             Err(error) => {

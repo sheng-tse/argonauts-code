@@ -3,7 +3,7 @@
   "id": "ses_eae3d05b5ffeH7KfC0JkWTEV2E",
   "projectID": "0909af8bf081641bbabf4230c30de534e686f9ff",
   "model": {
-   "id": "qwen3-coder:30b-64k",
+   "id": "qwen3-coder:30b",
    "providerID": "ollama",
    "variant": "default"
   },
@@ -48,7 +48,7 @@
    "type": "assistant",
    "agent": "build",
    "model": {
-    "id": "qwen3-coder:30b-64k",
+    "id": "qwen3-coder:30b",
     "providerID": "ollama",
     "variant": "default"
    },
@@ -95,7 +95,7 @@
    "type": "assistant",
    "agent": "build",
    "model": {
-    "id": "qwen3-coder:30b-64k",
+    "id": "qwen3-coder:30b",
     "providerID": "ollama",
     "variant": "default"
    },
@@ -144,7 +144,7 @@
    "type": "assistant",
    "agent": "build",
    "model": {
-    "id": "qwen3-coder:30b-64k",
+    "id": "qwen3-coder:30b",
     "providerID": "ollama",
     "variant": "default"
    },

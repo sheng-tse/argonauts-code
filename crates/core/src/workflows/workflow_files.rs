@@ -157,7 +157,7 @@ mod tests {
             .iter()
             .map(|phase| phase.name.as_str())
             .collect();
-        assert_eq!(names, ["Understand", "Talk", "Build", "Merge"]);
+        assert_eq!(names, ["Talk", "Build", "Merge"]);
     }
 
     #[test]

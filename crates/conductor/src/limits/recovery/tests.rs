@@ -413,18 +413,18 @@ fn one_qwen() -> Fixture {
         settings.agents.insert(cli.to_owned(), off);
     }
     let opencode = AgentSettings {
-        model: Some("ollama/qwen3-coder:30b-64k".to_owned()),
+        model: Some("ollama/qwen3-coder:30b".to_owned()),
         ..AgentSettings::default()
     };
     settings.agents.insert("opencode".to_owned(), opencode);
     settings.crew = [QWEN, "opencode"].into_iter().map(worker).collect();
     fixture
         .registry
-        .add(model("opencode", "ollama/qwen3-coder:30b-64k", "alibaba"));
+        .add(model("opencode", "ollama/qwen3-coder:30b", "alibaba"));
     fixture
 }
 
-const QWEN: &str = "opencode/ollama/qwen3-coder:30b-64k";
+const QWEN: &str = "opencode/ollama/qwen3-coder:30b";
 
 fn repeated() -> EndReason {
     EndReason::Stuck {

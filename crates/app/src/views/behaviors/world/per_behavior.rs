@@ -5,7 +5,9 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 
-use argonauts_core::behaviors::behavior_world::{BehaviorFacts, Burst, Crash, Move};
+use argonauts_core::behaviors::behavior_world::{
+    BEHAVIOR_RUN_LENGTH, BehaviorFacts, Burst, Crash, Move,
+};
 use time::{Duration, OffsetDateTime};
 
 use super::super::read::{Outcome, Recorded, SessionEnded};
@@ -13,8 +15,6 @@ use super::{Read, behavior_of};
 
 /// An action this long or longer after the one before it in its session came after a wait.
 const WAIT: Duration = Duration::minutes(10);
-/// One agent doing a behavior this many times in a row or more is a run.
-const IN_A_ROW: usize = 5;
 const HOUR: Duration = Duration::HOUR;
 const FIVE_MINUTES: Duration = Duration::minutes(5);
 
@@ -128,7 +128,7 @@ fn follow(
     let mut runs = labelled.chunk_by(|a, b| a == b).peekable();
     while let Some(run) = runs.next() {
         let behavior = &run[0];
-        if run.len() >= IN_A_ROW
+        if run.len() >= BEHAVIOR_RUN_LENGTH
             && let Some(facts) = all.get_mut(behavior)
         {
             facts.runs_in_a_row += 1;

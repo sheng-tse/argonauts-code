@@ -107,13 +107,27 @@ impl Drawing {
 /// whole in one colour.
 fn same_text(want: char, got: &str) -> bool {
     let mut buffer = [0; 4];
-    let want: &str = want.encode_utf8(&mut buffer);
-    !got.starts_with(PLACEHOLDER) && (want == got || (solid_text(want) && solid_text(got)))
+    let want_text: &str = want.encode_utf8(&mut buffer);
+    !got.starts_with(PLACEHOLDER)
+        && (shows_mark(want, got) || (solid_text(want_text) && solid_text(got)))
 }
 
 /// Whether a screen's cell shows a `?` cell's character, whatever its colours.
 pub(crate) fn same_character(want: char, got: &str) -> bool {
     let mut buffer = [0; 4];
-    let want: &str = want.encode_utf8(&mut buffer);
-    !got.starts_with(PLACEHOLDER) && (want == got || (blank(want) && blank(got)))
+    let want_text: &str = want.encode_utf8(&mut buffer);
+    !got.starts_with(PLACEHOLDER) && (shows_mark(want, got) || (blank(want_text) && blank(got)))
+}
+
+/// Whether a screen's cell, `got`, holds the one character `want` stands for.
+pub(crate) fn shows_mark(want: char, got: &str) -> bool {
+    let mut chars = got.chars();
+    matches!((chars.next(), chars.next()), (Some(only), None) if same_mark(want, only))
+}
+
+/// Whether the screen's `got` is the picture's `want`. A row's mark is ⏺ on macOS, as Claude
+/// Code draws it, and ● elsewhere, so the two are the same mark.
+pub fn same_mark(want: char, got: char) -> bool {
+    const ROW_MARKS: [char; 2] = ['●', '⏺'];
+    want == got || (ROW_MARKS.contains(&want) && ROW_MARKS.contains(&got))
 }

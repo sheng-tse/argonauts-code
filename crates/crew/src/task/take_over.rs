@@ -179,9 +179,9 @@ fn broken_rule(host: &Host, record: &TaskEntry, from: &ModelRef, to: &ModelRef) 
             record.spec.id
         ));
     }
-    roles::conflict(RoleName::Worker, to, Some(from), &|w| {
-        roles::provider(host, w)
-    })
+    let providers = |worker: &ModelRef| roles::provider(host, worker);
+    let what = roles::conflict(RoleName::Worker, to, Some(from), &providers)?;
+    Some(format!("{} can't {what}", host.names().worker(to)))
 }
 
 async fn wrap_up_and_stop(host: &Host, task: &TaskId) -> EngineResult<()> {

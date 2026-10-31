@@ -67,15 +67,8 @@ fn working_line_the_task_in_hand_the_next_one_and_going_quiet() {
         include_str!("../../../../tests/golden/transcript/working_line.html"),
     );
     // The picture's note about the red line, its row 4, isn't screen.
-    assert_rows_match("working_line", &lines, picture, 0..4, &Screen::theme(), &[]);
+    assert_rows_match("working_line", &lines, picture, 0..4, &Screen::theme());
     let mut command = vec![Line::default()];
     command.extend(running_command());
-    assert_rows_match(
-        "working_line",
-        &command,
-        picture,
-        5..8,
-        &Screen::theme(),
-        &[],
-    );
+    assert_rows_match("working_line", &command, picture, 5..8, &Screen::theme());
 }

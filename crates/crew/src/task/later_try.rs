@@ -36,7 +36,7 @@ mod tests {
     use super::*;
     use crate::testing::{run_event, task_spec};
 
-    const QWEN: &str = "opencode/ollama/qwen3-coder:30b-64k";
+    const QWEN: &str = "opencode/ollama/qwen3-coder:30b";
 
     fn worker() -> ModelRef {
         QWEN.parse().unwrap()

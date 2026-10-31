@@ -4,7 +4,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::app::model_picker::Fit;
+use crate::app::ModelChoice;
+use crate::app::model_picker::{Fit, MachineMemory};
 use crate::base::names::ModelRef;
 use crate::behaviors::{Behavior, Label};
 
@@ -138,6 +139,41 @@ pub struct DeepOffer {
     /// The embedding model of an endpoint with your key, which auto turns to without Ollama.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keyed_embedder: Option<EmbedderOffer>,
+    /// What "Open models" lists.
+    #[serde(default)]
+    pub open: OpenModels,
+}
+
+/// Every model the servers on this computer have, as `/model` on OpenCode lists them with what
+/// each takes of its memory, then up to three from the catalog that would fit. Each `worker`
+/// is the summarizer itself, such as `ollama/qwen3-coder:30b`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct OpenModels {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<MachineMemory>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<ModelChoice>,
+    /// A server installed here that isn't running, which Open models offers to start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped: Option<StoppedServer>,
+}
+
+impl OpenModels {
+    /// Whether the question has anything to open.
+    pub fn any(&self) -> bool {
+        !self.models.is_empty() || self.stopped.is_some()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoppedServer {
+    /// Such as `ollama`.
+    pub runtime: String,
+    /// Such as `Ollama`.
+    pub name: String,
+    /// It was started just now and didn't answer within the wait.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tried: bool,
 }
 
 /// An embedding model the embedder's picker offers.
@@ -183,6 +219,9 @@ pub struct DeepStart {
     /// You said yes to summarizing a map made by another summarizer or prompt again.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub redo: bool,
+    /// You said yes to downloading the summarizer, which isn't on this computer yet.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub download_summarizer: bool,
 }
 
 /// How far an update is.
@@ -195,6 +234,15 @@ pub struct DeepProgress {
     pub seconds_left: Option<u64>,
     /// Such as `Qwen3 Coder 30B on Ollama`.
     pub summarizer: String,
+    /// Such as `Qwen3 Coder 30B`, for a line that names it alone.
+    #[serde(default)]
+    pub short: String,
+    /// It makes the map again, with another summarizer or a newer prompt.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub redo: bool,
+    /// It downloads the summarizer first: `done` and `total` count megabytes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub downloading: bool,
 }
 
 /// What an update did.
@@ -220,6 +268,19 @@ pub struct DeepDone {
     /// Placed by word vectors, as no embedding model was there.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub by_words: bool,
+    /// The folders and logs of the records that couldn't be read, each with why.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unread: Vec<String>,
+    /// A whole new map that wasn't swapped in, since it had fewer dots than the map there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fewer: Option<FewerDots>,
+}
+
+/// The dots of a new map that would have replaced a bigger one, and of the map it kept.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FewerDots {
+    pub made: usize,
+    pub shown: usize,
 }
 
 #[cfg(test)]

@@ -834,7 +834,7 @@ fn a_hold_on_sleep_shows_wherever_the_settings_leave_it_out() {
     let mut state = AppState::default();
     state.status = Some(crew_status("claude-code"));
     let held = PartBody::Words {
-        text: "☕ awake until you quit".to_owned(),
+        text: "☕".to_owned(),
         tone: Tone::Code,
     };
     let slots = BTreeMap::from([(AWAKE.to_owned(), held.clone())]);
@@ -901,6 +901,7 @@ fn a_page_the_conversation_published_names_the_artifact_part() {
             uncommitted: Vec::new(),
             settings_sha256: None,
             continues: false,
+            opens_a_talk: false,
         },
     });
     for (id, file) in [("t1", "test-report"), ("t2", "weekly-usage-chart")] {

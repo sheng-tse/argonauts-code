@@ -371,11 +371,10 @@ fn the_run_rows_own_times_wake_the_screen() {
     assert_eq!(state.next_change(&ctx), Some(t0 + Duration::from_secs(25)));
 }
 
-/// A run's row says the mode, then what Enter does on it: answer the question it waits on,
-/// open its session, or open its workflow. The way back gives way first as the screen
-/// narrows, then how to pick another; what Enter does stays.
+/// A picked run's row takes the keys from the input: the input drops its cursor, and the line
+/// under it shows that row's keys alone, without the mode. Back in the input, both come back.
 #[test]
-fn a_run_rows_key_line_says_what_enter_does_on_it() {
+fn a_picked_run_row_takes_the_cursor_and_shows_its_keys_alone() {
     use crossterm::event::{KeyCode, KeyEvent};
 
     let t0 = Instant::now();
@@ -395,16 +394,18 @@ fn a_run_rows_key_line_says_what_enter_does_on_it() {
     let keys = |state: &BottomState, width: u16| {
         let text = plain_text(&render_at(state, width, t0, Duration::ZERO).lines);
         text.lines()
-            .find(|line| line.contains("enter to"))
+            .find(|line| line.contains("enter to") || line.contains("mode on"))
             .map(|line| line.trim().to_owned())
     };
+    let cursor = |state: &BottomState| render_at(state, 120, t0, Duration::ZERO).cursor;
+    assert!(cursor(&state).is_some(), "the input has the keys");
+
     state.focus_panel();
+    assert!(!state.composer_has_focus());
+    assert_eq!(cursor(&state), None, "the input drops its cursor");
     assert_eq!(
         keys(&state, 120).as_deref(),
-        Some(
-            "ǁ supervised mode on · ↑ ↓  to pick another · enter to open its workflow · esc to go \
-             back to the input"
-        )
+        Some("enter to view · x to stop")
     );
     state.panel_key(KeyEvent::from(KeyCode::Down));
     assert_eq!(
@@ -413,12 +414,23 @@ fn a_run_rows_key_line_says_what_enter_does_on_it() {
     );
     assert_eq!(
         keys(&state, 80).as_deref(),
-        Some("ǁ supervised mode on · ↑ ↓  to pick another · enter to answer")
+        Some("enter to answer · x to stop")
     );
     state.panel_key(KeyEvent::from(KeyCode::Down));
     assert_eq!(
         keys(&state, 60).as_deref(),
-        Some("ǁ supervised mode on · enter to open its session")
+        Some("enter to view · x to stop")
+    );
+
+    state.workflows.blur();
+    assert!(state.composer_has_focus());
+    assert!(
+        cursor(&state).is_some(),
+        "the cursor comes back with the input"
+    );
+    assert!(
+        keys(&state, 120).is_some_and(|line| line.starts_with("ǁ supervised mode on")),
+        "the mode comes back"
     );
 }
 

@@ -180,6 +180,8 @@ pub(crate) struct Ctx {
     pub cli_facts: Arc<crate::controller::panels::status_tab::CliFacts>,
     /// The deeper Behaviors map's update, while one runs.
     pub deep: crate::behaviors::deep::tab::DeepWork,
+    /// Whether the workflow in use talks, as each turn's start asks.
+    pub(crate) talking: crate::controller::workflows::Talking,
 }
 
 /// Shared with whoever started the app, which outlives the controller.
@@ -208,6 +210,7 @@ impl Ctx {
             awake: crate::host::keep_awake::KeepAwake::never(),
             cli_facts: Arc::default(),
             deep: Default::default(),
+            talking: Default::default(),
         }
     }
 

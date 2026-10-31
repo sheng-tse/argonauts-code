@@ -367,7 +367,7 @@ mod tests {
     fn opencode_2s_list_of_sources_reads_as_one_config() {
         let printed = r#"[
           {"type": "document", "path": "/home/me/.config/opencode/opencode.json",
-           "info": {"model": {"providerID": "ollama", "model": "qwen3-coder:30b-64k"},
+           "info": {"model": {"providerID": "ollama", "model": "qwen3-coder:30b"},
              "providers": {"gpubox": {"name": "GPU box",
                "settings": {"baseURL": "http://127.0.0.1:8080/v1"}},
                "ollama": {"settings": {"baseURL": "http://localhost:11434/v1"}}}}},
@@ -376,7 +376,7 @@ mod tests {
            "info": {"providers": {"gpubox": {"name": "The GPU box"}}}}
         ]"#;
         let config = config_in(printed).unwrap();
-        assert_eq!(config["model"], "ollama/qwen3-coder:30b-64k");
+        assert_eq!(config["model"], "ollama/qwen3-coder:30b");
         assert_eq!(config["provider"]["gpubox"]["name"], "The GPU box");
         assert_eq!(
             config["provider"]["gpubox"]["options"]["baseURL"],

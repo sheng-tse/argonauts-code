@@ -7,6 +7,7 @@ use std::str::FromStr;
 
 use anyhow::Context as _;
 use argonauts_core::Paths;
+use argonauts_core::base::clock;
 use argonauts_core::behaviors::Behavior;
 use argonauts_core::look::display_names::DisplayNames;
 use time::{Date, Duration, OffsetDateTime};
@@ -62,7 +63,7 @@ impl FromStr for BehaviorPeriod {
     type Err = String;
 
     fn from_str(text: &str) -> Result<Self, Self::Err> {
-        Self::at(text, OffsetDateTime::now_utc())
+        Self::at(text, clock::now_utc())
     }
 }
 

@@ -21,7 +21,7 @@ fn color_theme() -> Theme {
 }
 
 // The bars of the two moments below, six cells each, in whole cells and one for any use.
-const B93: &str = "██████";
+const B93: &str = "█████░";
 const B56: &str = "███░░░";
 const B11: &str = "█░░░░░";
 const B01: &str = "█░░░░░";
@@ -605,7 +605,11 @@ fn a_bar_is_half_a_cell_tall_and_fills_whole_cells() {
     assert_eq!((half[1].content.as_ref(), half[1].style), ("▁▁▁", track));
     // 44% of six cells ends in a whole one, with no half cell before the track.
     assert_eq!(text(&bar(0.44)), "▄▄▄▁▁▁");
-    assert_eq!(text(&bar(0.93)), "▄▄▄▄▄▄");
+    assert_eq!(
+        text(&bar(0.93)),
+        "▄▄▄▄▄▁",
+        "only a used-up window fills all six"
+    );
     assert_eq!(text(&bar(0.01)), "▄▁▁▁▁▁");
     assert_eq!(bar(0.0), [Span::styled("▁▁▁▁▁▁", track)]);
     assert_eq!(bar(1.0), [Span::styled("▄▄▄▄▄▄", fill)]);
@@ -722,7 +726,7 @@ fn numbers_can_say_what_is_left() {
     };
     assert!(
         row(&bars, 140).ends_with(
-            "● Claude Code 5h ██████  99% left  7d ███░░░  44% left   ○ Codex 7d █████░  89% left   ○ agy 5h ██████  98% left"
+            "● Claude Code 5h █████░  99% left  7d ███░░░  44% left   ○ Codex 7d █████░  89% left   ○ agy 5h █████░  98% left"
         ),
         "{}",
         row(&bars, 140)

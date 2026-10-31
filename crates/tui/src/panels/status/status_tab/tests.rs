@@ -98,11 +98,11 @@ fn picture() -> StatusTabView {
                 "claude-code",
                 "Claude Code",
                 Some("2.1.295"),
-                "Max",
+                "Pro",
                 "newer than checked · works",
             ),
-            cli("codex", "Codex", Some("0.160.0"), "Plus", "checked"),
-            cli("antigravity-cli", "agy", Some("1.3.0"), "Pro", "checked"),
+            cli("codex", "Codex", Some("0.160.0"), "Pro", "checked"),
+            cli("antigravity-cli", "agy", Some("1.3.0"), "Ultra", "checked"),
             cli("opencode", "OpenCode", None, "", "not installed"),
         ],
         settings: SettingsInEffect {
@@ -300,13 +300,13 @@ fn status_draws_every_part_of_the_picture() {
     assert!(row(&rows, "◆ your CLIs").ends_with("who you're signed in as, or what each can use │"));
     assert!(
         row(&rows, "● Claude Code").contains(
-            "● Claude Code     2.1.295   you@example.com · Max · newer than checked · works"
+            "● Claude Code     2.1.295   you@example.com · Pro · newer than checked · works"
         ),
         "{rows:#?}"
     );
     assert!(
         row(&rows, "○ Codex")
-            .contains("○ Codex           0.160.0   you@example.com · Plus · checked")
+            .contains("○ Codex           0.160.0   you@example.com · Pro · checked")
     );
     assert!(row(&rows, "○ OpenCode").contains("—         not installed · /update can't add it"));
     assert!(
@@ -449,7 +449,7 @@ fn a_screen_reader_hears_the_same_facts() {
     for text in [
         "version: Argonauts Code 0.0.1",
         "folder: ~/workspace/rate-limiter-app, no git",
-        "Claude Code: 2.1.295, you@example.com, Max, newer than checked · works",
+        "Claude Code: 2.1.295, you@example.com, Pro, newer than checked · works",
         "OpenCode: not installed",
     ] {
         assert!(lines.iter().any(|line| line == text), "{text}: {lines:#?}");
@@ -495,18 +495,18 @@ fn pictured_clis() -> Vec<CliStatus> {
             "claude-code",
             "Claude Code",
             Some("2.1.296"),
-            "Max",
+            "Pro",
             "checked · works",
         ),
         CliStatus {
             account: Some("another@example.org".to_owned()),
-            ..cli("codex", "Codex", Some("0.160.0"), "Plus", "checked")
+            ..cli("codex", "Codex", Some("0.160.0"), "Pro", "checked")
         },
         cli(
             "antigravity-cli",
             "agy",
             Some("1.3.3"),
-            "Google AI Pro",
+            "Google AI Ultra",
             "newer than checked · works",
         ),
         CliStatus {
@@ -784,8 +784,8 @@ fn the_clis_card_and_each_models_health_show_together() {
     assert!(clis < health, "{rows:#?}");
     let card = &rows[clis..health];
     for said in [
-        "2.1.296   you@example.com · Max · checked · works",
-        "0.160.0   another@example.org · Plus · checked",
+        "2.1.296   you@example.com · Pro · checked · works",
+        "0.160.0   another@example.org · Pro · checked",
         "OpenRouter (API key, billed) · Ollama (local) · new major version",
     ] {
         assert!(
@@ -879,18 +879,18 @@ fn an_update_is_said_on_the_row_and_nothing_else_is() {
     let rows = buffer_rows(&clis_card(clis));
     assert!(
         row(&rows, "● Claude Code")
-            .contains("· Max · checked · works · 2.1.297 is out · claude update"),
+            .contains("· Pro · checked · works · 2.1.297 is out · claude update"),
         "{rows:#?}"
     );
     assert!(
         row(&rows, "○ Codex")
-            .contains("· Plus · older than supported · 0.160.0 needed · brew upgrade codex"),
+            .contains("· Pro · older than supported · 0.160.0 needed · brew upgrade codex"),
         "{rows:#?}"
     );
     assert!(
         row(&rows, "○ agy")
             .trim_end_matches(['│', ' '])
-            .ends_with("· Google AI Pro · newer than checked · works"),
+            .ends_with("· Google AI Ultra · newer than checked · works"),
         "{rows:#?}"
     );
 }
@@ -996,7 +996,6 @@ fn the_main_sessions_cli_row_says_what_to_type_there() {
         include_str!("../../../../tests/golden/overview/status_in_cli.txt"),
         include_str!("../../../../tests/golden/overview/status_in_cli.html"),
         &theme,
-        &[],
     );
     let state = state();
     let mut status = tab(view);

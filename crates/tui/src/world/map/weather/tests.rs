@@ -1,3 +1,4 @@
+use crate::world::deliver::clock::Rate;
 use crate::world::map::fields::crews::Key;
 use crate::world::map::motion::Moment;
 use crate::world::map::nature::crews::{drawn, map_at};
@@ -7,12 +8,12 @@ use crate::world::map::relief::cells::compare;
 fn the_map_moves_and_two_frames_half_a_second_apart_are_different() {
     let weather = &drawn(Key::R).weather;
     assert!(weather.moves());
-    let early = weather.under_dots(Moment::At(0.0)).to_rgba();
-    let later = weather.under_dots(Moment::At(0.5)).to_rgba();
+    let early = weather.under_dots(Moment::at(0.0)).to_rgba();
+    let later = weather.under_dots(Moment::at(0.5)).to_rgba();
     assert_ne!(early, later);
     assert_eq!(
-        weather.under_dots(Moment::At(0.5)).to_rgba(),
-        weather.under_dots(Moment::At(0.55)).to_rgba(),
+        weather.under_dots(Moment::at(0.5)).to_rgba(),
+        weather.under_dots(Moment::at(0.51)).to_rgba(),
         "a frame holds until the next is due"
     );
 }
@@ -41,7 +42,7 @@ fn crew_rs_map_held_still() {
 fn crew_rs_map_a_moment_in() {
     compare(
         "weather-r-moving",
-        &map_at(Key::R, Moment::At(0.25)),
+        &map_at(Key::R, Moment::at(0.25)),
         include_str!("golden/weather-r-moving.txt"),
     );
 }
@@ -152,7 +153,7 @@ fn a_hurricane_turns_three_times_as_fast_at_category_3_as_at_1() {
         south,
         at: OffsetDateTime::UNIX_EPOCH,
     };
-    let at = Moment::At(2.5);
+    let at = Moment::at(2.5);
     let (one, three) = (angle(&storm(1, false), at), angle(&storm(3, false), at));
     assert!((three - 3.0 * one).abs() < 1e-9);
     assert!(
@@ -209,8 +210,8 @@ fn a_storm_turns_anticlockwise_north_of_the_equator_and_clockwise_south_of_it() 
             pad.into_canvas().to_rgba()
         };
         let turned = sense(
-            &drawn_at(Moment::At(0.0)),
-            &drawn_at(Moment::At(0.7)),
+            &drawn_at(Moment::at(0.0)),
+            &drawn_at(Moment::at(0.7)),
             WIDTH,
             centre,
         );
@@ -244,8 +245,8 @@ fn a_wave_travelling_right_is_the_left_one_mirrored() {
 fn a_still_wave_stands_most_of_the_way_in_with_the_sea_drawn_back() {
     use super::tsunami::Tsunami;
     assert_eq!(Tsunami::progress(Moment::Still), 0.72);
-    assert_eq!(Tsunami::progress(Moment::At(1.5)), 0.5);
-    assert_eq!(Tsunami::progress(Moment::At(3.0)), 0.0);
+    assert_eq!(Tsunami::progress(Moment::at(1.5)), 0.5);
+    assert_eq!(Tsunami::progress(Moment::at(3.0)), 0.0);
 }
 
 #[test]
@@ -266,13 +267,13 @@ fn a_tornados_bands_climb_as_it_turns_and_rest_when_still() {
         tornado::draw(&mut pad, weather, funnel, moment);
         pad.into_canvas().to_rgba()
     };
-    assert_ne!(at(Moment::At(0.0)), at(Moment::At(0.5)));
+    assert_ne!(at(Moment::at(0.0)), at(Moment::at(0.5)));
     assert_eq!(
-        at(Moment::At(0.0)),
-        at(Moment::At(1.0)),
+        at(Moment::at(0.0)),
+        at(Moment::at(1.0)),
         "one turn a second"
     );
-    assert_eq!(at(Moment::Still), at(Moment::At(0.0)));
+    assert_eq!(at(Moment::Still), at(Moment::at(0.0)));
 }
 
 #[test]
@@ -334,11 +335,11 @@ fn a_thunderstorm_is_an_anvil_cloud_with_a_dark_base_and_a_bolt_when_it_flashes(
     let flashes =
         crate::world::map::motion::Flashes::for_storms(&super::thunderstorms(&world.nature))[0];
     // The first stored frame at or after its first flash.
-    let flashing = (0..32)
-        .map(|frame| Moment::At(f64::from(frame) * 0.125 + 0.01))
+    let flashing = (0..64)
+        .map(|frame| Moment::at(f64::from(frame) / 16.0 + 0.01))
         .find(|moment| thunder::flash(&flashes, *moment) > 0.5)
         .expect("it flashes");
-    assert_eq!(thunder::flash(&flashes, Moment::At(0.01)), 0.0);
+    assert_eq!(thunder::flash(&flashes, Moment::at(0.01)), 0.0);
     let cloud = thunder::cloud(thunder::size(storm.radius), storm.behavior as f64);
     let mut pad = Pad::whole();
     thunder::draw(
@@ -384,11 +385,11 @@ fn a_volcano_smokes_while_its_failures_are_fresh_and_an_older_one_is_quiet() {
         pad.into_canvas().to_rgba()
     };
     assert!(
-        drawn(true, Moment::At(0.0)) != drawn(true, Moment::At(0.25)),
+        drawn(true, Moment::at(0.0)) != drawn(true, Moment::at(0.25)),
         "smoke rises"
     );
     assert!(
-        drawn(false, Moment::At(0.0)) == drawn(false, Moment::At(0.25)),
+        drawn(false, Moment::at(0.0)) == drawn(false, Moment::at(0.25)),
         "a quiet one holds"
     );
     let lit = |rgba: &[u8]| {
@@ -417,11 +418,11 @@ fn an_earthquakes_rings_run_out_and_rest_when_still() {
         pad.into_canvas()
     };
     assert!(
-        at(Moment::At(0.0)).to_rgba() != at(Moment::At(1.0)).to_rgba(),
+        at(Moment::at(0.0)).to_rgba() != at(Moment::at(1.0)).to_rgba(),
         "the ring spreads"
     );
     assert!(
-        at(Moment::At(0.0)).to_rgba() == at(Moment::At(2.0)).to_rgba(),
+        at(Moment::at(0.0)).to_rgba() == at(Moment::at(2.0)).to_rgba(),
         "every 2 s"
     );
     let still = at(Moment::Still);
@@ -472,7 +473,7 @@ fn a_burning_front_flickers_and_its_smoke_drifts() {
         pad.into_canvas().to_rgba()
     };
     assert!(
-        at(Moment::At(0.0)) != at(Moment::At(0.25)),
+        at(Moment::at(0.0)) != at(Moment::at(0.25)),
         "the flames flicker"
     );
     assert!(at(Moment::Still) == at(Moment::Still));
@@ -512,7 +513,7 @@ fn cloud_shadows_fall_full_on_land_and_at_a_quarter_over_the_sea_soft_edged() {
     let drawn = drawn(Key::T);
     let shadows = drawn.weather.cloud_shadows().expect("crew T casts shadows");
     let mut pad = Pad::whole();
-    shadows.draw(&mut pad, Moment::At(0.0));
+    shadows.draw(&mut pad, Moment::at(0.0));
     let layer = pad.into_canvas();
     let (mut land, mut sea) = (0, 0);
     for y in 80..HEIGHT - 80 {
@@ -564,7 +565,7 @@ fn the_drifting_cloud_shadows_keep_off_the_polar_ice() {
     let shadows = drawn(Key::T).weather.cloud_shadows().expect("shadows");
     for t in [0.9, 3.9, 11.0] {
         let mut pad = Pad::whole();
-        shadows.draw(&mut pad, Moment::At(t));
+        shadows.draw(&mut pad, Moment::at(t));
         let layer = pad.into_canvas();
         for y in 0..ice_ends {
             for x in 0..WIDTH as u32 {
@@ -578,7 +579,7 @@ fn the_drifting_cloud_shadows_keep_off_the_polar_ice() {
 fn crew_ts_map_with_its_clouds_drifting() {
     compare(
         "weather-t-moving",
-        &map_at(Key::T, Moment::At(6.0)),
+        &map_at(Key::T, Moment::at(6.0)),
         include_str!("golden/weather-t-moving.txt"),
     );
 }
@@ -710,8 +711,9 @@ fn pointing_at_what_stands_or_flies_names_it() {
     let pointed = found(x, y - volcano.radius * 0.5);
     assert_eq!(pointed, Some(Pointed::Feature(index as u32)));
     assert!(
-        line(pointed)
-            .starts_with("Volcano, smoking · ‘ran the test suite, which failed’ · 27 of its 27")
+        line(pointed).starts_with(
+            "Volcano · 27 of its 27 ‘ran the test suite, which failed’ actions failed"
+        )
     );
 
     let (index, _) = world
@@ -723,7 +725,7 @@ fn pointing_at_what_stands_or_flies_names_it() {
         .expect("a hurricane");
     let (fx, fy) = weather.flight(index).expect("it flies");
     let (x, y) = weather.screen(fx, fy, super::hurricane::ALTITUDE);
-    assert!(line(found(x, y)).starts_with("Hurricane, category"));
+    assert!(line(found(x, y)).starts_with("Hurricane · "));
 
     let (index, wave) = world
         .nature
@@ -775,7 +777,7 @@ fn pointing_at_what_lies_on_the_ground_names_it_and_a_dot_under_the_pointer_wins
         });
     assert_eq!(
         line.as_deref(),
-        Some("Shoal · on the list, never used · ‘failed to read a file’")
+        Some("Shoal · ‘failed to read a file’ is a label no action has used")
     );
 
     let dot = drawn(Key::R).dots.at[0];
@@ -872,9 +874,9 @@ fn every_part_fits_in_its_own_box() {
         let weather = &drawn(key).weather;
         for moment in [
             Moment::Still,
-            Moment::At(0.3),
-            Moment::At(1.7),
-            Moment::At(9.2),
+            Moment::at(0.3),
+            Moment::at(1.7),
+            Moment::at(9.2),
         ] {
             for part in weather.parts(moment) {
                 if part.id == PartId::new("cloud shadows", 0) {
@@ -902,7 +904,7 @@ fn every_part_fits_in_its_own_box() {
 fn a_part_keeps_its_name_and_changes_its_picture_only_when_its_frame_does() {
     let weather = &drawn(Key::R).weather;
     let ids = |moment| -> Vec<_> { weather.sprites(moment, 7).iter().map(|s| s.id).collect() };
-    assert_eq!(ids(Moment::At(0.0)), ids(Moment::At(2.3)));
+    assert_eq!(ids(Moment::at(0.0)), ids(Moment::at(2.3)));
     let keys = |moment| -> Vec<u64> {
         weather
             .sprites(moment, 7)
@@ -911,11 +913,11 @@ fn a_part_keeps_its_name_and_changes_its_picture_only_when_its_frame_does() {
             .collect()
     };
     assert_eq!(
-        keys(Moment::At(0.5)),
-        keys(Moment::At(0.55)),
+        keys(Moment::at(0.5)),
+        keys(Moment::at(0.51)),
         "nothing steps within a frame"
     );
-    let (early, later) = (keys(Moment::At(0.0)), keys(Moment::At(0.125)));
+    let (early, later) = (keys(Moment::at(0.0)), keys(Moment::at(0.125)));
     let changed = early.iter().zip(&later).filter(|(a, b)| a != b).count();
     assert!(
         changed > 0 && changed < early.len(),
@@ -923,8 +925,8 @@ fn a_part_keeps_its_name_and_changes_its_picture_only_when_its_frame_does() {
         early.len()
     );
     let (now, later) = (
-        weather.sprites(Moment::At(0.0), 7),
-        weather.sprites(Moment::At(3.0), 7),
+        weather.sprites(Moment::at(0.0), 7),
+        weather.sprites(Moment::at(3.0), 7),
     );
     let unchanged = now
         .iter()
@@ -935,7 +937,7 @@ fn a_part_keeps_its_name_and_changes_its_picture_only_when_its_frame_does() {
         unchanged >= 6,
         "the wonders never change: {unchanged} parts held"
     );
-    assert_ne!(keys(Moment::At(0.0)), keys(Moment::Still));
+    assert_ne!(keys(Moment::at(0.0)), keys(Moment::Still));
 }
 
 #[test]
@@ -969,9 +971,11 @@ fn a_loop_that_comes_round_again_is_not_drawn_again() {
     };
     let weather = fresh();
     let kept = || weather.frames.lock().unwrap().bytes();
-    // 15 s, the longest loop but the clouds', whose frames are each the whole map.
-    for tick in 0..120 {
-        weather.sprites(Moment::of_tick(tick), 7);
+    // 15 s at the quicker rate, the longest loop but the clouds', whose frames are each the
+    // whole map.
+    let at = |tick| Moment::of_tick(tick, Rate::QUICK);
+    for tick in 0..240 {
+        weather.sprites(at(tick), 7);
     }
     // With room left for any frame, a frame drawn the second time round would be kept too.
     let first = kept();
@@ -979,12 +983,12 @@ fn a_loop_that_comes_round_again_is_not_drawn_again() {
         first > 0 && first + LOOP_FRAME_AT_MOST <= LOOPS_KEPT,
         "{first} bytes kept"
     );
-    for tick in 120..240 {
-        weather.sprites(Moment::of_tick(tick), 7);
+    for tick in 240..480 {
+        weather.sprites(at(tick), 7);
     }
     assert_eq!(kept(), first, "a second time round draws nothing new");
-    let again = fresh().sprites(Moment::of_tick(200), 7);
-    let found = weather.sprites(Moment::of_tick(200), 7);
+    let again = fresh().sprites(at(400), 7);
+    let found = weather.sprites(at(400), 7);
     assert_eq!(found.len(), again.len());
     for (found, again) in found.iter().zip(&again) {
         assert_eq!((found.id, found.at), (again.id, again.at));
@@ -1005,7 +1009,7 @@ fn the_rivers_and_currents_move_as_one_thing() {
     let water = PartId::new("water", 0);
     let named = |t: f64| -> Vec<(PartId, u64)> {
         weather
-            .parts(Moment::At(t))
+            .parts(Moment::at(t))
             .iter()
             .map(|part| (part.id, part.frame))
             .collect()

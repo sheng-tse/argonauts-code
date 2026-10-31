@@ -8,6 +8,7 @@ pub(crate) mod world;
 use std::collections::BTreeMap;
 
 use argonauts_core::app::{AppEvent, ViewData};
+use argonauts_core::base::clock;
 use argonauts_core::behaviors::behavior_map::{
     ActionOutcome, BehaviorMap, BehaviorRow, Comparison, Grouping, MapAction, MapGroup, MapRequest,
     Placing, Scope,
@@ -16,7 +17,6 @@ use argonauts_core::behaviors::deep_map::says_more_than;
 use argonauts_core::look::display_names::{DisplayNames, Spellings};
 use argonauts_core::settings::behaviors::BehaviorMap as MapSetting;
 use argonauts_tui::base::format::WallClock;
-use time::OffsetDateTime;
 
 pub(crate) use read::Recorded;
 use read::{Records, every_action, project_name, records};
@@ -58,11 +58,8 @@ pub(crate) async fn view(ctx: &mut Ctx, request: MapRequest) -> anyhow::Result<V
             Scope::Everywhere => None,
             Scope::ThisProject => Some(here.as_path()),
         };
-        let period = world::Period::new(
-            OffsetDateTime::now_utc(),
-            request.period.days(),
-            WallClock::local(),
-        );
+        let period =
+            world::Period::new(clock::now_utc(), request.period.days(), WallClock::local());
         // The world reads past the period's start: when each behavior was last used, the
         // period before, and the months before that. A wonder is the whole crew's, so it
         // reads every project's actions whatever the map covers.

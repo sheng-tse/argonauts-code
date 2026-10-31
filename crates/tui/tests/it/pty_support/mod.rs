@@ -20,7 +20,7 @@ pub const BULLET: &str = if cfg!(target_os = "macos") {
     "●"
 };
 pub use conversation::*;
-pub use driver::{COLS, Launch, ROWS, TestDriver, WAIT, command_type};
+pub use driver::{COLS, JOB_PROMPT, Launch, ROWS, TestDriver, WAIT, command_type};
 pub use run::*;
 pub use screen::*;
 pub use script::Script;

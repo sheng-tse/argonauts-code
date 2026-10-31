@@ -97,17 +97,24 @@ impl InputRouter {
         }
     }
 
+    /// The first header sets the example prompt and opens the agent panel. The composer drops
+    /// the example at the first prompt, so a later header, which comes once the CLI checks
+    /// answer, leaves it gone.
+    fn welcome(&mut self, example_prompt: &Option<String>, cx: &mut Cx<'_>) {
+        if std::mem::replace(&mut self.welcomed, true) {
+            return;
+        }
+        cx.model.bottom.composer.example.clone_from(example_prompt);
+        if cx.settings.agents_view {
+            super::keys::open_agent_panel(cx);
+        }
+    }
+
     /// `TakenBack` refills the input, and run events refresh the `@` list.
     pub fn on_event(&mut self, event: &AppEvent, cx: &mut Cx<'_>) {
         self.prepare_with(cx);
         match event {
-            // The composer drops it again at the first prompt.
-            AppEvent::Welcome { example_prompt, .. } => {
-                cx.model.bottom.composer.example.clone_from(example_prompt);
-                if !std::mem::replace(&mut self.welcomed, true) && cx.settings.agents_view {
-                    super::keys::open_agent_panel(cx);
-                }
-            }
+            AppEvent::Welcome { example_prompt, .. } => self.welcome(example_prompt, cx),
             AppEvent::Updated { words } => cx.model.bottom.updated = Some(words.clone()),
             AppEvent::SettingChanged { key, value, .. } if key == Settings::ULTRACODE_TRIGGER => {
                 cx.model.bottom.composer.workflow_word_off = value.trim() == "false";
@@ -131,6 +138,7 @@ impl InputRouter {
                     ConversationEvent::TurnStarted {
                         text,
                         continues: false,
+                        opens_a_talk: false,
                         ..
                     },
             } if self.past_prompts.is_some() => {
@@ -730,17 +738,7 @@ fn slash(command: SlashCommand, typed: &str, cx: &mut Cx<'_>) {
                 change: LineChange::Open,
                 scope,
             },
-        ) => {
-            let bottom = &cx.model.bottom;
-            let picker = super::bottom_line::LinePicker::new(
-                cx.state,
-                bottom.mode.clone(),
-                cx.settings,
-                &bottom.line_slots,
-                scope,
-            );
-            cx.out.open(picker);
-        }
+        ) => super::bottom_line::open_picker(scope, cx),
         (Handler::Both, SlashCommand::Theme { name: None }) => cx.out.send(UiCommand::Request {
             view: ViewRequest::Settings {
                 section: Some("ui".into()),
@@ -1711,6 +1709,12 @@ mod tests {
         );
         composer.end_example();
         assert_eq!(composer.placeholder_text(true), None);
+        screen.event(welcome(Some("fix the flaky export test")));
+        assert_eq!(
+            screen.model.bottom.composer.placeholder_text(true),
+            None,
+            "the header the CLI checks bring leaves a sent prompt's example gone"
+        );
 
         let mut screen = Screen::idle();
         screen.event(welcome(None));

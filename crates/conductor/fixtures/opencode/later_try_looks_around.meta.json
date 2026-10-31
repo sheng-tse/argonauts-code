@@ -2,9 +2,10 @@
   "adapter": "opencode",
   "synthetic": false,
   "cli_version": "2.0.26",
-  "model": "ollama/qwen3-coder:30b-64k",
+  "model": "ollama/qwen3-coder:30b",
   "role": "build",
   "note": "The second try of a Captain run's one task, on the same local Qwen after the first session was stopped for repeating one call with its fix already committed. It made 17 tool calls, 15 of them different and 33 to 90 s apart, changed no file and never reported, until the run was stopped after 20 minutes. Only the session's agent events and its end are kept, as the run's log recorded them",
-  "how": "argonauts run --captain in a throwaway repo, with OpenCode 2.0.26 on Ollama's qwen3-coder:30b-64k. The lines are the run's events.jsonl for session s-002, leaving out its once-a-second spend readings and its prompt, with the home folder's name replaced",
-  "recorded": "2026-10-19"
+  "how": "argonauts run --captain in a throwaway repo, with OpenCode 2.0.26 on Ollama's qwen3-coder:30b. The lines are the run's events.jsonl for session s-002, leaving out its once-a-second spend readings and its prompt, with the home folder's name replaced",
+  "recorded": "2026-10-19",
+  "sanitized": "the model written as qwen3-coder:30b"
 }

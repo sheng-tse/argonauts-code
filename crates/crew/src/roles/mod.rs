@@ -67,31 +67,21 @@ pub fn runs(host: &Host, worker: &ModelRef) -> ModelRef {
     )
 }
 
-/// What the transcript calls `worker`, such as `GPT 5.6 on Codex`, rather than its id.
-pub fn display_name(worker: &ModelRef) -> String {
-    DisplayNames::default().worker(worker)
-}
-
-/// The model alone where it runs on its own CLI, such as `Opus 5.5`, for a narrow place.
-pub fn short_name(worker: &ModelRef) -> String {
-    DisplayNames::default().short(worker)
-}
-
 /// What you read a council seat by: its model, numbered when it sits more than once, as
 /// `Opus 5.5 · 2`. `None` for a seat that doesn't sit.
-pub fn seat_name(seat: &SeatId, seating: &Seating) -> Option<String> {
+pub fn seat_name(names: &DisplayNames, seat: &SeatId, seating: &Seating) -> Option<String> {
     let seat = crate::council::seats::find(seating, seat)?;
-    Some(crate::council::seats::name(seat, &DisplayNames::default()))
+    Some(crate::council::seats::name(seat, names))
 }
 
-/// Why `model` can't take `role` for this task, if it can't. `worker` is whoever made the work
-/// the role judges: the task's worker, or the plan's author for a judge.
+/// What `model` can't do in `role` for this task, such as "review its own task", if it can't.
+/// `worker` made the work the role judges: the task's worker, or the plan's author for a judge.
 pub fn conflict(
     role: RoleName,
     model: &ModelRef,
     worker: Option<&ModelRef>,
     providers: &dyn Fn(&ModelRef) -> String,
-) -> Option<String> {
+) -> Option<&'static str> {
     let worker = worker?;
     let what = match role {
         RoleName::Reviewer => "review its own task",
@@ -99,7 +89,7 @@ pub fn conflict(
 
         _ => return None,
     };
-    same_agent(model, worker, providers).then(|| format!("{} can't {what}", display_name(model)))
+    same_agent(model, worker, providers).then_some(what)
 }
 
 /// Two references name the same agent when the CLI matches and so does the model. A
@@ -128,7 +118,7 @@ mod tests {
     /// never by its id.
     #[test]
     fn a_worker_is_named_as_people_read_it() {
-        let name = display_name(&worker("codex/gpt-5.6-luna"));
+        let name = DisplayNames::default().worker(&worker("codex/gpt-5.6-luna"));
         assert_eq!(name, "GPT 5.6 Luna on Codex");
         assert!(!name.contains("codex/") && !name.contains("gpt-5.6-luna"));
     }
@@ -182,8 +172,8 @@ mod tests {
             assert!(reason.is_some(), "{role:?} of its own work");
         }
         assert_eq!(
-            conflict(RoleName::Reviewer, &opus, Some(&opus), &provider_of).as_deref(),
-            Some("Opus on Claude Code can't review its own task")
+            conflict(RoleName::Reviewer, &opus, Some(&opus), &provider_of),
+            Some("review its own task")
         );
         // The CLI's default model may be the worker's model, and the provider says so.
         let default_model = worker("claude-code");

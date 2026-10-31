@@ -9,11 +9,11 @@ pub(crate) mod subagents;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
+use argonauts_core::base::clock;
 use argonauts_core::workflows::steps::summary_line;
 use argonauts_core::{AgentEvent, ErrorCategory, StreamParser, TodoItem, TodoStatus};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use time::OffsetDateTime;
 
 use crate::parser::classify::{classify_error, is_retry_notice, retry_reason};
 use crate::parser::subagents::{Threads, WireAgentState, WireCollabCall};
@@ -90,7 +90,7 @@ impl CodexParser {
             return vec![error];
         };
         let zone = self.zone.get_or_insert_with(LocalZone::system);
-        let reading = usage_limit_reading(message, OffsetDateTime::now_utc(), zone);
+        let reading = usage_limit_reading(message, clock::now_utc(), zone);
         vec![AgentEvent::PlanUsage { reading }, error]
     }
 

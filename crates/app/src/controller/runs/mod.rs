@@ -682,7 +682,7 @@ async fn started_as_asked(
     Ok(vec![Effect::Status])
 }
 
-/// After `start` or `continue_run`: raise the approval mode as Shift+Tab chose, and attach.
+/// After `start` or `continue_run`, whose request carried supervised mode: raise any other, attach.
 pub(super) async fn started(
     ctx: &mut Ctx,
     runs: &mut RunsState,
@@ -690,21 +690,18 @@ pub(super) async fn started(
     title: String,
     mode: RunMode,
 ) -> anyhow::Result<Vec<Effect>> {
-    let raised = runs
-        .approval_mode
-        .filter(|mode| *mode != ApprovalMode::Supervised);
-    let raised = match raised {
+    let in_force = match runs.approval_mode {
+        Some(ApprovalMode::Supervised) | None => runs.approval_mode,
         Some(approval) => set_approval_mode(ctx, &run, approval)
             .await
             .then_some(approval),
-        None => None,
     };
     let summary = match find_summary(ctx, &run).await {
         Some(summary) => summary,
         None => new_summary(ctx, &run, title, mode),
     };
     attach::attach(ctx, runs, summary, Opening::New).await?;
-    if let (Some(approval), Some(attached)) = (raised, runs.attached.as_mut()) {
+    if let (Some(approval), Some(attached)) = (in_force, runs.attached.as_mut()) {
         attached.approval_mode = Some(approval);
     }
     Ok(vec![Effect::Status])

@@ -1,34 +1,7 @@
-# Council: no single planner. Every seat answers alone, then the seats talk until they agree.
+# Council: no single planner. Every seat answers your request alone, then the seats talk until
+# they agree. Nothing reads the request first, and the plan is the first thing you approve.
 name  = "council"
 about = "No single planner: every seat answers alone, then they talk until they all agree"
-
-[[phases]]
-name     = "Understand"
-detail   = "models from several providers read the request, and others compare the readings"
-standard = "understand"
-
-  [[phases.steps]]
-  kind  = "loop_until"
-  name  = "understanding"
-  until = "understood"
-  max   = 2
-
-    [[phases.steps.steps]]
-    kind  = "read"
-    name  = "readings"
-    role  = "reader"
-    label = "read:{provider}"
-
-    [[phases.steps.steps]]
-    kind  = "compare"
-    name  = "differences"
-    role  = "comparer"
-    input = "readings"
-    label = "compare:{n}"
-
-    [[phases.steps.steps]]
-    kind     = "approval"
-    approval = "understand"
 
 [[phases]]
 name     = "Talk"

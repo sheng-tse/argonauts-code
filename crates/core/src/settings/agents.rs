@@ -206,13 +206,13 @@ mod tests {
     #[test]
     fn a_bare_cli_runs_the_model_its_settings_name() {
         let mut settings = Settings::default();
-        let qwen = ModelRef::new("opencode", Some("ollama/qwen3-coder:30b-64k".into()));
+        let qwen = ModelRef::new("opencode", Some("ollama/qwen3-coder:30b".into()));
         let bare = ModelRef::new("opencode", None);
         assert_eq!(settings.model_run_by(&bare), bare);
         settings.agents.insert(
             "opencode".into(),
             AgentSettings {
-                model: Some("ollama/qwen3-coder:30b-64k".into()),
+                model: Some("ollama/qwen3-coder:30b".into()),
                 ..AgentSettings::default()
             },
         );

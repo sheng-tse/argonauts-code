@@ -824,6 +824,7 @@ impl<W: Write> Ui<W> {
             Action::Transcript => self.open_overlay(),
             Action::WorkflowView => actions.push(UiAction::OpenTree),
             Action::Editor => actions.push(UiAction::EditDraft),
+            Action::Suspend => actions.push(UiAction::Suspend),
             Action::CycleApprovalMode => {
                 bottom.mode.approval = bottom.mode.approval.next();
                 actions.push(UiAction::ModeChanged(bottom.mode.approval));

@@ -8,7 +8,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use tokio::sync::{Notify, mpsc, watch};
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 
+use argonauts_core::agents::session_runner::SessionLimits;
 use argonauts_core::base::names::{ApprovalId, SessionKey};
+use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::runs::engine::{EngineContext, EventSink, RepoContext, Services};
 use argonauts_core::runs::events::run::RunMode;
 use argonauts_core::safety::policy::PolicyOutcome;
@@ -17,6 +19,7 @@ use argonauts_core::{RunId, TaskId};
 
 use crate::approvals::Desk;
 use crate::engine::error::EngineResult;
+use crate::engine::folder_blocks::FolderBlocks;
 use crate::engine::job_fallback;
 use crate::engine::journal::DeltaBuffer;
 use crate::engine::live::LiveSessions;
@@ -76,6 +79,8 @@ pub struct Shared {
     pub settings_sha256: String,
     pub sink: Arc<dyn EventSink>,
     pub services: Services,
+    /// What the run calls each CLI and model in what it writes, as the screen names them.
+    pub names: DisplayNames,
     pub git: Git,
     pub mode: RunMode,
     /// Always the fold of every event recorded so far.
@@ -101,6 +106,10 @@ pub struct Shared {
     pub status_targets: Mutex<BTreeMap<SessionKey, StatusTarget>>,
     pub deltas: Mutex<DeltaBuffer>,
     pub outside_writes: Mutex<OutsideWrites>,
+    /// Each session's limits as it last started, which the line for a run that ends on one
+    /// names.
+    pub session_limits: Mutex<BTreeMap<SessionKey, SessionLimits>>,
+    pub folder_blocks: Mutex<FolderBlocks>,
     pub admission: watch::Sender<Admission>,
     /// The interrupt of the pause or stop under way. A cancelled pause swaps in a fresh one,
     /// so the waits after it aren't cut short by a pause that no longer holds.
@@ -156,6 +165,18 @@ pub struct Shared {
     pub(crate) start_checks: tokio::sync::Mutex<bool>,
 }
 
+/// The names of the CLIs the run may use, with each one's default model, read once for the run.
+fn run_names(services: &Services, settings: &Settings) -> DisplayNames {
+    let available = services.workers.available();
+    let clis = available
+        .iter()
+        .map(|worker| worker.agent.as_str())
+        .chain(settings.agents.keys().map(String::as_str))
+        .map(|cli| (cli.to_owned(), DisplayNames::default().cli(cli)))
+        .collect();
+    DisplayNames::gathered(clis, services.registry.as_ref(), settings)
+}
+
 impl Shared {
     /// Takes what the loop keeps for itself (the inbox and agent events) out of the context
     /// first; builds the rest from it and the folded history.
@@ -193,6 +214,7 @@ impl Shared {
             settings_sha256: context.settings_sha256.clone(),
             sink: context.sink.clone(),
             services: context.services.clone(),
+            names: run_names(&context.services, &context.settings),
             git,
             mode: state.run.mode.unwrap_or(RunMode::Captain),
             allocated: Mutex::new(state.ids.clone()),
@@ -210,6 +232,8 @@ impl Shared {
                 settings.run_host.journal_deltas_per_second,
             )),
             outside_writes: Mutex::new(OutsideWrites::default()),
+            session_limits: Mutex::new(BTreeMap::new()),
+            folder_blocks: Mutex::new(FolderBlocks::default()),
             admission: watch::channel(Admission::Open).0,
             interrupt: Mutex::new(CancellationToken::new()),
             shutdown: context.shutdown.clone(),

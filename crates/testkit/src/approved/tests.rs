@@ -793,7 +793,7 @@ fn keys_are_named_as_people_write_them() {
 const NOW: &str = "limits/now@12x3.txt";
 
 /// A folder with the drawing `TWO_ROWS` at [`NOW`], listed in a manifest with `extra` in its
-/// row, then `rows`.
+/// row, then `rows`. The drawing has one small size, so its row says so.
 fn approved_folder(extra: &str, rows: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     fs::create_dir_all(dir.path().join("limits")).unwrap();
@@ -801,14 +801,14 @@ fn approved_folder(extra: &str, rows: &str) -> tempfile::TempDir {
     let hash = hash_of(TWO_ROWS.as_bytes());
     let manifest = format!(
         "[[drawing]]\nfile = \"{NOW}\"\nrelease = \"0.2.0\"\napproval = 360\n\
-         hash = \"{hash}\"\n{extra}{rows}"
+         one_size = 362\nhash = \"{hash}\"\n{extra}{rows}"
     );
     fs::write(dir.path().join(MANIFEST), manifest).unwrap();
     dir
 }
 
-const STEPS: &str =
-    "steps = [{ wait = \"Limits\" }, { press = \"Down\" }, { send = \"/usage\\r\" }]\n";
+const STEPS: &str = "steps = [{ wait = \"Limits\" }, { press = \"Down\" }, \
+                     { send = \"/usage\\r\" }, { point = [30, 12] }]\n";
 
 #[test]
 fn a_manifest_lists_drawings_with_their_steps_and_departures() {
@@ -824,6 +824,7 @@ fn a_manifest_lists_drawings_with_their_steps_and_departures() {
             Step::Wait("Limits".to_owned()),
             Step::Press("Down".to_owned()),
             Step::Send("/usage\r".to_owned()),
+            Step::Point([30, 12]),
         ]
     );
     let mut screen = two_rows_screen();
@@ -896,6 +897,68 @@ fn the_approved_drawings_agree_with_their_manifest() {
     let dir = dir();
     let manifest = Manifest::load(&dir).unwrap_or_else(|err| panic!("{err:#}"));
     let problems = manifest.problems(&dir);
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+fn files_named(dir: &std::path::Path, name: &str, found: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            files_named(&path, name, found);
+        } else if path.file_name().is_some_and(|file| file == name) {
+            found.push(path);
+        }
+    }
+}
+
+/// A home's run logs are in the words today's app writes, as a real machine's would be, and
+/// a run's kept behavior labels hold its log's size, so the app reads them as they are.
+#[test]
+fn every_run_log_in_a_home_reads_back_and_its_kept_labels_hold_its_size() {
+    let dir = dir();
+    let mut logs = Vec::new();
+    files_named(&dir.join("homes"), "events.jsonl", &mut logs);
+    let mut problems = Vec::new();
+    for log in &logs {
+        let shown = log.strip_prefix(&dir).unwrap_or(log).display().to_string();
+        match argonauts_core::runs::journal::read_all(log) {
+            Ok(read) if read.events.is_empty() => problems.push(format!("{shown}: no events")),
+            Ok(read) => problems.extend(
+                read.skipped
+                    .iter()
+                    .map(|(line, err)| format!("{shown}:{line}: {err}")),
+            ),
+            Err(err) => problems.push(format!("{shown}: {err}")),
+        }
+        let mut up = log.ancestors();
+        let (Some(run), Some(repo), Some(state)) = (up.nth(1), up.nth(1), up.next()) else {
+            continue;
+        };
+        let (Some(run), Some(repo), Some(home)) =
+            (run.file_name(), repo.file_name(), state.parent())
+        else {
+            continue;
+        };
+        let kept = home
+            .join("behaviors/labels")
+            .join(repo)
+            .join(format!("{}.json", run.to_string_lossy()));
+        let Ok(text) = fs::read_to_string(&kept) else {
+            continue;
+        };
+        let kept_bytes = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|labels| labels["log_bytes"].as_u64());
+        let log_bytes = fs::metadata(log).map(|meta| meta.len()).ok();
+        if kept_bytes != log_bytes {
+            problems.push(format!(
+                "{shown}: {log_bytes:?} bytes, but its kept labels say {kept_bytes:?}"
+            ));
+        }
+    }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
@@ -1044,5 +1107,23 @@ fn a_drawing_reads_as_the_grid_it_draws() {
     assert_eq!(
         grid.cell(0, 5).background,
         Colour::Rgb(Rgb(0x12, 0x34, 0x56))
+    );
+}
+
+#[test]
+fn a_rows_mark_is_either_dot_and_nothing_else() {
+    assert!(same_mark('●', '⏺'));
+    assert!(same_mark('⏺', '●'));
+    assert!(same_mark('x', 'x'));
+    assert!(!same_mark('●', '○'));
+    assert!(!same_mark('⏺', 'x'));
+    let keys = ". blank\n? the character alone\nb fg=#c8d3f5\n";
+    let drawing = parsed("mark@3x1.txt", &row_drawing("3x1", "● ●", "?.b", keys));
+    let screen = Grid::from_bytes(3, 1, "⏺ \x1b[38;2;200;211;245m⏺\x1b[0m".as_bytes());
+    assert_eq!(found(&drawing, &screen), []);
+    let other = Grid::from_bytes(3, 1, "○ \x1b[38;2;200;211;245m○\x1b[0m".as_bytes());
+    assert_eq!(
+        found(&drawing, &other),
+        [(0, 0, Aspect::Text), (0, 2, Aspect::Text)]
     );
 }

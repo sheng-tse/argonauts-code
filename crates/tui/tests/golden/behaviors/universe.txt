@@ -20,7 +20,7 @@
 
 
   ◧◨ Anthropic · 428 actions, 76% of yours · 2 models
-     Turning: 33% of its actions came in the last 7 days · enter to go in
+     33% of its actions came in the last 7 days · enter to go in
   Label map · 562 actions in 19 runs across 6 projects · last 30 days
   Most common
   Returned its structured answer   169    Ran the test suite                         27

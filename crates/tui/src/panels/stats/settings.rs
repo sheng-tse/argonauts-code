@@ -16,6 +16,7 @@ use ratatui::text::Span;
 use crate::base::kit::{Drawn, Kit, spread};
 use crate::base::text::{spans_width, str_width};
 use crate::base::theme::Role;
+use crate::panels::view::subtabs::chosen_word;
 
 /// One setting, a row of the page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -430,13 +431,14 @@ impl SettingsPage {
             .collect()
     }
 
-    /// Each choice as its own spans: the one in use bold, a ticked column with its place.
+    /// Each choice as its own spans: the one in use bold, in orange on the row with the keys,
+    /// and a ticked column with its place.
     fn choices(&self, kit: &Kit<'_>, setting: Setting, picked: bool) -> Vec<Vec<Span<'static>>> {
         let pick = |words: &str, on: bool| {
             vec![if on {
-                Span::styled(words.to_owned(), kit.bold(Role::Question))
+                chosen_word(kit, words, picked)
             } else {
-                kit.dim(words.to_owned())
+                Span::raw(words.to_owned())
             }]
         };
         let file = &self.file;

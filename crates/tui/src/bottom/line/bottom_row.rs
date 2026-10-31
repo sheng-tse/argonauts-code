@@ -154,8 +154,8 @@ pub struct ModeState<'a> {
     /// The keys of what is picked, such as a council message, after the mode in place of the
     /// other hints.
     pub picked_keys: Option<&'a str>,
-    /// What Enter does on the run's row picked in the panel, such as `enter to answer`.
-    pub row_enter: Option<&'a str>,
+    /// The keys of the run's row picked in the panel, such as `enter to view · x to stop`.
+    pub row_keys: Option<&'a str>,
     /// A question has the keys.
     pub question_focused: bool,
     /// The input is in shell mode, which takes the approval mode's place.
@@ -197,6 +197,7 @@ impl BottomRow {
             pieces.push(words(Joiner::Space, &sanitize_line(hint), dim, None));
             return (ModePieces(pieces), None);
         }
+        let row_keys = state.row_keys.filter(|_| state.panel_focused);
         // A question that has the keys stands in for the input, so the input's vim mode isn't
         // shown while it does.
         if let Some(label) = self
@@ -205,6 +206,15 @@ impl BottomRow {
             .and_then(VimMode::label)
         {
             pieces.push(words(Joiner::Space, label, dim, None));
+        }
+        // A picked run's row shows its keys alone, as Claude Code's line under the input does
+        // while a row has the keys: the mode comes back with the input.
+        if let Some(keys) = row_keys {
+            for (at, key) in keys.split(" · ").enumerate() {
+                let joiner = if at == 0 { Joiner::Space } else { Joiner::Dot };
+                pieces.push(words(joiner, key, dim, None));
+            }
+            return (ModePieces(pieces), None);
         }
         // Claude Code's bottom line says only this in bash mode, so Esc and Enter mean one thing.
         if state.shell && !state.question_focused {
@@ -225,20 +235,6 @@ impl BottomRow {
         // A focused question holds every key but Shift+Tab and the quit keys, and its own key line
         // names Shift+Tab, so a hint here would name a key that does nothing until it lets go.
         if state.question_focused {
-            return (ModePieces(pieces), None);
-        }
-        // On a run's row, what Enter does stays longest: the way back goes first, then how to
-        // pick another.
-        if let Some(enter) = state.row_enter.filter(|_| state.panel_focused) {
-            let arrow = "↓";
-            let arrows = format!(
-                "↑ {arrow}{}to pick another",
-                crate::base::theme::glyphs::gap_after(arrow)
-            );
-            pieces.push(words(Joiner::Dot, &arrows, dim, Some(Give::CycleHint)));
-            pieces.push(words(Joiner::Dot, enter, dim, None));
-            let back = "esc to go back to the input";
-            pieces.push(words(Joiner::Dot, back, dim, Some(Give::FooterHint)));
             return (ModePieces(pieces), None);
         }
         // Claude Code leaves this off for its default mode, which hides how to leave it.
@@ -474,6 +470,36 @@ mod tests {
         };
         assert_eq!(text(mode.line(&ctx, answering)), "  ǁ supervised mode on");
         assert!(text(mode.line(&ctx, idle())).starts_with("  -- INSERT -- ǁ supervised"));
+    }
+
+    /// A picked run's row shows its keys after the vim label, without the mode or other hints;
+    /// NORMAL has no label, so the keys stand alone.
+    #[test]
+    fn a_picked_row_shows_its_keys_after_the_vim_label() {
+        let theme = theme();
+        let ctx = RenderCtx::new(100, &theme, Clock::still(Instant::now()));
+        let picked = ModeState {
+            panel_focused: true,
+            row_keys: Some("enter to view · x to stop"),
+            ..idle()
+        };
+        let insert = BottomRow {
+            vim: Some(VimMode::Insert),
+            background_agents: 3,
+            ..BottomRow::default()
+        };
+        assert_eq!(
+            text(insert.line(&ctx, picked)),
+            "  -- INSERT -- enter to view · x to stop"
+        );
+        let normal = BottomRow {
+            vim: Some(VimMode::Normal),
+            ..BottomRow::default()
+        };
+        assert_eq!(
+            text(normal.line(&ctx, picked)),
+            "  enter to view · x to stop"
+        );
     }
 
     /// As Claude Code's bash mode reads, `-- INSERT -- ! for shell mode`, with a notice still at

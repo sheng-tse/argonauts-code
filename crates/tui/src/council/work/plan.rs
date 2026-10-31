@@ -126,6 +126,26 @@ pub fn you_asked() -> Piece {
     Piece::tone("You asked", Tone::Yours)
 }
 
+/// The Why cell for a way's reason as the plan gives it: "You asked" in your blue and the rest
+/// as written, "You asked · 3 files".
+pub fn why_cell(why: &str) -> Vec<Piece> {
+    match why.strip_prefix("You asked") {
+        Some("") => vec![you_asked()],
+        Some(rest) => vec![you_asked(), Piece::text(rest)],
+        None => vec![Piece::text(why)],
+    }
+}
+
+/// What the note keeper says over who does what.
+pub const PROPOSING: &str = "As note keeper I propose who does what. Where you said how, I kept \
+it; any seat can object, and you approve.";
+
+/// How the note keeper gave out the tasks and their ways, under who does what.
+pub const RULE: &str = "Where you said how, that binds: a seat may object, only you change it. \
+For the rest: small or one file, own session. Risky, like every request, money or logins, \
+Maker-checker. Parts that share no files, one agent each. Each task goes to the seat whose idea \
+it was; code picks a checker from another maker.";
+
 /// ✘ and the objecting seat's name, then its reason, dim. A seat that objected with a tapback
 /// alone has no reason: "✘ 3.8 Flash objects".
 pub fn objection(seat: &SeatId, reason: &str, indent: &str) -> Vec<Piece> {
@@ -145,11 +165,13 @@ pub fn objection(seat: &SeatId, reason: &str, indent: &str) -> Vec<Piece> {
 }
 
 /// The who-does-what task: a row per task with its objection under it, the rule of thumb the
-/// note keeper went by (when given), and the line that says only you see who checks.
+/// note keeper went by (when given), a row per seat that sat out the rest of the talk, and the
+/// line that says only you see who checks.
 pub fn who_does_what(
     tasks: &[PlanTask],
     columns: Columns,
     rule: Option<&str>,
+    sat_out: &[SeatId],
     room: usize,
     faces: &Faces,
     theme: &Theme,
@@ -199,6 +221,14 @@ pub fn who_does_what(
             faces,
             theme,
         ));
+    }
+    for seat in sat_out {
+        rows.push(vec![
+            Piece::Badge(seat.clone()),
+            Piece::text(" "),
+            Piece::Named(seat.clone()),
+            Piece::dim(" sat out after missing two turns, so it does no task"),
+        ]);
     }
     rows.push(vec![
         Piece::tone("Only you see Checked by: ", Tone::Label),

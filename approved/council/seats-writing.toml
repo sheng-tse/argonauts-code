@@ -1,50 +1,7 @@
 # Council takes the rate limiter request, as the Council drawings send it: the main agent hands
-# it to the crew, the readings agree but for one detail, so the goal settles without a question,
-# the main agent keeps the chosen workflow, and every seat then writes its first answer until it
-# is stopped, so the screen holds still. These rules come before the default fake agents' rules,
-# which play every other request.
-
-# The comparers: one detail, and no question about scope.
-[[rule]]
-argv0 = "claude"
-args_contain = ["dontAsk"]
-prompt_contains = '"differences"'
-[[rule.step]]
-emit = '{"type":"system","subtype":"init","session_id":"sess-compare-claude","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
-[[rule.step]]
-emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-compare-claude","message":{"id":"msg-sess-compare-claude","content":[{"type":"text","text":"One difference."}]}}'
-[[rule.step]]
-emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-compare-claude","result":"One difference.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"agreements":["429 + Retry-After","limits per API key","limits survive restarts","under 5 ms p50 overhead"],"differences":[{"topic":"Retry-After units","readings":[{"label":"A","reading":"seconds"},{"label":"B","reading":"seconds"},{"label":"C","reading":"milliseconds"}],"tag":"detail","question":null}]}}'
-[[rule.step]]
-exit = 0
-
-[[rule]]
-argv0 = "codex"
-args_contain = ["exec"]
-prompt_contains = '"differences"'
-stdin_prompt = "all"
-[[rule.step]]
-emit = '{"type":"thread.started","thread_id":"thread-compare-codex"}'
-[[rule.step]]
-emit = '{"type":"turn.started"}'
-[[rule.step]]
-emit = '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"{\"agreements\":[\"429 + Retry-After\",\"limits per API key\",\"limits survive restarts\",\"under 5 ms p50 overhead\"],\"differences\":[{\"topic\":\"Retry-After units\",\"readings\":[{\"label\":\"A\",\"reading\":\"seconds\"},{\"label\":\"B\",\"reading\":\"seconds\"},{\"label\":\"C\",\"reading\":\"milliseconds\"}],\"tag\":\"detail\",\"question\":null}]}"}}'
-[[rule.step]]
-emit = '{"type":"turn.completed","usage":{"input_tokens":12,"cached_input_tokens":0,"output_tokens":20,"reasoning_output_tokens":0}}'
-[[rule.step]]
-exit = 0
-
-[[rule]]
-argv0 = "agy"
-args_contain = ["--output-format"]
-prompt_contains = '"differences"'
-stdin_prompt = "line"
-[[rule.step]]
-emit = '{"event":"init","conversation_id":"conv-compare-agy","init":{"model":"gemini-3.8-flash-low","cwd":".","tools":[]}}'
-[[rule.step]]
-emit = '{"event":"result","result":{"conversation_id":"conv-compare-agy","status":"SUCCESS","response":"{\"agreements\":[\"429 + Retry-After\",\"limits per API key\",\"limits survive restarts\",\"under 5 ms p50 overhead\"],\"differences\":[{\"topic\":\"Retry-After units\",\"readings\":[{\"label\":\"A\",\"reading\":\"seconds\"},{\"label\":\"B\",\"reading\":\"seconds\"},{\"label\":\"C\",\"reading\":\"milliseconds\"}],\"tag\":\"detail\",\"question\":null}]}","duration_seconds":1.0,"num_turns":1,"usage":{"input_tokens":12,"output_tokens":20,"thinking_tokens":0,"cache_read_tokens":0,"total_tokens":32}}}'
-[[rule.step]]
-exit = 0
+# it to the crew, and every seat then writes its first answer until it is stopped, so the screen
+# holds still. These rules come before the default fake agents' rules, which play every other
+# request.
 
 # The main agent, with its tools off, hands the request to the crew.
 [[rule]]
@@ -57,21 +14,6 @@ emit = '{"type":"system","subtype":"init","session_id":"sess-conversation-claude
 emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-conversation-claude","message":{"id":"msg-sess-conversation-claude","content":[{"type":"text","text":"A rate limiter for the public API, built and checked by the crew."}]}}'
 [[rule.step]]
 emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-conversation-claude","result":"A rate limiter for the public API, built and checked by the crew.","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"kind":"change","answer_markdown":"A rate limiter for the public API, built and checked by the crew.","estimate":{"task_type":"api-feature","summary":"Rate limit the API","files_likely":["src/middleware/rate_limit.ts","src/server.ts","test/rate_limit.test.ts"],"file_count":9,"risk_labels":["security"],"tests_exist":true,"unknowns":[]}}}'
-[[rule.step]]
-exit = 0
-
-# The main agent's design keeps the chosen workflow.
-[[rule]]
-argv0 = "claude"
-args_contain = ["dontAsk"]
-prompt_contains = 'allow_composed'
-stdin_prompt = "line"
-[[rule.step]]
-emit = '{"type":"system","subtype":"init","session_id":"sess-design-claude","cwd":".","tools":["Read","Grep","Glob"],"model":"claude-haiku-4-5"}'
-[[rule.step]]
-emit = '{"type":"assistant","parent_tool_use_id":null,"session_id":"sess-design-claude","message":{"id":"msg-sess-design-claude","content":[{"type":"text","text":"Council: every seat answers alone, then they talk until they agree"}]}}'
-[[rule.step]]
-emit = '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-design-claude","result":"Council: every seat answers alone, then they talk until they agree","total_cost_usd":0.001,"usage":{"input_tokens":12,"output_tokens":20},"structured_output":{"name":"rate-limit-the-api","description":"Rate limit the API","based_on":null,"why":"Council: every seat answers alone, then they talk until they agree","params":[],"workflow":null,"done_when":[],"plan":[],"questions":[],"first_try":null}}'
 [[rule.step]]
 exit = 0
 

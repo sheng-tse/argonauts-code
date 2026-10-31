@@ -70,7 +70,6 @@ fn templates_lists_the_workflows_and_the_prompts_and_shows_the_folder() {
         include_str!("../../../../tests/golden/transcript/templates.txt"),
         include_str!("../../../../tests/golden/transcript/templates.html"),
         &theme,
-        &[],
     );
 }
 

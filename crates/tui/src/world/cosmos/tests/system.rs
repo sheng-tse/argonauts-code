@@ -249,3 +249,33 @@ fn the_ring_marks_the_planet_picked() {
         assert!((centre.0 - at.0).abs() <= 1.5 && (centre.1 - at.1).abs() <= 1.5);
     });
 }
+
+#[test]
+fn a_suns_picture_changes_every_second_step_at_either_rate() {
+    use crate::world::deliver::clock::Rate;
+    with('R', |_, cosmos| {
+        for rate in [Rate::QUICK, Rate::STEADY] {
+            let view = View {
+                rate,
+                ..view(Level::System(HAIKU))
+            };
+            let suns: Vec<u64> = (0..16)
+                .map(|step| {
+                    let scene = cosmos.scene(&view, rate.seconds(step));
+                    let sun = scene
+                        .sprites()
+                        .iter()
+                        .find(|s| s.id == PartId::new("cosmos-sun", 0))
+                        .map(|s| s.picture.key);
+                    sun.unwrap()
+                })
+                .collect();
+            for pair in suns.chunks(2) {
+                assert_eq!(pair[0], pair[1], "{rate:?}");
+            }
+            let mut changes = suns.clone();
+            changes.dedup();
+            assert_eq!(changes.len(), 8, "{rate:?}");
+        }
+    });
+}

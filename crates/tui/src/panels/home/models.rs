@@ -11,9 +11,10 @@ use ratatui::text::Span;
 
 use super::chart::{self, Cell, LABEL_CELLS};
 use super::look::{
-    Unit, big, cli_word, dollars, model_style, model_swatch, model_word, share_tenths, short_date,
+    Unit, big, cli_word, dollars, model_swatch, model_word, share_tenths, short_date,
 };
 use super::numbers::heading;
+use crate::base::kit::legend::keyed_row;
 use crate::base::kit::logo::{ModelLabel, NoPicture};
 use crate::base::kit::{Drawn, Kit, fit, merge};
 use crate::base::text::truncate_spans;
@@ -68,10 +69,12 @@ impl Models<'_> {
         if series.is_empty() {
             return None;
         }
-        let styles: Vec<Style> = drawn_models
-            .iter()
-            .map(|model| model_style(kit, self.shades, &model.agent, model.model.as_deref()))
-            .collect();
+        let styles: Vec<Style> = self.shades.line_styles(
+            kit,
+            drawn_models
+                .iter()
+                .map(|model| (model.agent.as_str(), model.model.as_deref())),
+        );
         let mut drawn = Drawn::new();
         drawn.push(vec![heading("Tokens per Day")]);
         for (label, cells) in chart::plot(&series, CHART_HEIGHT).rows {
@@ -86,21 +89,16 @@ impl Models<'_> {
             drawn.push(truncate_spans(&merge(row), width));
         }
         drawn.push(truncate_spans(&[kit.dim(dates(&days))], width));
-        let mut legend = Vec::new();
-        for (at, model) in drawn_models.iter().enumerate() {
-            if at > 0 {
-                legend.push(kit.dim(" · "));
-            }
+        let legend = keyed_row(drawn_models.iter().zip(&styles).map(|(model, style)| {
             let label = self.label(kit, &model.agent, model.model.as_deref());
-            legend.extend(label.logo);
-            legend.push(model_swatch(
-                kit,
-                self.shades,
-                &model.agent,
-                model.model.as_deref(),
-            ));
-            legend.push(Span::raw(label.name));
-        }
+            let mut entry = vec![
+                Span::styled(kit.glyphs.across.repeat(2), *style),
+                Span::raw(" "),
+            ];
+            entry.extend(label.logo);
+            entry.push(Span::raw(label.name));
+            entry
+        }));
         drawn.push(truncate_spans(&legend, width));
         Some(drawn)
     }
@@ -152,8 +150,7 @@ impl Models<'_> {
         drawn
     }
 
-    /// A model's name after the logo of whoever serves it, as Stats names its models. Where
-    /// logos don't draw, the swatch after it marks the model alone.
+    /// A model's name after the logo of whoever serves it, as Stats names its models.
     fn label(&self, kit: &Kit<'_>, agent: &str, id: Option<&str>) -> ModelLabel {
         let logo = logo_for(agent, id);
         ModelLabel::named(

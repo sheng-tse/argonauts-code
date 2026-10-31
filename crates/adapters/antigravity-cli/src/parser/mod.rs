@@ -8,6 +8,7 @@ pub(crate) mod subagents;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
+use argonauts_core::base::clock;
 use argonauts_core::base::names::AgentId;
 use argonauts_core::models::limits::{PlanUsageReading, PlanUsageSource, PlanUsageStatus};
 use argonauts_core::runs::events::session::SubagentStatus;
@@ -15,7 +16,6 @@ use argonauts_core::{AgentEvent, ErrorCategory, RetryReason, StreamParser};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
-use time::OffsetDateTime;
 
 use crate::ADAPTER_ID;
 use crate::parser::errors::{
@@ -545,7 +545,7 @@ fn plan_usage_spent(error: &AgyError) -> Option<AgentEvent> {
             resets_at: None,
             window,
             source: PlanUsageSource::ErrorMessage,
-            observed_at: OffsetDateTime::now_utc(),
+            observed_at: clock::now_utc(),
             detail: Some(json!({"message": error.message})),
             wrap_up: false,
         },

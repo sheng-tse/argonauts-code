@@ -123,9 +123,12 @@ fn by_role(view: &mut OverviewView, state: &AppState) {
 /// ↓ from wherever the keys are, through the sub-tabs, into the cards. A letter that regroups
 /// has put them there already.
 fn into_the_cards(view: &mut OverviewView, state: &AppState) {
-    while view.level() != Level::Cards {
-        key(view, state, KeyCode::Down);
+    for _ in 0..2 {
+        if view.level() != Level::Cards {
+            key(view, state, KeyCode::Down);
+        }
     }
+    assert_eq!(view.level(), Level::Cards, "the cards have rows to go into");
 }
 
 #[test]
@@ -177,10 +180,10 @@ fn by_cli_puts_every_cli_together_then_each_by_itself_then_who_did_what() {
     assert!(rows[cards].contains("○ agy"), "{rows:#?}");
     assert!(rows[cards].contains("2.9M tok"), "{rows:#?}");
     for (text, beside) in [
-        ("35 tasks", "Max · ~$7.90"),
-        ("28 tasks · 14 reviews", "Plus · $2.75"),
+        ("35 tasks", "Pro · ~$7.90"),
+        ("28 tasks · 14 reviews", "Pro · $2.75"),
         // A judge's sign-offs count as its CLI's reviews.
-        ("63 reviews", "Pro · ~$0.55"),
+        ("63 reviews", "Ultra · ~$0.55"),
         ("Opus 5.5", "2.1M · 24"),
         ("GPT 5.6 Luna", "0.35M · 7"),
         ("Gemini 3.6 Flash", "0.12M · 14"),
@@ -579,6 +582,101 @@ fn before_any_work_the_tab_says_so() {
     ));
 }
 
+/// With nothing recorded, or the numbers not read yet, the cards have no rows: ↓, Enter and the
+/// letters that regroup leave the keys on By CLI, By model and By role, where ←→ still move,
+/// and the key line offers no ↓ into the cards. With the crew's work in, ↓ goes in as before.
+#[test]
+fn with_no_rows_below_the_keys_stay_on_the_sub_tabs() {
+    let empty = UsageSummary {
+        stats: Some(CrewStats::default()),
+        ..sample::usage_with_stats()
+    };
+    for usage in [sample::usage(), empty] {
+        let state = state(usage);
+        let mut tab = stats_tab();
+        key(&mut tab, &state, KeyCode::Down);
+        assert_eq!(tab.level(), Level::SubTabs);
+        let keys = rows(&mut tab, &state, 120);
+        let keys = keys.iter().rev().find(|row| !row.is_empty()).unwrap();
+        assert!(!keys.contains('↓'), "{keys}");
+        for code in [KeyCode::Down, KeyCode::Enter, KeyCode::Char('m')] {
+            key(&mut tab, &state, code);
+            assert_eq!(tab.level(), Level::SubTabs, "{code:?}");
+        }
+        let about = |tab: &mut OverviewView| rows(tab, &state, 120)[2].clone();
+        assert!(about(&mut tab).contains("Every model the crew used"), "m");
+        key(&mut tab, &state, KeyCode::Right);
+        assert!(about(&mut tab).contains("Every role in the crew"), "→");
+    }
+    let state = state(sample::usage_with_stats());
+    let mut tab = stats_tab();
+    key(&mut tab, &state, KeyCode::Down);
+    let keys = rows(&mut tab, &state, 120);
+    let keys = keys.iter().rev().find(|row| !row.is_empty()).unwrap();
+    assert!(keys.contains("↓  into the table"), "{keys}");
+    key(&mut tab, &state, KeyCode::Down);
+    assert_eq!(tab.level(), Level::Cards);
+}
+
+/// Where a row of who did what starts its bar or its logo, inside the frame and after the
+/// label: the label ends at its first two blanks, and a row with no label starts with blanks.
+fn after_label(row: &str) -> Option<(usize, usize)> {
+    let cells: Vec<char> = row.chars().collect();
+    let frame = cells.iter().position(|cell| *cell == '│')? + 2;
+    let end = cells.iter().rposition(|cell| *cell == '│')?;
+    let inner = cells.get(frame..end)?;
+    let label = (0..inner.len())
+        .find(|at| inner[*at..].starts_with(&[' ', ' ']))
+        .unwrap_or(inner.len());
+    let starts = (label..inner.len()).find(|at| inner[*at] != ' ')?;
+    Some((label, starts))
+}
+
+/// Who did what writes each role's name over what it did. In the crew shaped like a real
+/// machine's, `main` over `26 conversations` holds its longest label, so every bar and logo
+/// starts in one column four blanks after it, at every real width.
+#[test]
+fn who_did_what_gives_its_labels_room_for_their_second_line() {
+    let crew = sample::crew_like();
+    let state = crew.state();
+    for real in argonauts_testkit::screen::REAL_SIZES {
+        let mut tab = OverviewView::new(
+            Tab::Stats,
+            UsageWatch::default(),
+            crate::panels::view::NoConfig::boxed(),
+        )
+        .at(crew.now)
+        .with_period(crew.usage.period);
+        let shown = rows_in(&mut tab, &state, Size::new(real.cols, 200));
+        let title = at(&shown, "◆ who did what");
+        let card: Vec<&String> = (shown[title + 1..].iter())
+            .take_while(|row| !row.contains('╰'))
+            .collect();
+        let starts: Vec<(usize, usize, &String)> = (card.iter())
+            .filter_map(|row| after_label(row).map(|(label, starts)| (label, starts, *row)))
+            .collect();
+        let column = starts.first().map(|(_, starts, _)| *starts);
+        for (label, starts, row) in &starts {
+            assert_eq!(
+                Some(*starts),
+                column,
+                "{real}: one column: {row}\n{card:#?}"
+            );
+            assert!(starts - label >= 4, "{real}: four blanks after: {row}");
+        }
+        let main = (starts.iter())
+            .find(|(_, _, row)| row.contains("conversations"))
+            .unwrap_or_else(|| panic!("{real}: main's second line: {card:#?}"));
+        let longest = starts.iter().map(|(label, ..)| label).max();
+        assert_eq!(
+            Some(&main.0),
+            longest,
+            "{real}: the longest label: {card:#?}"
+        );
+        assert_eq!(main.1 - main.0, 4, "{real}: just four blanks: {}", main.2);
+    }
+}
+
 /// A CLI whose last plan read failed says so, in the Usage tab's words, rather than that it was
 /// never read.
 #[test]
@@ -892,6 +990,40 @@ fn shift(view: &mut OverviewView, state: &AppState, code: KeyCode) -> ViewOutcom
         now: Instant::now(),
     };
     view.handle_key(KeyEvent::new(code, KeyModifiers::SHIFT), &ctx)
+}
+
+#[test]
+fn a_period_key_pressed_before_the_first_numbers_wins_over_the_files() {
+    let mut all = sample::usage_with_stats();
+    all.period = UsagePeriod::All;
+    let mut week = sample::usage_with_stats();
+    week.period = UsagePeriod::Week;
+    let weeks_card = "◆ all together  this week";
+    for order in [[&all, &week], [&week, &all]] {
+        let mut tab = OverviewView::new(
+            Tab::Stats,
+            UsageWatch::default(),
+            crate::panels::view::NoConfig::boxed(),
+        )
+        .at(sample::now())
+        .with_stats_period_from_file();
+        let waiting = AppState::default();
+        let shown = rows(&mut tab, &waiting, 120);
+        assert!(has(&shown, "Reading the crew's stats…"), "{shown:#?}");
+        assert!(matches!(
+            key(&mut tab, &waiting, KeyCode::Char('2')),
+            ViewOutcome::Request(ViewRequest::Usage {
+                period: UsagePeriod::Week
+            })
+        ));
+        // The file sets All, and its numbers coming first or last never take the week back.
+        for usage in order {
+            let shown = rows(&mut tab, &state(usage.clone()), 120);
+            assert!(!has(&shown, "the crew's work through"), "{shown:#?}");
+        }
+        let shown = rows(&mut tab, &state(week.clone()), 120);
+        assert!(has(&shown, weeks_card), "{shown:#?}");
+    }
 }
 
 /// The week's numbers, from a stats file that sets the week, so the page's preview draws

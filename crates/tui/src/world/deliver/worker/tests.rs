@@ -130,8 +130,9 @@ fn a_picture_being_packed_asks_every_sixteen_rows_whether_to_go_on() {
     assert_eq!(asked.load(Ordering::Relaxed), 4);
 }
 
-/// A job that panics ends its own drawing alone: its key is free again, the worker says so,
-/// the panic is known for what it is while it unwinds, and the next drawing goes on.
+/// A job that panics ends its own drawing alone: its key is free again, the worker says so
+/// and gives what it said once, the panic is known for what it is while it unwinds, and the
+/// next drawing goes on.
 #[test]
 fn a_job_that_panics_ends_its_drawing_and_the_next_goes_on() {
     for worker in [Worker::threaded(), Worker::in_line()] {
@@ -141,6 +142,11 @@ fn a_job_that_panics_ends_its_drawing_and_the_next_goes_on() {
         });
         wait_for(|| !worker.busy());
         assert!(worker.failed());
+        assert_eq!(
+            worker.take_failure().as_deref(),
+            Some("a drawing that breaks")
+        );
+        assert_eq!(worker.take_failure(), None);
         assert!(!panicking_in_a_drawing());
         worker.draw(1, |_| Some("again"));
         worker.draw(2, |_| Some("after"));
@@ -168,6 +174,25 @@ fn a_threaded_worker_wakes_the_screen_once_its_drawings_are_done() {
     wait_for(|| arrivals.has_changed().unwrap_or(false));
     arrivals.borrow_and_update();
     assert_eq!(worker.take(), [(1, "one"), (2, "two")]);
+}
+
+/// A job that panics wakes the screen too, so it can say what went wrong, whatever the job
+/// said in its panic.
+#[test]
+fn a_job_that_panics_wakes_the_screen_to_tell_of_it() {
+    let mut arrivals = arrivals();
+    arrivals.borrow_and_update();
+    let worker = Worker::threaded();
+    let part = 3;
+    worker.draw(1, move |_| -> Option<&str> {
+        panic!("part {part} has no pixels")
+    });
+    wait_for(|| !worker.busy());
+    wait_for(|| arrivals.has_changed().unwrap_or(false));
+    assert_eq!(
+        worker.take_failure().as_deref(),
+        Some("part 3 has no pixels")
+    );
 }
 
 #[test]

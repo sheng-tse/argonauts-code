@@ -235,7 +235,7 @@ impl Chip<'_> {
         spans
     }
 
-    /// `5h ▄▄▄▄▄▄  93% resets 4:40pm  7d ▄▄▄▁▁▁  56%` for the CLI in use or one near its
+    /// `5h ▄▄▄▄▄▁  93% resets 4:40pm  7d ▄▄▄▁▁▁  56%` for the CLI in use or one near its
     /// limit, `7d ▄▁▁▁▁▁  11%` for another. The fuller window is never given up.
     fn bars(&self, fine: Fine) -> Vec<Span<'static>> {
         let cli = self.cli;

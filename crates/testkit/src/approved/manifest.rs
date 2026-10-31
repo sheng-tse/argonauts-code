@@ -1,9 +1,10 @@
 //! `approved/MANIFEST.toml`: each drawing with the release it was approved for, its approval's
 //! number and its hash, how the app is brought to its screen, the test that holds its cells when
-//! the real app can't draw them from the fake CLIs, and the cells a screen may draw otherwise,
-//! each with the approval that allows it.
+//! the real app can't draw them from the fake CLIs, the decision that approved a state at one
+//! of its two sizes for now, why a drawing the app can't draw yet sits out of the comparison,
+//! and the cells a screen may draw otherwise, each with the approval that allows it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path};
 use std::time::Duration;
 
@@ -12,11 +13,21 @@ use serde::Deserialize;
 
 use super::drawing::{Drawing, size_of};
 use crate::pty::{Key, Pty};
+use crate::screen::{REAL_SIZES, Size};
 
 pub const MANIFEST: &str = "MANIFEST.toml";
 
-/// The project's folder under `HOME` that the drawings' headers name, `~/github/argonauts-code`.
-pub const DRAWN_FOLDER: &str = "github/argonauts-code";
+/// The project's folder under `HOME` that the drawings' headers name, `~/code/tasks-api`.
+pub const DRAWN_FOLDER: &str = "code/tasks-api";
+
+/// The cell, in pixels, the drawings are drawn at, which the runner's terminal reports: the
+/// shape the Behaviors map sizes its picture for when a terminal doesn't say (tui's
+/// `ASSUMED_CELL`).
+pub const DRAWN_CELL: (u16, u16) = (17, 43);
+
+/// The instant the drawings' screens are drawn at, in the time zone they write times in. The
+/// panel tests draw at it too.
+pub const DRAWN_AT: &str = "2026-10-20T08:40:00-04:00";
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -50,15 +61,43 @@ pub struct Entry {
     /// drawing names another than [`DRAWN_FOLDER`].
     #[serde(default)]
     pub folder: Option<String>,
+    /// The instant the app's time starts at, RFC 3339, when the drawing is drawn at another than
+    /// [`DRAWN_AT`]. Its offset is the time zone the screen writes times in.
+    #[serde(default)]
+    pub clock: Option<String>,
+    /// Whether the terminal shows pictures, as Ghostty does. `false` plays a terminal with no
+    /// picture protocol, where the app draws its maps in braille.
+    #[serde(default = "shows_pictures")]
+    pub pictures: bool,
+    /// Whether the project is a git repository. `false` starts the app in a folder git has
+    /// never seen.
+    #[serde(default = "is_a_repository")]
+    pub git: bool,
     /// What brings the app from its start to the drawn screen.
     #[serde(default)]
     pub steps: Vec<Step>,
-    /// The test that holds the drawing's cells, `<file from the workspace root>::<test>`, for a
-    /// screen whose figures the real app can't reach from the fake CLIs. The app is then only
-    /// brought to the screen its steps name, and the test compares the cells.
+    /// The decision that approved this state at its one size for now, where every other state
+    /// is drawn at both of [`DRAWN_SIZES`]. It goes once the other size is drawn.
     #[serde(default)]
-    pub held_by: Option<String>,
+    pub one_size: Option<u32>,
+    /// Why the app doesn't draw this screen yet. The drawings runner leaves a held drawing out
+    /// unless it is picked by name.
+    #[serde(default)]
+    pub held: Option<Held>,
 }
+
+/// A drawing the app can't draw yet, which the drawings runner leaves out until it can.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Held {
+    /// The number of the approval that lets it wait.
+    pub approval: u32,
+    /// What the app doesn't draw yet, and what it waits for.
+    pub why: String,
+}
+
+/// The sizes every state is drawn at: 120 × 38 and 177 × 40.
+pub const DRAWN_SIZES: [Size; 2] = [REAL_SIZES[0], REAL_SIZES[1]];
 
 /// One step towards a drawn screen.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -70,6 +109,9 @@ pub enum Step {
     Send(String),
     /// Presses a key by its name ([`key_named`]).
     Press(String),
+    /// Moves the mouse, no button held, to this column and row from 0, as the terminal reports
+    /// a move once the app asks for every one.
+    Point([u16; 2]),
 }
 
 /// Cells of a drawing a screen draws otherwise, and the approval that allows it.
@@ -86,10 +128,23 @@ pub struct Departure {
     pub approval: u32,
 }
 
+fn shows_pictures() -> bool {
+    true
+}
+
+fn is_a_repository() -> bool {
+    true
+}
+
 impl Entry {
     /// Where the app's project sits under `HOME` for this drawing's screen.
     pub fn folder(&self) -> &str {
         self.folder.as_deref().unwrap_or(DRAWN_FOLDER)
+    }
+
+    /// The instant the app's time starts at for this drawing's screen.
+    pub fn clock(&self) -> &str {
+        self.clock.as_deref().unwrap_or(DRAWN_AT)
     }
 }
 
@@ -113,8 +168,9 @@ impl Manifest {
 
     /// What is wrong with the manifest and the drawings in `dir`, each in a sentence: a drawing
     /// that is missing, unlisted, unreadable or changed since its hash; a project folder
-    /// outside the home; a step that can't run; a holding test that isn't a test in the
-    /// workspace around `dir`; a departure that names no drawing's cells or no approval.
+    /// outside the home; a step that can't run; a held drawing with no approval or no reason; a
+    /// state drawn at one size without the decision that allows it, or at both with one; a
+    /// departure that names no drawing's cells or no approval.
     pub fn problems(&self, dir: &Path) -> Vec<String> {
         let mut problems = Vec::new();
         let mut listed = BTreeSet::new();
@@ -129,6 +185,7 @@ impl Manifest {
                     .map(|p| format!("{file}: {p}")),
             );
         }
+        problems.extend(size_problems(&self.drawings));
         for file in drawing_files(dir) {
             if !listed.contains(file.as_str()) {
                 problems.push(format!("{file} isn't listed in {MANIFEST}"));
@@ -169,6 +226,45 @@ impl Manifest {
     }
 }
 
+/// Each state is drawn at both of [`DRAWN_SIZES`], or at one with `one_size` naming the decision
+/// that approved it so, so a state that loses a size is noticed.
+fn size_problems(drawings: &[Entry]) -> Vec<String> {
+    let mut states: BTreeMap<&str, Vec<&Entry>> = BTreeMap::new();
+    for entry in drawings {
+        let state = entry
+            .file
+            .rsplit_once('@')
+            .map_or(entry.file.as_str(), |(state, _)| state);
+        states.entry(state).or_default().push(entry);
+    }
+    let mut problems = Vec::new();
+    for (state, entries) in states {
+        let drawn: BTreeSet<(u16, u16)> = entries
+            .iter()
+            .filter_map(|entry| size_of(&entry.file))
+            .filter(|&(cols, rows)| DRAWN_SIZES.contains(&Size::new(cols, rows)))
+            .collect();
+        let both = drawn.len() == DRAWN_SIZES.len();
+        for entry in entries {
+            let file = &entry.file;
+            match (both, entry.one_size) {
+                (false, None) => problems.push(format!(
+                    "{file}: {state} is drawn at one size, and no `one_size` names the decision \
+                     that approved it so"
+                )),
+                (true, Some(_)) => problems.push(format!(
+                    "{file}: {state} is drawn at both sizes, so its `one_size` goes"
+                )),
+                (false, Some(0)) => problems.push(format!(
+                    "{file}: `one_size` needs the number of its decision"
+                )),
+                _ => {}
+            }
+        }
+    }
+    problems
+}
+
 fn entry_problems(entry: &Entry, dir: &Path) -> Vec<String> {
     let mut problems = Vec::new();
     if entry.release.trim().is_empty() {
@@ -176,6 +272,15 @@ fn entry_problems(entry: &Entry, dir: &Path) -> Vec<String> {
     }
     if entry.approval == 0 {
         problems.push("no approval number".to_owned());
+    }
+    if let Some(held) = &entry.held {
+        if held.approval == 0 {
+            problems
+                .push("a held drawing needs the number of the approval that holds it".to_owned());
+        }
+        if held.why.trim().is_empty() {
+            problems.push("a held drawing says what the app doesn't draw yet".to_owned());
+        }
     }
     let path = dir.join(&entry.file);
     match std::fs::read(&path) {
@@ -217,12 +322,6 @@ fn entry_problems(entry: &Entry, dir: &Path) -> Vec<String> {
             ));
         }
     }
-    if let Some(held_by) = &entry.held_by {
-        let workspace = dir.parent().unwrap_or(dir);
-        if let Err(problem) = holding_test(workspace, held_by) {
-            problems.push(format!("its holding test, {held_by}, {problem}"));
-        }
-    }
     for step in &entry.steps {
         match step {
             Step::Wait(pattern) => {
@@ -233,46 +332,10 @@ fn entry_problems(entry: &Entry, dir: &Path) -> Vec<String> {
             Step::Press(name) if key_named(name).is_none() => {
                 problems.push(format!("no key is named {name:?}"));
             }
-            Step::Press(_) | Step::Send(_) => {}
+            Step::Press(_) | Step::Send(_) | Step::Point(_) => {}
         }
     }
     problems
-}
-
-/// Checks that `held_by`, `<file>::<test>`, names a test function in that file under
-/// `workspace`, one that runs with the suite rather than only on `--ignored`.
-fn holding_test(workspace: &Path, held_by: &str) -> Result<(), String> {
-    let (file, test) = held_by
-        .rsplit_once("::")
-        .ok_or("isn't written <file>::<test>")?;
-    let inside = Path::new(file)
-        .components()
-        .all(|part| matches!(part, Component::Normal(_)));
-    if !inside || test.is_empty() {
-        return Err("isn't written <file>::<test>, the file from the workspace root".to_owned());
-    }
-    let source = std::fs::read_to_string(workspace.join(file))
-        .map_err(|err| format!("can't be read: {err}"))?;
-    let lines: Vec<&str> = source.lines().collect();
-    let named = format!("fn {test}(");
-    let at = lines
-        .iter()
-        .position(|line| line.contains(&named))
-        .ok_or("names no function in its file")?;
-    // What stands between the item before and the function: its attributes and comments.
-    let attributes: Vec<&str> = lines[..at]
-        .iter()
-        .rev()
-        .map(|line| line.trim())
-        .take_while(|line| !line.is_empty() && !line.ends_with(['{', '}', ';']))
-        .collect();
-    if !attributes.iter().any(|line| line.starts_with("#[test]")) {
-        return Err("isn't a #[test]".to_owned());
-    }
-    if attributes.iter().any(|line| line.starts_with("#[ignore")) {
-        return Err("is ignored, so the suite never runs it".to_owned());
-    }
-    Ok(())
 }
 
 /// Every file under `dir` named as a drawing, `<panel>/<state>@<cols>x<rows>.txt`, as a path
@@ -351,52 +414,124 @@ pub fn reach(pty: &mut Pty, steps: &[Step], wait: Duration) -> anyhow::Result<()
                 let key = key_named(name).ok_or_else(|| anyhow!("no key is named {name:?}"))?;
                 pty.press(key)?;
             }
+            Step::Point([col, row]) => pty.send_at_once(&pointer_moved(*col, *row))?,
         }
     }
     Ok(())
 }
 
+/// The SGR report of the mouse moving with no button held to `col`, `row` from 0: button 3,
+/// plus 32 for a move, and 1-based cells.
+fn pointer_moved(col: u16, row: u16) -> String {
+    format!("\x1b[<35;{};{}M", col + 1, row + 1)
+}
+
 #[cfg(test)]
-mod holding_tests {
+mod pointer_tests {
+    #[test]
+    fn a_move_is_reported_from_cell_one_with_no_button() {
+        assert_eq!(super::pointer_moved(0, 0), "\x1b[<35;1;1M");
+        assert_eq!(super::pointer_moved(30, 12), "\x1b[<35;31;13M");
+    }
+}
+
+#[cfg(test)]
+mod size_tests {
     use super::*;
 
-    const HELD: &str = "#[cfg(test)]\nmod tests {\n    #[test]\n    fn draws_it() {}\n\n    \
-                        #[test]\n    #[ignore = \"slow\"]\n    fn draws_it_slowly() {}\n\n    \
-                        fn helper() {}\n}\n";
-
-    fn workspace() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("crates/tui/src")).unwrap();
-        std::fs::write(dir.path().join("crates/tui/src/drawn_tests.rs"), HELD).unwrap();
-        dir
+    fn rows(rows: &[(&str, Option<u32>)]) -> Vec<Entry> {
+        let text: String = rows
+            .iter()
+            .map(|(file, one_size)| {
+                let one_size = one_size
+                    .map(|n| format!("one_size = {n}\n"))
+                    .unwrap_or_default();
+                format!(
+                    "[[drawing]]\nfile = \"{file}\"\nrelease = \"0.2.1\"\napproval = 1\n\
+                     hash = \"\"\n{one_size}"
+                )
+            })
+            .collect();
+        toml::from_str::<Manifest>(&text).unwrap().drawings
     }
 
     #[test]
-    fn a_holding_test_is_a_test_the_suite_runs() {
-        let dir = workspace();
-        let at = |name: &str| {
-            holding_test(
-                dir.path(),
-                &format!("crates/tui/src/drawn_tests.rs::{name}"),
-            )
-        };
-        assert_eq!(at("draws_it"), Ok(()));
-        assert_eq!(
-            at("draws_it_slowly"),
-            Err("is ignored, so the suite never runs it".to_owned())
+    fn a_state_at_one_size_names_the_decision_that_approved_it_so() {
+        let both = [
+            ("limits/now@120x38.txt", None),
+            ("limits/now@177x40.txt", None),
+        ];
+        assert!(size_problems(&rows(&both)).is_empty());
+        assert!(size_problems(&rows(&[("stats/week@120x38.txt", Some(362))])).is_empty());
+        let lost = size_problems(&rows(&[("limits/now@120x38.txt", None)]));
+        assert_eq!(lost.len(), 1, "{lost:?}");
+        assert!(lost[0].contains("drawn at one size"), "{lost:?}");
+        let no_number = size_problems(&rows(&[("stats/week@120x38.txt", Some(0))]));
+        assert!(no_number[0].contains("needs the number"), "{no_number:?}");
+    }
+
+    #[test]
+    fn a_state_at_both_sizes_has_no_one_size() {
+        let kept = [
+            ("limits/now@120x38.txt", Some(362)),
+            ("limits/now@177x40.txt", None),
+        ];
+        let problems = size_problems(&rows(&kept));
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].contains("so its `one_size` goes"),
+            "{problems:?}"
         );
-        assert_eq!(at("helper"), Err("isn't a #[test]".to_owned()));
-        assert_eq!(at("draws"), Err("names no function in its file".to_owned()));
+        // A size of its own, like 80 × 24, is neither of the two.
+        let small = size_problems(&rows(&[("limits/now@80x24.txt", None)]));
+        assert_eq!(small.len(), 1, "{small:?}");
+    }
+}
+
+#[cfg(test)]
+mod held_tests {
+    use super::*;
+
+    fn row(held: &str) -> anyhow::Result<Entry> {
+        let text = format!(
+            "[[drawing]]\nfile = \"limits/now@120x38.txt\"\nrelease = \"0.2.1\"\napproval = 1\n\
+             hash = \"\"\n{held}"
+        );
+        let mut drawings = toml::from_str::<Manifest>(&text)?.drawings;
+        Ok(drawings.remove(0))
+    }
+
+    fn held_problems(entry: &Entry) -> Vec<String> {
+        entry_problems(entry, Path::new(""))
+            .into_iter()
+            .filter(|problem| problem.contains("held"))
+            .collect()
     }
 
     #[test]
-    fn a_holding_test_names_its_file_inside_the_workspace() {
-        let dir = workspace();
-        let at = |held_by: &str| holding_test(dir.path(), held_by);
-        assert!(at("draws_it").is_err());
-        assert!(at("../outside.rs::draws_it").is_err());
-        assert!(at("crates/tui/src/drawn_tests.rs::").is_err());
-        let gone = at("crates/tui/src/gone.rs::draws_it").unwrap_err();
-        assert!(gone.starts_with("can't be read"), "{gone}");
+    fn a_held_drawing_names_its_approval_and_what_it_waits_for() {
+        let held = row("held = { approval = 374, why = \"\"\"\\\n  Waits for its fakes.\"\"\" }\n")
+            .unwrap();
+        let expected = Held {
+            approval: 374,
+            why: "Waits for its fakes.".to_owned(),
+        };
+        assert_eq!(held.held, Some(expected));
+        assert!(
+            held_problems(&held).is_empty(),
+            "{:?}",
+            held_problems(&held)
+        );
+        assert_eq!(row("").unwrap().held, None);
+
+        let unnumbered =
+            held_problems(&row("held = { approval = 0, why = \"Waits.\" }\n").unwrap());
+        assert_eq!(unnumbered.len(), 1, "{unnumbered:?}");
+        assert!(unnumbered[0].contains("needs the number"), "{unnumbered:?}");
+        let unsaid = held_problems(&row("held = { approval = 374, why = \" \" }\n").unwrap());
+        assert_eq!(unsaid.len(), 1, "{unsaid:?}");
+        assert!(unsaid[0].contains("doesn't draw yet"), "{unsaid:?}");
+        assert!(row("held = { why = \"Waits.\" }\n").is_err());
+        assert!(row("held = \"Waits.\"\n").is_err());
     }
 }

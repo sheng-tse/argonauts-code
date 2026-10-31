@@ -287,6 +287,26 @@ fn spellings<'a>(sources: &'a Sources<'_>) -> BTreeMap<ModelKey<'a>, Option<Stri
         .collect()
 }
 
+/// A record's tokens as the Overview sums them.
+pub(crate) fn record_tokens(record: &Record) -> Tokens {
+    Tokens {
+        input: record.input,
+        output: record.output,
+        cache_read: record.cache_read,
+        cache_write: record.cache_write,
+    }
+}
+
+/// A ledger line's tokens as the Overview sums them: its input counts the cached part too.
+pub(crate) fn line_tokens(line: &LedgerLine) -> Tokens {
+    Tokens {
+        input: line.input.saturating_sub(line.cached),
+        output: line.output,
+        cache_read: line.cached,
+        cache_write: 0,
+    }
+}
+
 /// The records of the CLIs the import read, and the ledger's lines for every other CLI, each
 /// model under the spelling `spelled` gives it.
 fn entries<'a>(
@@ -314,12 +334,7 @@ fn entries<'a>(
                     Some(record.model.as_str()).filter(|model| !model.is_empty()),
                 ),
                 folder: &record.folder,
-                tokens: Tokens {
-                    input: record.input,
-                    output: record.output,
-                    cache_read: record.cache_read,
-                    cache_write: record.cache_write,
-                },
+                tokens: record_tokens(record),
                 session: format!("{}:{}", record.cli, record.session),
                 subagent: record.subagent,
                 paid: None,
@@ -342,12 +357,7 @@ fn entries<'a>(
             agent: &line.agent,
             model: spelled(&line.agent, line.model.as_deref()),
             folder: &line.repo,
-            tokens: Tokens {
-                input: line.input.saturating_sub(line.cached),
-                output: line.output,
-                cache_read: line.cached,
-                cache_write: 0,
-            },
+            tokens: line_tokens(line),
             session,
             subagent: false,
             paid: line.billing.map(|billing| Paid {
