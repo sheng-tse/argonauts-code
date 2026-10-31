@@ -95,10 +95,11 @@ pub enum Body {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Inset {
     Rows(Vec<Vec<Piece>>),
-    /// The note keeper's proposal: its rows, then your ways, which bind, wrapped way by way to
-    /// the bubble under "Yours, binding: ".
+    /// The note keeper's proposal: its head row, its points, then your ways, which bind,
+    /// wrapped way by way to the bubble under "Yours, binding: ".
     Proposal {
-        rows: Vec<Vec<Piece>>,
+        head: Vec<Piece>,
+        points: Vec<ProposalPoint>,
         yours: Vec<Vec<Piece>>,
     },
     /// Who does what, with the rule of thumb the note keeper went by.
@@ -106,6 +107,8 @@ pub enum Inset {
         tasks: Vec<PlanTask>,
         columns: Columns,
         rule: Option<String>,
+        /// The seats that sat out the rest of the talk, so they do no task.
+        sat_out: Vec<SeatId>,
     },
 }
 
@@ -114,8 +117,16 @@ impl Inset {
     pub fn rows(&self, room: usize, faces: &Faces, theme: &Theme) -> Vec<Vec<Piece>> {
         match self {
             Inset::Rows(rows) => rows.clone(),
-            Inset::Proposal { rows, yours } => {
-                let mut all = rows.clone();
+            Inset::Proposal {
+                head,
+                points,
+                yours,
+            } => {
+                let inside = room.saturating_sub(INSET_PAD);
+                let mut all = vec![head.clone()];
+                for point in points {
+                    all.extend(point.rows(inside, faces, theme));
+                }
                 all.extend(binding(yours, room, faces, theme));
                 all
             }
@@ -123,10 +134,12 @@ impl Inset {
                 tasks,
                 columns,
                 rule,
+                sat_out,
             } => who_does_what(
                 tasks,
                 *columns,
                 rule.as_deref(),
+                sat_out,
                 room.min(PLAN_ROOM),
                 faces,
                 theme,
@@ -137,6 +150,55 @@ impl Inset {
 
 /// The widest the plan's task gets.
 const PLAN_ROOM: usize = 85;
+
+/// The cells an inset's own padding takes from the bubble's words.
+const INSET_PAD: usize = 2;
+
+/// One point of the proposal: its mark, then its ways, each ending with the seats that
+/// took it. A point the answers agree on has one way.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProposalPoint {
+    pub mark: Piece,
+    pub ways: Vec<Vec<Piece>>,
+}
+
+impl ProposalPoint {
+    /// The point on one row when it fits in `room` cells. Otherwise its first way wraps under its
+    /// own words, and each other way starts a row of its own with "or", under the first.
+    fn rows(&self, room: usize, faces: &Faces, theme: &Theme) -> Vec<Vec<Piece>> {
+        let mut one = vec![self.mark.clone()];
+        for (i, way) in self.ways.iter().enumerate() {
+            if i > 0 {
+                one.push(Piece::dim("   or   "));
+            }
+            one.extend(way.iter().cloned());
+        }
+        if super::words::width(&one, faces, theme) <= room {
+            return vec![one];
+        }
+        let hang = super::words::width(std::slice::from_ref(&self.mark), faces, theme);
+        let mut rows = Vec::new();
+        for (i, way) in self.ways.iter().enumerate() {
+            let opening = if i == 0 {
+                vec![self.mark.clone()]
+            } else {
+                vec![Piece::text(" ".repeat(hang)), Piece::dim("or  ")]
+            };
+            let indent = super::words::width(&opening, faces, theme);
+            let wrapped = super::words::wrap(way, room.saturating_sub(indent), faces, theme);
+            for (j, mut row) in wrapped.into_iter().enumerate() {
+                let start = if j == 0 {
+                    opening.clone()
+                } else {
+                    vec![Piece::text(" ".repeat(indent))]
+                };
+                row.splice(0..0, start);
+                rows.push(row);
+            }
+        }
+        rows
+    }
+}
 
 /// Your ways as the proposal lists them: "❯  Yours, binding: " and then each way, " · " between
 /// two on a row. A way that doesn't fit starts the next row, under the first way.

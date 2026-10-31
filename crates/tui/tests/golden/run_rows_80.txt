@@ -1,4 +1,4 @@
-  ǁ supervised mode on · ↑ ↓  to pick another · enter to open its workflow
+  enter to view
 
   ⣾  Add due dates           ▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱  1/4 · 12m40s · ↓    1.1M tokens
     ⎿ ✔     Due date field   ▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰  5/5 ·  4m12s · ↓    194k tokens

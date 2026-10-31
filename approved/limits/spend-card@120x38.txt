@@ -21,41 +21,41 @@ text
  │ ██  Gemini 3.8 Flash (Low)    ￼￼ agy           ~$0.20    2%    0.20M                                               │
  │ ██  GPT 6 Luna                ￼￼ Codex         ~$0.07    1%    1.47M                                               │
  │ ▚▚  Gemma4 E2B                ￼￼ OpenCode       local    0%    0.09M                                               │
- │ ██  Qwen3 Coder 30B (64k)     ￼￼ OpenCode       local    0%    1.43M                                               │
+ │ ██  Qwen3 Coder 30B           ￼￼ OpenCode       local    0%    1.43M                                               │
  │                                                                                                                    │
  │ on plans ~$7.93 (inside your plans, not charged) · on API keys $0.00 · local $0.00 · ~ estimated at list prices    │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 paint
 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-.bbbbbbbb...cccccccc....cccccc....cccccc....ccccc....ccccccc...deeeeeed...ccccc.................fffff..ffff..fffff..ggg
-.ffff.ffffff.ffffff.fff.ffffff.fff.fff....................................................ffffff.ff.fff.f.ffffff.ffffff
+.bbbbbbbb...cccccccc....cccccc....cccccc....ccccc....ccccccc...deeeeeed...ccccc.................ccccc..cccc..ccccc..fff
+.gggg.gggggg.gggggg.ggg.gggggg.ggg.ggg....................................................gggggg.gg.ggg.g.gggggg.gggggg
 
 .hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh
-.h.a.iiiii..ff.fff................................................................iiiiii.f.ff.fffff.fff.f.iiiii.fffff.h
+.h.a.iiiii..gg.ggg................................................................iiiiii.g.gg.ggggg.ggg.g.iiiii.ggggg.h
 .h....................................................................................................................h
 .h.jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjkkkkkkkkkkkkkkkkkkkkkkjjjjjjkkkkklllk.h
 .h....................................................................................................................h
-.h.....fffff........................ff.............fffff.........ffffff....f...f...m...f...f...f...f..................h
-.h.jj..cccc.ccc..................nn.ffffff.ffff....iiiii...fff....ccccc...fffffff.fffff.ffff.ffff.....................h
-.h.kk..ccc.c.ccccc...............oo.fffff.........iiiiii...fff....ccccc...............................................h
-.h.jj..ccccc.ccc.................nn.ffffff.ffff...iiiiii....ff....ccccc...............................................h
-.h.kk..ccc.ccc.ccc...............oo.fffff.........iiiiii....ff....ccccc...............................................h
-.h.ll..cccccc.ccc.ccccc.ccccc....pp.fff...........iiiiii....ff....ccccc...............................................h
-.h.kk..ccc.c.cccc................oo.fffff.........iiiiii....ff....ccccc...............................................h
-.h.qq..cccccc.ccc................rr.ffffffff.......fffff....ff....ccccc...............................................h
-.h.qq..ccccc.ccccc.ccc.ccccc.....rr.ffffffff.......fffff....ff....ccccc...............................................h
+.h.....ggggg........................gg.............ggggg.........gggggg....g...g...m...g...g...g...g..................h
+.h.jj..cccc.ccc..................nn.gggggg.gggg....iiiii...ggg....ccccc...ggggggg.ggggg.gggg.gggg.....................h
+.h.kk..ccc.c.ccccc...............oo.ggggg.........iiiiii...ggg....ccccc...............................................h
+.h.jj..ccccc.ccc.................nn.gggggg.gggg...iiiiii....gg....ccccc...............................................h
+.h.kk..ccc.ccc.ccc...............oo.ggggg.........iiiiii....gg....ccccc...............................................h
+.h.ll..cccccc.ccc.ccccc.ccccc....pp.ggg...........iiiiii....gg....ccccc...............................................h
+.h.kk..ccc.c.cccc................oo.ggggg.........iiiiii....gg....ccccc...............................................h
+.h.qq..cccccc.ccc................rr.gggggggg.......ggggg....gg....ccccc...............................................h
+.h.qq..ccccc.ccccc.ccc...........rr.gggggggg.......ggggg....gg....ccccc...............................................h
 .h....................................................................................................................h
-.h.ff.fffff.iiiiii.fffffff.ffff.ffffff.fff.ffffffff.f.ff.fff.ffff.iiiii.f.fffff.iiiii.f.f.fffffffff.ff.ffff.ffffff....h
+.h.gg.ggggg.iiiiii.ggggggg.gggg.gggggg.ggg.gggggggg.g.gg.ggg.gggg.iiiii.g.ggggg.iiiii.g.g.ggggggggg.gg.gggg.gggggg....h
 .hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh
 key
 . blank
 a fg=#b1b9f9  ; Code, Question, BarFill, CatMcp
 b fg=#c8d3f5 bold  ; the terminal's own
 c fg=#c8d3f5  ; the terminal's own
-d bg=#b1b9f9  ; Code, Question, BarFill, CatMcp
-e fg=#14161f bg=#b1b9f9 bold  ; BadgeText, on Code, on Question, on BarFill, on CatMcp
-f fg=#999999  ; Dim, ModeSupervised, SyntaxComment
-g fg=#b1b9f9 bold  ; Code, Question, BarFill, CatMcp
+d bg=#fb923c  ; AgentOrange
+e fg=#14161f bg=#fb923c bold  ; BadgeText, on AgentOrange
+f fg=#b1b9f9 bold  ; Code, Question, BarFill, CatMcp
+g fg=#999999  ; Dim, ModeSupervised, SyntaxComment
 h fg=#4f5468  ; ModBorder
 i fg=#ffffff bold  ; Bright
 j fg=#f7a07f  ; CliClaude

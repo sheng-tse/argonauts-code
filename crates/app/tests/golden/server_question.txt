@@ -3,9 +3,9 @@
  Ollama answers at http://localhost:11434/v1. Use one of its models to review your crew's work? It reads the change in
  its prompt, with no tools, and runs on this machine.                                                                 
                                                                                                                       
- ❯ 1. Qwen3 Coder 30B 64K (recommended)                                                                               
+ ❯ 1. Sample Coder 30B 64K (recommended)                                                                              
    2. Not now                                                                                                         
-   3. Gemma3 12B 32K                                                                                                  
+   3. Sample Gemma 12B 32K                                                                                            
                                                                                                                       
  Enter to choose                                                                                                      
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────

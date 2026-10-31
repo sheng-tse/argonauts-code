@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use super::{Grown, Look};
 use crate::world::cosmos::HomeShot;
+use crate::world::deliver::clock::Rate;
 use crate::world::map::fields::{Look as GroundLook, Rgb};
 use crate::world::map::land::{Compared, Texture, Tint};
 use crate::world::map::motion::Flashes;
@@ -238,9 +239,17 @@ impl PlanetLook {
         shot
     }
 
-    /// The planet facing `facing`, its clouds apart where they drift, and what the pointer
-    /// finds on it.
+    /// The pictures its turn holds in a scene `size` px at the world's `rate`.
+    pub fn turn_steps(&self, size: (usize, usize), rate: Rate) -> u32 {
+        self.spin.steps(&self.planet, size, CloudsIn::Apart, rate)
+    }
+
+    /// The planet facing the nearest of its turn's steps to `facing`, its clouds apart where
+    /// they drift, and what the pointer finds on it.
     pub fn scene(&mut self, facing: Facing) -> Scene {
+        let view = facing
+            .view
+            .on_steps(self.turn_steps(facing.size, facing.moment.rate));
         let weather: Vec<&dyn planet_fx::Weather> =
             self.weather.iter().map(|thing| thing.as_ref()).collect();
         let standing: Vec<&dyn Standing> = self
@@ -249,7 +258,7 @@ impl PlanetLook {
             .map(|thing| thing as &dyn Standing)
             .collect();
         let shot = Shot {
-            view: facing.view,
+            view,
             side: facing.side,
             size: facing.size,
             clouds: CloudsIn::Apart,
@@ -259,9 +268,7 @@ impl PlanetLook {
             sky: facing.sky.as_ref(),
         };
         let mut scene = self.spin.scene(&self.planet, &shot);
-        scene.hits = self
-            .planet
-            .hits(facing.view, facing.size, &self.marks, &standing);
+        scene.hits = self.planet.hits(view, facing.size, &self.marks, &standing);
         scene
     }
 }

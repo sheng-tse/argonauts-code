@@ -1,0 +1,73 @@
+Context, agy the main session before the first message on a very first run, on a model whose window no list gives: every figure kept, with – for each one that needs the window
+screen 177x40
+at ?,0
+size 177x25
+terminal fg=#c8d3f5 bg=#222436
+text
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats
+ What fills each session's context                                                                                                                                     none open
+
+     Context Usage
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ￼￼ 3.6 Pro
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   gemini-3.6-pro
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~5.4k/– tokens (–)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   Estimated usage by category
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ agy's own prompt and tools: ~4.2k tokens (–)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Instruction files: ~1.2k tokens (–)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Free space: – (–)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~ from our recording of agy 1.4.4 and from this machine
+                                               agy's own count replaces it when its first step ends.
+                                               No list gives Gemini 3.6 Pro's window yet, so it shows –.
+
+ ╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ ◆ context                                                                                                                                     ~5.4k of – · estimated     –  │
+ │                                                                                                                                                                             │
+ │                                                                                                                                                                             │
+ │ ▌ agy's own prompt and tools   ~4.2k     –      ▌ Instruction files   ~1.2k     –      ▌ Free space   –     –                                                               │
+ ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ tab · ←  →  tabs · ↓  into the list · enter opens one · esc closes
+paint
+.aaaaaaaa...bbbbbbbb....bbbbbb....bbbbbb....bbbbb...cdddddddc...bbbbbb....bbbbb
+.eeee.eeeee.eeee.eeeeeeeee.eeeeeee.....................................................................................................................................eeee.eeee
+
+.....aaaaaaa.aaaaa
+.....e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e...ff.bbb.bbb
+.....e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e...eeeeeeeeeeeeee
+.....e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e...eeeeeee.eeeeee.eee
+.....e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e
+.....e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e...ggggggggg.ggggg.gg.gggggggg
+.....e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e...h.bbbbb.bbb.bbbbbb.bbb.bbbbbb.eeeee.eeeeee.eee
+.....e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e...i.bbbbbbbbbbb.bbbbbb.eeeee.eeeeee.eee
+.....e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e...e.bbbb.bbbbbb.e.eee
+.....e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e
+.....e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e.e...e.eeee.eee.eeeeeeeee.ee.eee.eeeee.eee.eeee.eeee.eeeeeee
+...............................................eeeee.eee.eeeee.eeeeeeee.ee.eeee.eee.eeeee.eeee.eeeee
+...............................................ee.eeee.eeeee.eeeeee.eee.eeeee.eeeeee.eeee.ee.ee.eeeee.ee
+
+.jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj
+.j.k.lllllll.....................................................................................................................................lllll.ee.e.e.eeeeeeeee.....e..j
+.j.mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm.j
+.j.............................................................................................................................................................................j
+.j.h.bbbbb.bbb.bbbbbb.bbb.bbbbb...lllll.....e......i.bbbbbbbbbbb.bbbbb...lllll.....e......n.bbbb.bbbbb...l.....e...............................................................j
+.jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj
+
+.eee.e.e..e..eeee.e.e..eeee.eee.eeee.e.eeeee.eeeee.eee.e.eee.eeeeee
+key
+. blank
+a fg=#c8d3f5 bold  ; the terminal's own
+b fg=#c8d3f5  ; the terminal's own
+c bg=#fb923c
+d fg=#14161f bg=#fb923c bold  ; BadgeText
+e fg=#999999  ; Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment
+f logo=antigravity
+g fg=#999999 italic  ; Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment
+h fg=#888888  ; Rule
+i fg=#d77757
+j fg=#4f5468  ; ModBorder
+k fg=#e6a23c  ; Accent, CatBrief
+l fg=#ffffff bold  ; Bright
+m bg=#3a3f55  ; CatFree
+n fg=#3a3f55  ; CatFree

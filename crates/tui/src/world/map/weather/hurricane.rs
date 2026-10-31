@@ -6,7 +6,7 @@ use std::f64::consts::PI;
 
 use super::Pad;
 use crate::world::map::fields::{Rgb, byte, mix_rgb};
-use crate::world::map::motion::{HURRICANE_DEGREES, Moment};
+use crate::world::map::motion::{HURRICANE, HURRICANE_DEGREES, Moment};
 use crate::world::map::nature::Hurricane;
 use crate::world::map::relief::FORESHORTEN;
 use crate::world::raster::noise::{fbm3, smooth};
@@ -64,16 +64,28 @@ pub fn seed(behavior: usize, storm: &Hurricane) -> f64 {
     (behavior + 3 * storm.category as usize) as f64
 }
 
-/// How far a hurricane has turned at a moment, in radians clockwise on the screen: 12° a second
-/// for each category, in steps of 7.5°, anticlockwise in the north and clockwise in the south.
+/// How far a hurricane has turned at a moment, in its frames: 12° a second for each category,
+/// a frame each 180° over its frames (7.5° at 8 steps a second), back to 0 each half turn, which
+/// its two arms make look like a whole one. Held still, 0.
+pub fn frame(storm: &Hurricane, moment: Moment) -> u32 {
+    let Moment::At { t, rate } = moment else {
+        return 0;
+    };
+    let frames = HURRICANE.at(rate).frames;
+    let degrees = HURRICANE_DEGREES * f64::from(storm.category) * t;
+    let turned = (degrees / 180.0 * f64::from(frames) + 1e-9).floor() as u64;
+    (turned % u64::from(frames)) as u32
+}
+
+/// How far a hurricane has turned at a moment, in radians clockwise on the screen, a frame at a
+/// time: anticlockwise in the north and clockwise in the south.
 pub fn angle(storm: &Hurricane, moment: Moment) -> f64 {
-    let Moment::At(t) = moment else {
+    let Moment::At { rate, .. } = moment else {
         return 0.0;
     };
-    let degrees = HURRICANE_DEGREES * f64::from(storm.category) * t;
-    let stepped = (degrees / 7.5).floor() * 7.5;
+    let step = PI / f64::from(HURRICANE.at(rate).frames);
     let sense = if storm.south { 1.0 } else { -1.0 };
-    sense * (stepped % 180.0) * PI / 180.0
+    sense * f64::from(frame(storm, moment)) * step
 }
 
 /// Draws a hurricane's cloud, or its shade, centred at (x, y) on the map, turned by `angle` and

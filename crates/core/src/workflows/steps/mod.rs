@@ -27,6 +27,7 @@ use crate::agents::session_runner::{
     RunnerError, RunnerEvent, SessionControl, SessionRunner, SessionSpec,
 };
 use crate::base::future::BoxFuture;
+use crate::models::meter::LimitDimension;
 use crate::runs::events::session::{EndReason, SessionEnd, loaded_words};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -178,6 +179,12 @@ fn ended_early(end: &SessionEnd) -> String {
             format!("it loaded {}", loaded_words(plugins, skills))
         }
         EndReason::ModelUnavailable { model } => format!("{model} isn't available"),
+        EndReason::LimitHit { dimension } => match dimension {
+            LimitDimension::Minutes => "it ran past its time limit",
+            LimitDimension::Spend => "it used up its spend limit",
+            LimitDimension::ToolCalls => "it used up its tool call limit",
+        }
+        .to_owned(),
         other => serde_json::to_value(other)
             .ok()
             .and_then(|value| value.get("why").and_then(Value::as_str).map(str::to_owned))
@@ -605,6 +612,12 @@ mod tests {
         assert_eq!(
             ended(EndReason::ContextFull),
             "the session ended early: context full"
+        );
+        assert_eq!(
+            ended(EndReason::LimitHit {
+                dimension: crate::models::meter::LimitDimension::Minutes
+            }),
+            "the session ended early: it ran past its time limit"
         );
         // A CLI's error gives the one plain cause every other line gives.
         assert_eq!(

@@ -5,12 +5,12 @@ size 118x29
 terminal fg=#c8d3f5 bg=#222436
 text
 ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ ◆ context                                                                    32.3k of 1M · compacts at 967k    3%  │
+│ ◆ context                                                                    28.8k of 1M · compacts at 967k    3%  │
 │    ▎▎▎▎▎▎                                                                                                     ▏    │
 │                                                                                                                    │
-│ ▌ System prompt             4.4k   0.4%      ▌ System tools   19.4k   1.9%      ▌ MCP tools    705  0.1%           │
-│ ▌ MCP server instructions    960   0.1%      ▌ Memory files     503   0.1%      ▌ Skills      6.4k  0.6%           │
-│ ▌ Messages                    10  <0.1%      ▌ Free space      935k  93.5%                                         │
+│ ▌ System prompt             4.4k   0.4%      ▌ System tools   19.4k   1.9%      ▌ MCP tools   2.1k  0.2%           │
+│ ▌ MCP server instructions    318  <0.1%      ▌ Memory files     503   0.1%      ▌ Skills      2.1k  0.2%           │
+│ ▌ Messages                    10  <0.1%      ▌ Free space      938k  93.8%                                         │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
@@ -38,8 +38,8 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 a.b.ccccccc....................................................................ccccc.dd.dd.d.dddddddd.dd.dddd...effe.a
 a.ghhijklmnooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooopqqq.a
 a....................................................................................................................a
-a.r.ssssss.ssssss.............cccc...dddd......d.ssssss.sssss...ccccc...dddd......t.sss.sssss....ccc..dddd...........a
-a.u.sss.ssssss.ssssssssssss....ccc...dddd......v.ssssss.sssss.....ccc...dddd......w.ssssss......cccc..dddd...........a
+a.r.ssssss.ssssss.............cccc...dddd......d.ssssss.sssss...ccccc...dddd......t.sss.sssss...cccc..dddd...........a
+a.u.sss.ssssss.ssssssssssss....ccc..ddddd......v.ssssss.sssss.....ccc...dddd......w.ssssss......cccc..dddd...........a
 a.x.ssssssss....................cc..ddddd......y.ssss.sssss......cccc..ddddd.........................................a
 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
@@ -68,19 +68,19 @@ key
 a fg=#4f5468  ; ModBorder
 b fg=#e6a23c  ; Accent, CatBrief
 c fg=#ffffff bold  ; Bright
-d fg=#999999  ; Dim, ModeSupervised, SyntaxComment
-e bg=#4eba65  ; Success, CatAgents
-f fg=#14161f bg=#4eba65 bold  ; BadgeText, on Success, on CatAgents
+d fg=#999999  ; Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment
+e bg=#4eba65  ; Success, CatAgents, Success, CatAgents, Success, CatAgents, Success, CatAgents
+f fg=#14161f bg=#4eba65 bold  ; BadgeText, on Success, on CatAgents, on Success, on CatAgents, on Success, on CatAgents, on Success, on CatAgents
 g bg=#888888  ; Rule
-h bg=#999999  ; Dim, ModeSupervised, SyntaxComment
-i fg=#999999 bg=#0a91b3  ; Dim, ModeSupervised, SyntaxComment
+h bg=#999999  ; Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment
+i fg=#999999 bg=#0a91b3  ; Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment, Dim, ModeSupervised, SyntaxComment
 j fg=#0a91b3 bg=#17a34a
 k fg=#17a34a bg=#d77757
 l fg=#d77757 bg=#ffc109
 m fg=#ffc109 bg=#827dbd
 n fg=#827dbd bg=#3a3f55  ; on CatFree
 o bg=#3a3f55  ; CatFree
-p fg=#ffc107 bg=#262a3a  ; Warn, ModeAuto, Tick, on Held
+p fg=#ffc107 bg=#262a3a  ; Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, on Held
 q bg=#262a3a  ; Held
 r fg=#888888  ; Rule
 s fg=#c8d3f5  ; the terminal's own
@@ -109,11 +109,11 @@ O bg=#22d3ee  ; AgentCyan
 P fg=#60a5fa  ; AgentBlue
 Q fg=#c084fc  ; AgentPurple
 R fg=#22d3ee  ; AgentCyan
-S fg=#4eba65 bg=#ffc107  ; Success, CatAgents, on Warn, on ModeAuto, on Tick
-T bg=#ffc107  ; Warn, ModeAuto, Tick
-U fg=#ffc107 bg=#ff6b80  ; Warn, ModeAuto, Tick, on Danger, on ModeAutopilot
-V bg=#ff6b80  ; Danger, ModeAutopilot
-W fg=#ff6b80 bg=#505370  ; Danger, ModeAutopilot, on BarTrack
-X fg=#4eba65  ; Success, CatAgents
-Y fg=#ffc107  ; Warn, ModeAuto, Tick
-Z fg=#ff6b80  ; Danger, ModeAutopilot
+S fg=#4eba65 bg=#ffc107  ; Success, CatAgents, Success, CatAgents, Success, CatAgents, Success, CatAgents, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick, on Warn, on ModeAuto, on Tick
+T bg=#ffc107  ; Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick
+U fg=#ffc107 bg=#ff6b80  ; Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, on Danger, on ModeAutopilot, on Danger, on ModeAutopilot, on Danger, on ModeAutopilot, on Danger, on ModeAutopilot
+V bg=#ff6b80  ; Danger, ModeAutopilot, Danger, ModeAutopilot, Danger, ModeAutopilot, Danger, ModeAutopilot
+W fg=#ff6b80 bg=#505370  ; Danger, ModeAutopilot, Danger, ModeAutopilot, Danger, ModeAutopilot, Danger, ModeAutopilot, on BarTrack
+X fg=#4eba65  ; Success, CatAgents, Success, CatAgents, Success, CatAgents, Success, CatAgents
+Y fg=#ffc107  ; Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick, Warn, ModeAuto, Tick
+Z fg=#ff6b80  ; Danger, ModeAutopilot, Danger, ModeAutopilot, Danger, ModeAutopilot, Danger, ModeAutopilot

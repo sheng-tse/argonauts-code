@@ -5,7 +5,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 
 use argonauts_core::behaviors::behavior_world::{
-    CliFailure, MixedRun, ModelBehavior, ModelFacts, ModelPair, NewerModel,
+    CliFailure, MODEL_LOOP_LENGTH, MixedRun, ModelBehavior, ModelFacts, ModelPair, NewerModel,
 };
 use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::settings::Settings;
@@ -14,8 +14,6 @@ use time::{Duration, OffsetDateTime};
 use super::super::read::{Outcome, Recorded};
 use super::{Read, behavior_of};
 
-/// A model doing a behavior this many times in a row or more loops on it.
-const IN_A_ROW: usize = 4;
 /// A run that began this long before the end, or less, is recent enough to fly as a comet.
 const RECENT_RUN: Duration = Duration::DAY;
 
@@ -183,7 +181,7 @@ fn follow(
         .filter(|recorded| recorded.behavior.is_labelled())
         .collect();
     for run in labelled.chunk_by(|a, b| a.behavior == b.behavior) {
-        if run.len() >= IN_A_ROW
+        if run.len() >= MODEL_LOOP_LENGTH
             && let Some(done) = behaviors
                 .get_mut(&busiest_model(run))
                 .and_then(|done| done.get_mut(&behavior_of(run[0])))

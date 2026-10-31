@@ -1,12 +1,10 @@
-use std::time::{Duration, Instant};
-
 use argonauts_core::app::model_picker::{EffortLine, EffortSlider, UltracodeToggle};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::{Picker, PickerRow, RowPart, VISIBLE_ROWS};
 use crate::base::draw::layout::cut;
-use crate::base::draw::render::{Clock, RenderCtx};
+use crate::base::draw::render::RenderCtx;
 use crate::base::kit::logo::{LOGO_BEFORE, ModelLabel, NoPicture, logo_before};
 use crate::base::kit::{Kit, bars, merge};
 use crate::base::text::marks::decorative;
@@ -1060,12 +1058,6 @@ const METER_CELLS: usize = 6;
 const GAUGE_CELLS: usize = 52;
 /// A gauge shorter than this says too little to be worth drawing.
 const MIN_GAUGE: usize = 12;
-/// How long the gauge takes to reach a newly pointed row.
-const GAUGE_SPRING: Duration = Duration::from_millis(200);
-const GAUGE_FRAME: Duration = Duration::from_millis(33);
-/// How stiff the spring is: critically damped, so it settles without overshooting, nearly
-/// there by the end of [`GAUGE_SPRING`].
-const GAUGE_STIFFNESS: f64 = 30.0;
 
 /// A column of a picker's cells.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -1201,41 +1193,12 @@ pub struct Gauge {
     pub words: String,
     /// After the words, in the warning colour: "3 GB more than is free now".
     pub short: Option<String>,
-    /// Where the bar's ends were when the pointer moved, and when, so the bar springs to its
-    /// new ends rather than jumping.
-    pub moved: Option<(f64, f64, Instant)>,
 }
 
 impl Gauge {
-    /// This gauge, springing from where `before` stands at `now`.
-    pub fn moving_from(mut self, before: &Gauge, now: Instant) -> Self {
-        let (fits, needs) = before.ends_at(now, false);
-        if (fits, needs) != (self.fits, self.needs) {
-            self.moved = Some((fits, needs, now));
-        }
-        self
-    }
-
-    /// Where the ends stand at `now`: on their way from where they were, or where they are.
-    fn ends_at(&self, now: Instant, still: bool) -> (f64, f64) {
-        let Some((fits, needs, at)) = self.moved.filter(|_| !still) else {
-            return (self.fits, self.needs);
-        };
-        let elapsed = now.saturating_duration_since(at);
-        if elapsed >= GAUGE_SPRING {
-            return (self.fits, self.needs);
-        }
-        let t = elapsed.as_secs_f64() * GAUGE_STIFFNESS;
-        let eased = 1.0 - (1.0 + t) * (-t).exp();
-        (
-            fits + (self.fits - fits) * eased,
-            needs + (self.needs - needs) * eased,
-        )
-    }
-
-    fn springing(&self, now: Instant) -> bool {
-        self.moved
-            .is_some_and(|(_, _, at)| now.saturating_duration_since(at) < GAUGE_SPRING)
+    /// The bar alone, `cells` long, at its ends: for a gauge drawn in a panel's own rows.
+    pub fn spans(&self, kit: &Kit<'_>, cells: usize) -> Vec<Span<'static>> {
+        gauge_bar(kit, self.fits, self.needs, cells)
     }
 
     fn line(&self, ctx: &RenderCtx<'_>) -> Line<'static> {
@@ -1259,8 +1222,7 @@ impl Gauge {
             Span::raw("  "),
         ];
         if cells >= MIN_GAUGE {
-            let (fits, needs) = self.ends_at(ctx.clock.now, theme.reduced_motion);
-            spans.extend(gauge_bar(&Kit::new(theme), fits, needs, cells));
+            spans.extend(gauge_bar(&Kit::new(theme), self.fits, self.needs, cells));
             spans.push(Span::raw("  "));
         }
         spans.push(Span::styled(words, theme.style(Role::Text)));
@@ -1341,13 +1303,4 @@ struct Place {
     index: usize,
     at: usize,
     width: usize,
-}
-
-impl Picker {
-    /// When the picker next changes by itself: while the gauge springs to a new row.
-    pub fn next_change(&self, clock: &Clock, theme: &Theme) -> Option<Instant> {
-        let gauge = self.gauge.as_ref()?;
-        (!theme.reduced_motion && gauge.springing(clock.now))
-            .then(|| clock.next_frame_at(GAUGE_FRAME))
-    }
 }

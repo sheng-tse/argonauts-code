@@ -20,7 +20,7 @@
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ❯ 
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  ⏵⏵ autopilot on · ↑ ↓  to pick another · enter to open its workflow · esc to go back to the input
+  enter to view · x to stop
 
 ❯ ⣾  Fix the money rounding                ▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱  2/5 · 1m40s · ↓  31k tokens
   $ npm test -- --watch  · shell · 3m02s

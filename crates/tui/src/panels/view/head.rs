@@ -13,9 +13,8 @@ use crate::base::theme::Role;
 use crate::frame::view::ViewCtx;
 use crate::panels::cards::period_words;
 use crate::panels::context;
-use crate::panels::stats::behaviors;
 use crate::panels::view::periods;
-use crate::panels::view::subtabs::{Level, TAB_GAP, chosen, chosen_sub_tab};
+use crate::panels::view::subtabs::{Level, TAB_GAP, chosen, chosen_word, unchosen};
 
 impl OverviewView {
     /// `Overview  Status  [Usage]  Context  Limits  Stats`, and on a usage tab the periods at
@@ -26,13 +25,10 @@ impl OverviewView {
         let mut left = vec![Span::styled(" Settings", kit.bold(Role::Text))];
         for tab in Tab::ALL {
             left.push(Span::raw(TAB_GAP));
-            // Config's search box and rows belong to its tab, so it stays lit while they
-            // have the keys.
-            let lit = self.level() == Level::Tabs || tab == Tab::Config;
             left.push(if tab == self.tab {
-                chosen(kit, tab.title(), lit)
+                chosen(kit, tab.title(), self.level() == Level::Tabs)
             } else {
-                Span::raw(format!(" {} ", tab.title()))
+                unchosen(tab.title())
             });
         }
         let mut right = Vec::new();
@@ -73,9 +69,9 @@ impl OverviewView {
                 spans.push(Span::raw(TAB_GAP));
             }
             spans.push(if index == at {
-                chosen_sub_tab(kit, &name, self.level().moves_sub_tabs())
+                chosen(kit, &name, self.level().moves_sub_tabs())
             } else {
-                kit.dim(format!(" {name} "))
+                unchosen(&name)
             });
         }
         spans
@@ -109,13 +105,13 @@ impl OverviewView {
             let mut row = vec![Span::raw(" ")];
             row.extend(self.home.about(kit, &ctx.state.names, width - 1));
             if self.home.on_behaviors() {
-                let tab = &self.home.behaviors;
-                let keys_here =
-                    self.level() == Level::Cards && tab.stop() == behaviors::Stop::Groupings;
+                // The map and its list are the groupings' content, so the groupings keep the
+                // orange while the keys are anywhere in them.
+                let keys_here = self.level() == Level::Cards;
                 let right = first_fitting(
                     spans_width(&row) + 1,
                     width,
-                    grouping_choices(kit, tab.request.grouping, keys_here),
+                    grouping_choices(kit, self.home.behaviors.request.grouping, keys_here),
                 );
                 return spread(row, right, width);
             }
@@ -152,7 +148,10 @@ impl OverviewView {
                     None => run,
                 })
             }
-            Tab::Context => Some(context::summary(&self.context.as_ref()?.rows)),
+            Tab::Context => Some(context::summary(
+                self.context.as_ref()?,
+                ctx.state.conversation.context.as_ref(),
+            )),
             _ => {
                 let usage = self.usage(ctx)?;
                 let tokens = usage.total.total_tokens();
@@ -167,8 +166,9 @@ impl OverviewView {
     }
 }
 
-/// Periods side by side at the right of the tabs, the one shown bold in the accent, as the
-/// usage tabs and Behaviors draw theirs.
+/// Periods side by side at the right of the tabs, the one shown bold in lavender, as the usage
+/// tabs and Behaviors draw theirs. `r` changes them, never the arrows, so the keys are never on
+/// their row.
 fn period_choices(kit: &Kit<'_>, words: &[(&str, bool)]) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     for (at, (word, shown)) in words.iter().enumerate() {
@@ -176,9 +176,9 @@ fn period_choices(kit: &Kit<'_>, words: &[(&str, bool)]) -> Vec<Span<'static>> {
             spans.push(Span::raw("  "));
         }
         spans.push(if *shown {
-            Span::styled(word.to_string(), kit.bold(Role::Question))
+            chosen_word(kit, *word, false)
         } else {
-            kit.dim(word.to_string())
+            Span::raw(word.to_string())
         });
     }
     spans.push(Span::raw(" "));

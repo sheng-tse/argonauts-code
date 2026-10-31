@@ -84,7 +84,7 @@ pub(crate) fn facts(
     let (behaviors, moves) = per_behavior::facts(&read);
     let models = models::facts(&read, names);
     WorldFacts {
-        end: period.end,
+        end: period.local(period.end),
         behaviors,
         moves,
         crew: crew::facts(&read, zone),

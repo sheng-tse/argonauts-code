@@ -415,7 +415,10 @@ impl FilePlanUsageBoard {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         match why {
             Some(why) => {
-                failed.insert(agent_id.0.clone(), (why, OffsetDateTime::now_utc()));
+                failed.insert(
+                    agent_id.0.clone(),
+                    (why, argonauts_core::base::clock::now_utc()),
+                );
             }
             None => {
                 failed.remove(&agent_id.0);
@@ -547,7 +550,7 @@ impl PlanUsageBoard for FilePlanUsageBoard {
         self.signed
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(agent_id.0.clone(), OffsetDateTime::now_utc());
+            .insert(agent_id.0.clone(), argonauts_core::base::clock::now_utc());
     }
 
     /// Runs this board's prober for `agent`, else the registered one, and records each window
@@ -653,7 +656,7 @@ pub async fn probe_at_start(
         .filter(|agent_id| board.get(agent_id).is_some() || !board.windows(agent_id).is_empty())
         .cloned()
         .collect();
-    let since = OffsetDateTime::now_utc() - stale_after;
+    let since = argonauts_core::base::clock::now_utc() - stale_after;
     probe_each(board, &AgentsStore::new(home), &stale, since).await
 }
 
@@ -690,7 +693,7 @@ async fn probe_unless_since(
 /// Claims the next probe of `agent` under the file lock, so two processes never probe it
 /// together. Says whether this caller won.
 fn claim_probe(store: &AgentsStore, agent_id: &AgentId, since: OffsetDateTime) -> bool {
-    let now = OffsetDateTime::now_utc();
+    let now = argonauts_core::base::clock::now_utc();
     // A time ahead of now means the clock was set back, and it holds nothing off.
     let recent = |at: OffsetDateTime| since <= at && at <= now;
     let claimed = store.update(|file| {
@@ -758,13 +761,13 @@ impl PlanUsageWatch {
             tokio::select! {
                 end = &mut ended => break end,
                 _ = checks.tick(), if in_flight.is_none() => {
-                    let since = OffsetDateTime::now_utc() - self.every;
+                    let since = argonauts_core::base::clock::now_utc() - self.every;
                     in_flight = Some(Box::pin(self.probe_unless_since(since)));
                 }
                 () = finish(&mut in_flight) => in_flight = None,
             }
         };
-        let ended_at = OffsetDateTime::now_utc();
+        let ended_at = argonauts_core::base::clock::now_utc();
         // Sent or dropped before the last probe, so the handle never waits for it. The probe
         // runs even when nobody holds the handle anymore.
         match end {
@@ -922,7 +925,11 @@ mod tests {
                 .trim()
                 .parse()
                 .ok()?;
-            Some(reading("probe-fake", used, OffsetDateTime::now_utc()))
+            Some(reading(
+                "probe-fake",
+                used,
+                argonauts_core::base::clock::now_utc(),
+            ))
         }
         fn parse_plan_usage_probe_answer(&self, stdout: &str) -> Option<PlanUsageAnswer> {
             if let Some(error) = stdout.lines().find_map(|line| line.strip_prefix("error=")) {
@@ -994,7 +1001,7 @@ mod tests {
         let paths = Paths::new(home.path());
         let board = FilePlanUsageBoard::new(&paths);
         let codex = agent_id("codex");
-        let t = OffsetDateTime::now_utc();
+        let t = argonauts_core::base::clock::now_utc();
         board.observe(window("codex", "five_hour", 0.92, t));
         board.observe(window("codex", "weekly", 0.41, t));
         board.observe(window(
@@ -1027,7 +1034,7 @@ mod tests {
     fn an_old_agents_json_reads_as_one_window() {
         let home = tempfile::tempdir().unwrap();
         let paths = Paths::new(home.path());
-        let t = OffsetDateTime::now_utc();
+        let t = argonauts_core::base::clock::now_utc();
         let old = serde_json::json!({"agent_ids": {"codex": {
             "plan_usage": reading("codex", 0.7, t), "health": null}}});
         std::fs::create_dir_all(home.path()).unwrap();
@@ -1063,7 +1070,7 @@ mod tests {
         let app = FilePlanUsageBoard::new(&paths);
         let run_host = FilePlanUsageBoard::new(&paths);
         let codex = agent_id("codex");
-        let t = OffsetDateTime::now_utc();
+        let t = argonauts_core::base::clock::now_utc();
         assert_eq!(app.get(&codex), None);
         assert!(app.all().is_empty());
 
@@ -1141,7 +1148,7 @@ mod tests {
         // stands as the CLI's own: the account may have changed since.
         let kept = board.live(&cli).unwrap();
         assert_eq!(kept.account.as_deref(), Some("one@example.com"));
-        let now = OffsetDateTime::now_utc();
+        let now = argonauts_core::base::clock::now_utc();
         assert!(!kept.current_at(now, board.doubted_at(&cli)));
         assert!(argonauts_core::models::plan_usage::current_live(&board, &cli, now).is_none());
 
@@ -1155,16 +1162,16 @@ mod tests {
         answers("account=one@example.com\nused=0.5\ndone\n");
         assert!(board.probe(&cli).await.is_some());
         assert_eq!(board.failed(&cli), None);
-        let now = OffsetDateTime::now_utc();
+        let now = argonauts_core::base::clock::now_utc();
         assert!(argonauts_core::models::plan_usage::current_live(&board, &cli, now).is_some());
 
         // Signing in again casts the same doubt until the next reading.
         board.doubt(&cli);
-        let now = OffsetDateTime::now_utc();
+        let now = argonauts_core::base::clock::now_utc();
         assert!(argonauts_core::models::plan_usage::current_live(&board, &cli, now).is_none());
         answers("account=two@example.com\nused=0.1\ndone\n");
         assert!(board.probe(&cli).await.is_some());
-        let now = OffsetDateTime::now_utc();
+        let now = argonauts_core::base::clock::now_utc();
         let live = argonauts_core::models::plan_usage::current_live(&board, &cli, now).unwrap();
         assert_eq!(live.account.as_deref(), Some("two@example.com"));
     }
@@ -1505,7 +1512,7 @@ mod tests {
         let app = FilePlanUsageBoard::new(&paths).with_prober(&quiet, failing.clone());
         let run_host = FilePlanUsageBoard::new(&paths).with_prober(&quiet, failing);
         let store = AgentsStore::new(&paths);
-        let minute_ago = || OffsetDateTime::now_utc() - PROBE_EVERY;
+        let minute_ago = || argonauts_core::base::clock::now_utc() - PROBE_EVERY;
 
         // A probe that reads nothing still holds the next one off, in every process.
         let other_store = AgentsStore::new(&paths);
@@ -1522,7 +1529,7 @@ mod tests {
         assert_eq!(lines(&log), 1);
 
         // A probe from before `since` holds nothing off.
-        let since = OffsetDateTime::now_utc();
+        let since = argonauts_core::base::clock::now_utc();
         probe_each(&run_host, &store, std::slice::from_ref(&quiet), since).await;
         assert_eq!(lines(&log), 2);
         assert!(probed_at(&store, &quiet).unwrap() >= since);
@@ -1531,7 +1538,8 @@ mod tests {
         store
             .update(|file| {
                 let entry = file.agent_ids.get_mut(&quiet.0).unwrap();
-                entry.probed_at = Some(OffsetDateTime::now_utc() + time::Duration::hours(1));
+                entry.probed_at =
+                    Some(argonauts_core::base::clock::now_utc() + time::Duration::hours(1));
             })
             .unwrap();
         probe_each(&app, &store, std::slice::from_ref(&quiet), minute_ago()).await;
@@ -1540,7 +1548,11 @@ mod tests {
         // A fresh reading holds a probe off like a probe does, and each agent has its turn.
         let read = agent_id("probe-read");
         let app = app.with_prober(&read, logging_prober(dir.path(), &log, Some(0.2), 0));
-        app.observe(reading("probe-read", 0.1, OffsetDateTime::now_utc()));
+        app.observe(reading(
+            "probe-read",
+            0.1,
+            argonauts_core::base::clock::now_utc(),
+        ));
         let both = [read.clone(), quiet.clone()];
         assert!(
             probe_each(&app, &store, &both, minute_ago())
@@ -1548,7 +1560,7 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(lines(&log), 3);
-        let since = OffsetDateTime::now_utc();
+        let since = argonauts_core::base::clock::now_utc();
         let readings: Vec<_> = probe_each(&app, &store, &both, since)
             .await
             .into_iter()
@@ -1573,7 +1585,8 @@ mod tests {
             register_prober(each, logging_prober(dir.path(), &log, Some(0.4), 0));
         }
         let board = FilePlanUsageBoard::new(&paths);
-        let hours_ago = |hours: i64| OffsetDateTime::now_utc() - time::Duration::hours(hours);
+        let hours_ago =
+            |hours: i64| argonauts_core::base::clock::now_utc() - time::Duration::hours(hours);
         for (each, at) in [(&stale, hours_ago(3)), (&fresh, hours_ago(0))] {
             board.observe(reading(&each.0, 0.2, at));
         }
@@ -1646,7 +1659,7 @@ mod tests {
             "{running} probes in {elapsed:?}"
         );
 
-        let ended_at = OffsetDateTime::now_utc();
+        let ended_at = argonauts_core::base::clock::now_utc();
         end.send("done").unwrap();
         let end = tokio::time::timeout(Duration::from_secs(5), relayed).await;
         assert_eq!(end.unwrap().unwrap(), "done");

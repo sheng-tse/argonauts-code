@@ -42,6 +42,8 @@ pub const TIP: &str = "write to every seat, @ one, or shift+↑  to pick a messa
 /// The working line's word while the seats talk, and while they work.
 pub const TALKING: &str = "Parleying";
 pub const WORKING: &str = "Rowing";
+/// The working line once the talk ends and the note keeper writes the plan.
+pub const WRITING_PLAN: &str = "Writing the plan";
 
 /// How the talk is drawn on this screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

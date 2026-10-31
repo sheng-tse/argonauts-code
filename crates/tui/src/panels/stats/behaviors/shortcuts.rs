@@ -79,6 +79,9 @@ impl BehaviorsTab {
         if self.claims(crossterm::event::KeyCode::Char('d'), true) {
             hints.push("d to switch labels and summaries".to_owned());
         }
+        if self.claims(crossterm::event::KeyCode::Char('u'), true) {
+            hints.push("u to add the newer actions to the summaries".to_owned());
+        }
         hints
     }
 

@@ -6,6 +6,7 @@ use argonauts_core::agents::cli_sessions::{
     CliScan, CliSession, CliTurn, ResumeCommand, resume_facts,
 };
 use argonauts_core::app::UltraColour;
+use argonauts_core::base::clock;
 use argonauts_core::look::keywords::Keyword;
 use argonauts_core::models::limits::{PlanUsageAnswer, PlanUsageReading};
 use argonauts_core::settings::sessions::{Compaction, NativeFanout};
@@ -13,7 +14,6 @@ use argonauts_core::{
     Adapter, Capabilities, CommandSpec, LaunchTweak, PARENT_SESSION_ENV_VARS, SessionRequest,
     SetupHints, StopPlan, StreamParser, UltraMode, UltraOn, extract_version,
 };
-use time::OffsetDateTime;
 
 use crate::commands::BUILTIN_COMMANDS;
 use crate::launch::command::{self, flag_value};
@@ -150,15 +150,15 @@ impl Adapter for CodexAdapter {
     }
 
     fn parse_plan_usage_probe(&self, stdout: &str) -> Option<PlanUsageReading> {
-        probe::parse(stdout, OffsetDateTime::now_utc())
+        probe::parse(stdout, clock::now_utc())
     }
 
     fn parse_plan_usage_probe_answer(&self, stdout: &str) -> Option<PlanUsageAnswer> {
-        probe::answer(stdout, OffsetDateTime::now_utc())
+        probe::answer(stdout, clock::now_utc())
     }
 
     fn parse_plan_usage_probe_end(&self, stdout: &str) -> Option<PlanUsageAnswer> {
-        probe::answer_at_end(stdout, OffsetDateTime::now_utc())
+        probe::answer_at_end(stdout, clock::now_utc())
     }
 
     fn compaction(&self, setting: Compaction) -> LaunchTweak {

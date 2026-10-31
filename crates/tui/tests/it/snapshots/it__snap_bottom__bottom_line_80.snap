@@ -5,4 +5,4 @@ expression: text(&view.lines)
 ────────────────────────────────────────────────────────────────────── council ─
 ❯ Try "review the last commit"
 ────────────────────────────────────────────────────────────────────────────────
-  ǁ supervised mode on   ● Claude 7d ▄▄▄▁▁▁  56%   ○ Codex 5h ▄▄▄▄▄▄  92% 4:40pm
+  ǁ supervised mode on   ● Claude 7d ▄▄▄▁▁▁  56%   ○ Codex 5h ▄▄▄▄▄▁  92% 4:40pm

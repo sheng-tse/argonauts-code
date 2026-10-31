@@ -157,7 +157,7 @@ fn crew_with_a_server_reviewer(checks: Vec<Value>) -> anyhow::Result<(Crew, Chec
 }
 
 /// A model on a server, which answers with no tools.
-const SERVER_REVIEWER: &str = "ollama/gemma3:12b-32k";
+const SERVER_REVIEWER: &str = "ollama/gemma3:12b";
 
 fn enlist(crew: &mut Crew, worker: &str, provider: &str, checks: &Checks, own: Own) {
     let checks = checks.clone();

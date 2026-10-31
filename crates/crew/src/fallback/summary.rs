@@ -347,7 +347,7 @@ mod tests {
     #[test]
     fn the_summary_fits_the_window_the_server_holds_the_model_to() {
         let window = |entry: &ModelEntry| summary_window(&entry.id, Some(entry), None, &[]);
-        let gemma = entry("ollama/gemma3:12b-32k", Some(131_072), Some(32_768));
+        let gemma = entry("ollama/gemma3:12b", Some(131_072), Some(32_768));
         assert_eq!(window(&gemma), 32_768);
         let opus = entry("claude-code/claude-opus-5-5", Some(1_000_000), None);
         assert_eq!(window(&opus), 1_000_000);
@@ -385,11 +385,7 @@ mod tests {
             entry("codex/gpt-6-luna", Some(400_000), None),
             entry("antigravity-cli/gemini-3.8-flash-low", None, None),
             entry("ollama/gemma2:9b", Some(8_192), Some(8_192)),
-            entry(
-                "opencode/ollama/gemma3:12b-32k",
-                Some(131_072),
-                Some(32_768),
-            ),
+            entry("opencode/ollama/gemma3:12b", Some(131_072), Some(32_768)),
             uncapped,
             entry("opencode/opencode/glm-5.3-flash-free", Some(200_000), None),
         ];

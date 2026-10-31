@@ -115,7 +115,11 @@ pub async fn hand_to_builders(host: &Host) -> EngineResult<Vec<(SeatId, TaskId)>
         let council = state.councils.newest()?;
         // A talk still going has no plan to build yet.
         council.ending?;
-        let seating = council.seating.clone()?;
+        let mut seating = council.seating.clone()?;
+        // A seat that sat out the rest of the talk builds nothing.
+        seating
+            .seats
+            .retain(|seat| !council.left.contains(&seat.id));
         let graph = state.divide.graph.as_ref()?;
         let open: Vec<(TaskId, ModelRef)> = graph
             .tasks
@@ -208,6 +212,7 @@ fn planned_seats(
     // A sentence that names two seats says nothing of who does the task.
     let mut close = |named: &mut Vec<SeatId>, sentence: &mut String| {
         if let [seat] = named.as_slice()
+            && !council.left.contains(seat)
             && let Some(at) = crate::council::ways::task_named(tasks, sentence)
             && !planned.iter().any(|(_, task)| *task == tasks[at].id)
         {

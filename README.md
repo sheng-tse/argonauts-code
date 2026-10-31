@@ -35,7 +35,7 @@ One agent checking its own work brings the same blind spots it had when it wrote
 - **A different model reviews.** Reviewers are whoever you ask for. When you ask for none, a reviewer comes from another provider than the builder where the crew has one, so Claude's work is read by GPT or Gemini, and the other way round. A workflow the main agent writes may pick its own.
 - **Your checks come before the merge.** Where your settings set checks (`checks.run`, such as in a repository's `.argonauts/config.toml` once you trust it), each task must pass them before review, they run again on the exact commit you'll get, and nothing merges without you or the rules you set.
 - **Work keeps going when a CLI stops.** When one agent is signed out, at its plan's limit or down, its task falls back to another, in an order you can see and change.
-- **You watch it happen.** Every agent's work streams live, in a workflow view drawn the way Claude Code draws its own.
+- **You watch it happen.** Every agent's work streams live in one workflow view, whichever CLI and model each one is.
 - **It uses what you pay for.** Your Claude, ChatGPT and Google plans, your API keys, or a model running locally for free, with limits you set.
 
 ## A closer look
@@ -98,7 +98,7 @@ cd your-repo
 argonauts
 ```
 
-The first start walks you through setup: which CLIs to use, who you talk to, how the crew works, and how much it may do without asking. Then just ask, as you would in Claude Code:
+The first start walks you through setup: which CLIs to use, who you talk to, how the crew works, and how much it may do without asking. Then just ask, as you would ask any coding agent:
 
 ```text
 ❯ Fix the failing tests in tests/test_money.py without changing the tests.
@@ -120,7 +120,7 @@ argonauts run --crew --plain --limit-usd 2 "Add due dates to the tasks command, 
 
 Three words explain most of it:
 
-- **The main agent** is the one you talk to: one of your CLIs, such as Claude Code, chosen in setup.
+- **The main agent** is the one you talk to: any of your CLIs, on any model it runs, such as Opus on Claude Code, GPT on Codex, Gemini on agy or a local model on OpenCode. You choose the CLI in setup and its model with `/model`.
 - **The crew** is everyone else it can bring in. Workers build, reviewers read changes, and a judge settles questions. Each can be a different CLI or model.
 - **A workflow** says how a request gets done: who plans, who builds, who reviews, what gets checked, and when it waits for you. Argonauts Code's own code runs it, so its steps happen every time, not only when an agent remembers them.
 
@@ -218,7 +218,7 @@ Each CLI runs as its own program, signed in your way: your Claude or ChatGPT pla
 
 ## Your screen
 
-It looks and feels like Claude Code, because you already know how that works:
+It follows the look and keys of Claude Code's terminal app, whichever agent you talk to:
 
 - **The workflow view** (`/workflows`, Ctrl+T): phases, agents, tokens and time.
 - **A mascot in the header** that changes with the mode, drawn as a picture in terminals that show images.

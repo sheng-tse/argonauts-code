@@ -30,7 +30,6 @@ use crate::council::ways;
 use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::{Host, Ran};
 use crate::review::{Verdict, with_findings};
-use crate::roles;
 use crate::task::pipeline;
 use crate::task::support::{newest_worker_session, record_of, state_of, worker_of};
 use crate::task::{self, machine::Trigger, worktree};
@@ -316,7 +315,7 @@ pub(super) async fn work(
             let done = session.end.as_ref();
             AgentEnd {
                 result: Ok(Value::Null),
-                model: Some(roles::display_name(&session.started.worker)),
+                model: Some(host.names().worker(&session.started.worker)),
                 tokens: done.map_or(0, |end| end.spend.input_tokens + end.spend.output_tokens),
                 tool_calls: done.map_or(0, |end| u32::try_from(end.tool_calls).unwrap_or(u32::MAX)),
                 duration_ms: done.map_or(0, |end| end.duration_ms),

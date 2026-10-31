@@ -9,7 +9,6 @@
 use std::collections::BTreeSet;
 
 use argonauts_core::base::names::{MessageId, SeatId};
-use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::runs::events::approval::{
     AnswerAction, AnswerOption, ApprovalKind, ApprovalPacket, CouncilPacket, CouncilQuestion,
     FreeText,
@@ -180,7 +179,7 @@ pub async fn decide(
 ) -> EngineResult<()> {
     let name = council.seat(&held.seat).map_or_else(
         || "A seat".to_owned(),
-        |seat| seats::name(seat, &DisplayNames::default()),
+        |seat| seats::name(seat, host.names()),
     );
     let words = council
         .message(&held.message)
@@ -279,7 +278,7 @@ pub async fn decide_plan(
 ) -> EngineResult<HeldChoice> {
     let name = council.seat(keeper).map_or_else(
         || "The note keeper".to_owned(),
-        |seat| seats::name(seat, &DisplayNames::default()),
+        |seat| seats::name(seat, host.names()),
     );
     let options = PLAN_CHOICES
         .iter()

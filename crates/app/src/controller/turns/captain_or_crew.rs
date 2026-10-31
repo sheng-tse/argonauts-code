@@ -8,6 +8,7 @@
 use argonauts_core::base::log::DOING_THIS_ALONE;
 use argonauts_core::base::text::{sentence_case, title_words};
 use argonauts_core::runs::events::run::{CaptainOrCrewDecision, RunMode};
+use argonauts_core::settings::protocol::ForcedMode;
 use argonauts_core::settings::{Settings, layer};
 use argonauts_core::workflows::steps::intake::{
     ChangeEstimate, ConversationAnswer, Estimate, Instruction, IntakeReply, ReplyKind,
@@ -163,10 +164,20 @@ pub(crate) fn workflow_chosen(settings: &AppSettings) -> bool {
     from != layer::BUILT_IN && from != layer::WORKFLOW
 }
 
-/// A crew workflow you chose convenes for every change, small ones included. A workflow that
-/// forces a mode, as `captain` does, keeps it.
+/// Whether every change goes to the workflow in use, small ones too: a crew workflow you chose,
+/// or `force = "crew"`. A workflow that forces Captain, as `captain` does, keeps it.
+pub(crate) fn convenes(settings: &AppSettings) -> bool {
+    match settings.settings().captain_or_crew.force {
+        Some(ForcedMode::Crew) => true,
+        Some(ForcedMode::Captain) => false,
+        None => workflow_chosen(settings),
+    }
+}
+
+/// A crew workflow you chose convenes for every change, small ones included, and so does one
+/// that forces the crew. A workflow that forces Captain, as `captain` does, keeps it.
 fn convened(settings: &Settings, workflow_chosen: bool) -> Option<CaptainOrCrewDecision> {
-    let crew_workflow = settings.captain_or_crew.force.is_none();
+    let crew_workflow = settings.captain_or_crew.force != Some(ForcedMode::Captain);
     (workflow_chosen && crew_workflow).then(|| CaptainOrCrewDecision {
         mode: RunMode::Crew,
         move_to_crew: false,
@@ -562,6 +573,102 @@ mod tests {
             [
                 "Doing this alone: about 1 file, and the repo has tests · /crew to have Council do it"
             ]
+        );
+    }
+
+    /// A turn on a council you chose says a change opens its talk, which shows your message;
+    /// on the default, on a workflow that doesn't talk, or with a main agent that may pick any
+    /// workflow, it doesn't.
+    #[tokio::test]
+    async fn a_turn_says_when_a_change_opens_the_talk_you_chose() {
+        use argonauts_core::app::{AppEvent, ConversationEvent};
+
+        use crate::controller::base::test_support::{
+            CliOptions, TestDriver, on_the_default_workflow,
+        };
+
+        let opens = |options: CliOptions| async move {
+            let mut driver = TestDriver::start_with(options).await;
+            driver.submit("Make the rate limiter per API key.").await;
+            let started = driver
+                .until(|event| {
+                    matches!(
+                        event,
+                        AppEvent::Conversation {
+                            event: ConversationEvent::TurnStarted { .. }
+                        }
+                    )
+                })
+                .await;
+            driver.exit().await;
+            match started {
+                AppEvent::Conversation {
+                    event: ConversationEvent::TurnStarted { opens_a_talk, .. },
+                } => opens_a_talk,
+                _ => unreachable!("the event waited for"),
+            }
+        };
+        let global = |text: &'static str| CliOptions {
+            prepare: Some(Box::new(move |repo: &argonauts_testkit::TempRepo| {
+                let global = repo.global_config();
+                std::fs::create_dir_all(global.parent().expect("a folder")).expect("a folder");
+                std::fs::write(&global, text).expect("a global config");
+            })),
+            ..CliOptions::default()
+        };
+
+        assert!(opens(CliOptions::default()).await);
+        assert!(!opens(on_the_default_workflow(CliOptions::default())).await);
+        assert!(!opens(global("workflow = \"maker-checker\"\n")).await);
+        let picks_any = "workflow = \"council\"\n[workflows]\norchestrator_designs = \"any\"\n";
+        assert!(!opens(global(picks_any)).await);
+    }
+
+    /// A main session that takes Argonauts Code's tools still answers with a verdict while a
+    /// workflow you chose, or `force = "crew"`, is in use, so the app sends a small change to the
+    /// crew rather than leaving it to the session.
+    #[tokio::test]
+    async fn a_session_with_tools_hands_a_small_change_to_the_workflow_you_chose() {
+        use argonauts_testkit::FakeSession;
+
+        use crate::controller::base::test_support::{
+            CliOptions, TestDriver, max_wait, on_the_default_workflow,
+        };
+
+        let starts = |options: CliOptions| async move {
+            let driver = TestDriver::start_with(options).await;
+            driver.directory.taking_tools("claude-code");
+            let value = small_change().expect("a structured reply").value;
+            driver.agent.push(FakeSession::structured(value));
+            driver.submit("Make the rate limiter per API key.").await;
+            let conductor = driver.conductor.clone();
+            let deadline = tokio::time::Instant::now() + max_wait();
+            while conductor.starts().is_empty() {
+                assert!(tokio::time::Instant::now() < deadline, "no run started");
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            let start = conductor.starts().remove(0);
+            driver.exit().await;
+            let rule = start.captain_or_crew.map(|decision| decision.rule);
+            (start.mode, rule)
+        };
+
+        assert_eq!(
+            starts(CliOptions::default()).await,
+            (RunMode::Crew, Some(CHOSEN_WORKFLOW.to_owned()))
+        );
+        let forced = on_the_default_workflow(CliOptions {
+            prepare: Some(Box::new(|repo: &argonauts_testkit::TempRepo| {
+                let global = repo.global_config();
+                std::fs::create_dir_all(global.parent().expect("a folder")).expect("a folder");
+                std::fs::write(&global, "[captain_or_crew]\nforce = \"crew\"\n")
+                    .expect("a global config");
+            })),
+            ..CliOptions::default()
+        });
+        assert_eq!(
+            starts(forced).await,
+            (RunMode::Crew, Some("force".to_owned()))
         );
     }
 

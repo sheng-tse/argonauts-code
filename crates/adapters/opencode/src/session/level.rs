@@ -85,8 +85,8 @@ mod tests {
 
     #[test]
     fn a_model_with_no_level_gets_no_mark() {
-        let args = model_args(Some("ollama/qwen3-coder:30b-64k"), None, Some("2.0.32"));
-        assert_eq!(args.model.as_deref(), Some("ollama/qwen3-coder:30b-64k"));
+        let args = model_args(Some("ollama/qwen3-coder:30b"), None, Some("2.0.32"));
+        assert_eq!(args.model.as_deref(), Some("ollama/qwen3-coder:30b"));
         assert!(args.flags.is_empty());
     }
 

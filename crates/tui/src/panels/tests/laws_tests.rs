@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use argonauts_core::app::ViewData;
 use argonauts_core::behaviors::behavior_map::BehaviorMap;
+use argonauts_core::behaviors::crew_stats::StatsRole;
 use argonauts_core::runs::api::StatusSummary;
 use argonauts_testkit::screen::{Grid, Look, REAL_SIZES, Size, laws};
 use crossterm::event::{KeyCode, KeyEvent};
@@ -284,6 +285,37 @@ fn stats_by_cli_keeps_the_screen_laws() {
 #[test]
 fn stats_by_model_keeps_the_screen_laws() {
     keeps_the_laws(Tab::Stats, &[KeyCode::Char('m')], Some("Haiku 5.5"));
+}
+
+/// The machine with only the main agent's conversations counted, so who did what holds one
+/// role, `main` over `26 conversations`, and shows whole at every real size.
+fn talking_only() -> Machine {
+    let Machine { mut crew, run } = machine();
+    if let Some(stats) = &mut crew.usage.stats {
+        stats.work.retain(|row| row.role == StatsRole::Main);
+        stats.tasks.clear();
+    }
+    Machine { crew, run }
+}
+
+/// Into By CLI's cards and on to the last of them, main's row of who did what, whose second
+/// line is longer than its name.
+#[test]
+fn stats_who_did_what_keeps_the_screen_laws() {
+    let keys = [KeyCode::Down, KeyCode::Down, KeyCode::End];
+    let machine = talking_only();
+    for size in REAL_SIZES {
+        let grid = drawn(&machine, Tab::Stats, size, &keys);
+        let shown: Vec<String> = (0..grid.rows())
+            .map(|row| grid.text(row, 0, grid.cols()))
+            .collect();
+        assert!(
+            shown.iter().any(|row| row.contains("26 conversations")),
+            "{size}: {shown:#?}"
+        );
+        let screen = format!("who did what at {size}");
+        laws::assert_kept(&grid, &look(&machine), &screen);
+    }
 }
 
 /// Down to the sub-tabs, along to By model, into the cards, and Enter on the first.

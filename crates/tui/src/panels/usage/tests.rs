@@ -58,7 +58,7 @@ fn plan(agent: &str, name: &str, live: LiveUsage, in_use: bool) -> PlanUsage {
 fn summary() -> UsageSummary {
     let mut claude = live(
         "claude-code",
-        "Max",
+        "Pro",
         vec![
             window(
                 "five_hour",
@@ -119,7 +119,7 @@ fn summary() -> UsageSummary {
     });
     let codex = live(
         "codex",
-        "Plus",
+        "Pro",
         vec![
             window(
                 "five_hour",
@@ -139,7 +139,7 @@ fn summary() -> UsageSummary {
     );
     let agy = live(
         "antigravity-cli",
-        "Pro",
+        "Ultra",
         vec![
             window(
                 "g:5h",
@@ -325,8 +325,8 @@ fn a_wide_panel_draws_the_three_cards_side_by_side_as_the_picture() {
     let head = find(&rows, "● Claude Code");
     assert_eq!(head, find(&rows, "● Codex"), "side by side: {rows:#?}");
     assert_eq!(head, find(&rows, "● agy"));
-    assert!(rows[head].contains("Max · in use"), "{rows:#?}");
-    assert!(rows[head].contains("Plus"));
+    assert!(rows[head].contains("Pro · in use"), "{rows:#?}");
+    assert_eq!(rows[head].matches("Pro").count(), 2, "{rows:#?}");
     let session = find(&rows, "session");
     assert!(rows[session].contains("14%"), "{rows:#?}");
     assert!(rows[session].contains("Gemini 5h"));

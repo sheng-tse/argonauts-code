@@ -16,8 +16,11 @@ use crate::frame::state::AppState;
 use crate::frame::view::map::MapCells;
 use crate::frame::view::{View, ViewOutcome};
 use crate::terminal::InlineTerminal;
-use crate::world::deliver::clock::{InputClock, Power, PowerSource, ReportedFocus, STEP, Sources};
+use crate::world::deliver::clock::{InputClock, Power, PowerSource, Rate, ReportedFocus, Sources};
 use crate::world::{Depth, Image, Layer, PartId, Picture, Sprite};
+
+/// A step of the test's map, 20 × 4 cells: a small map steps 16 times a second.
+const STEP: Duration = Duration::from_micros(62_500);
 
 const CELL: (u16, u16) = (10, 20);
 
@@ -61,7 +64,7 @@ impl MapView for Weather {
     fn scene(&self, cell: (u16, u16), ctx: &ViewCtx<'_>) -> Option<Arc<Scene>> {
         self.asked.fetch_add(1, Ordering::Relaxed);
         let (width, height) = (20 * usize::from(cell.0), 4 * usize::from(cell.1));
-        let step = ctx.now.saturating_duration_since(self.origin).as_millis() / 125;
+        let step = ctx.now.saturating_duration_since(self.origin).as_nanos() / STEP.as_nanos();
         let mut scene = Scene::new(width, height);
         scene.add_layer(Layer {
             id: PartId::new("ground", 0),
@@ -182,7 +185,7 @@ fn pointer_moved() -> Event {
 }
 
 #[test]
-fn the_world_steps_eight_times_a_second_while_it_shows() {
+fn the_world_steps_at_its_rate_while_it_shows() {
     let mut world = World::new(Graphics::Kitty, true, |_| {});
     let first = world.frame();
     assert_eq!(first.matches("\x1b_Ga=t").count(), 2, "{first:?}");
@@ -196,7 +199,7 @@ fn the_world_steps_eight_times_a_second_while_it_shows() {
     for _ in 0..8 {
         world.wake();
     }
-    assert_eq!(world.at, world.start + STEP * 9, "a step every 125 ms");
+    assert_eq!(world.at, world.start + STEP * 9, "a step every 62.5 ms");
     assert_eq!(world.asked() - before, 8, "one scene a step");
 }
 
@@ -301,4 +304,9 @@ fn reduced_motion_a_still_scene_and_whole_pictures_never_wake_the_app() {
         );
         assert_eq!(world.asked(), 1);
     }
+}
+
+#[test]
+fn the_test_map_steps_at_the_quick_rate() {
+    assert_eq!(Rate::for_map(20, 4).step(), STEP);
 }

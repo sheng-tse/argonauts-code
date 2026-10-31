@@ -6,14 +6,15 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use argonauts_core::behaviors::behavior_map::BehaviorMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use super::drawn::{Drawn, Facing, Globed, Grown, Look, Made, MapLook, PlanetLook, SEED};
+use super::drawn::{Drawn, Facing, Globed, Grown, Kept, Look, Made, MapLook, PlanetLook, SEED};
 use super::level::Level;
 use super::places::{Kind, places};
 use super::{BehaviorsTab, Fit, GroupColours};
 use crate::frame::view::map::MapPoint;
+use crate::world::deliver::worker::Cancel;
 use crate::world::map::motion::Moment as MapMoment;
 use crate::world::map::relief::STANDING;
 use crate::world::raster::noise::smooth;
@@ -77,8 +78,7 @@ struct PlanetParts {
 }
 
 impl PlanetParts {
-    /// The planet these parts name, made now unless it is the one kept, the flat map's marks of
-    /// nature carried onto it.
+    /// The planet these parts name, made now unless it is the one kept.
     fn planet<'k>(
         &self,
         kept: &'k mut super::drawn::Kept,
@@ -88,25 +88,60 @@ impl PlanetParts {
             let flat_map = kept.look(self.flat, || {
                 Some(MapLook::new(grown, &self.look, self.flat))
             })?;
-            let marks: Vec<Mark> = flat_map
-                .scene(MapMoment::Still, self.flat)
-                .hits
-                .marks()
-                .iter()
-                .filter(|mark| !matches!(mark.pointed, Pointed::Action(_)))
-                .cloned()
-                .collect();
-            let colour_of = |cli: &str| {
-                self.clis
-                    .iter()
-                    .find(|(name, _)| name == cli)
-                    .map_or([150.0, 156.0, 170.0], |(_, rgb)| *rgb)
-            };
-            let facts = crate::world::planet::PlanetFacts::from_map(&self.map, colour_of);
-            let made = PlanetLook::new(grown, &self.look, &facts, self.globe).with_marks(marks);
+            let made = self.made(grown, &flat_map);
             kept.set_planet(self.globe, made);
         }
         kept.kept_planet(self.globe)
+    }
+
+    /// The planet made from the world and its flat map, the flat map's marks of nature carried
+    /// onto it.
+    fn made(&self, grown: &Arc<Grown>, flat_map: &MapLook) -> PlanetLook {
+        let marks: Vec<Mark> = flat_map
+            .scene(MapMoment::Still, self.flat)
+            .hits
+            .marks()
+            .iter()
+            .filter(|mark| !matches!(mark.pointed, Pointed::Action(_)))
+            .cloned()
+            .collect();
+        let colour_of = |cli: &str| {
+            self.clis
+                .iter()
+                .find(|(name, _)| name == cli)
+                .map_or([150.0, 156.0, 170.0], |(_, rgb)| *rgb)
+        };
+        let facts = crate::world::planet::PlanetFacts::from_map(&self.map, colour_of);
+        PlanetLook::new(grown, &self.look, &facts, self.globe).with_marks(marks)
+    }
+
+    /// Makes the planet ahead of being asked for, from the world the map grew, holding what the
+    /// jobs draw from only to read the world and to keep the planet and its flat map.
+    fn make_ahead(&self, kept: &Mutex<Kept>, cancel: &Cancel) {
+        let lock = || kept.lock().unwrap_or_else(PoisonError::into_inner);
+        let grown = {
+            let mut kept = lock();
+            if kept.kept_planet(self.globe).is_some() {
+                return;
+            }
+            let Some(grown) = kept.grown_kept(self.world) else {
+                return;
+            };
+            grown
+        };
+        let flat_map = MapLook::new(&grown, &self.look, self.flat);
+        if cancel.cancelled() {
+            return;
+        }
+        let made = self.made(&grown, &flat_map);
+        if cancel.cancelled() {
+            return;
+        }
+        let mut kept = lock();
+        if kept.kept_planet(self.globe).is_none() {
+            kept.set_planet(self.globe, made);
+        }
+        kept.offer_look(self.flat, flat_map);
     }
 }
 
@@ -250,6 +285,7 @@ impl BehaviorsTab {
         }
         let changed = found != self.pointed;
         self.pointed = found;
+        self.resting = false;
         changed
     }
 
@@ -275,6 +311,7 @@ impl BehaviorsTab {
         let found = found.filter(|found| matches!(found, Pointed::Action(_)));
         let changed = found != self.pointed;
         self.pointed = found;
+        self.resting = false;
         changed
     }
 
@@ -327,40 +364,164 @@ impl BehaviorsTab {
         match self.level {
             Level::Map => {
                 let drawn = self.map_drawn(colours, now)?;
+                self.draw_planet_ahead(colours, theme);
                 Some(Arc::new(self.marked(&drawn)))
             }
             Level::Planet => {
                 let look = CosmosLook { theme, names };
                 let drawn = self.planet_drawn(colours, look, cell, now)?;
+                self.draw_around_the_planet_ahead(colours, look, cell);
                 Some(Arc::new(self.marked(&drawn)))
             }
             Level::Universe | Level::Galaxy(_) | Level::System(_) => {
                 let look = CosmosLook { theme, names };
-                Some(self.cosmos_drawn(colours, look, cell, now)?.scene)
+                let drawn = self.cosmos_drawn(colours, look, cell, now)?;
+                if self.level == Level::Universe {
+                    self.draw_galaxy_ahead(colours, look, cell);
+                }
+                Some(drawn.scene)
             }
         }
+    }
+
+    /// While the universe shows: the picked galaxy, the one `+` goes into, drawn ahead on a
+    /// sibling of the kept universe, so going in shows at once and the universe's own steps
+    /// never wait on it.
+    fn draw_galaxy_ahead(&self, colours: &GroupColours, look: CosmosLook<'_>, cell: (u16, u16)) {
+        let Some(galaxy @ Level::Galaxy(maker)) = self
+            .picked
+            .and_then(|picked| self.universe.inside(Level::Universe, picked))
+        else {
+            return;
+        };
+        let (Some(level), Some(sky)) = (
+            cosmos_level(galaxy),
+            self.planet_parts(colours, look.theme)
+                .and_then(|parts| self.cosmos_parts(&parts, look)),
+        ) else {
+            return;
+        };
+        let size = self.fit().pixels(cell);
+        let view = crate::world::cosmos::View {
+            still: self.moment.still,
+            rate: self.rate(),
+            ..crate::world::cosmos::View::new(level, size.0, size.1)
+        };
+        let universe = sky.key;
+        let key = picture_key([
+            universe,
+            maker as u64,
+            size.0 as u64,
+            size.1 as u64,
+            u64::from(view.still),
+        ]);
+        self.drawings.ahead(key, move |kept, cancel| {
+            let lock = || kept.lock().unwrap_or_else(PoisonError::into_inner);
+            let kept_sibling = lock().cosmos_sibling(universe);
+            let mut sibling = match kept_sibling {
+                Some(sibling) => sibling,
+                None => {
+                    let made = sky.make();
+                    let sibling = made.sibling();
+                    lock().offer_cosmos(universe, made);
+                    sibling
+                }
+            };
+            let _ = sibling.scene(&view, 0.0);
+            if !cancel.cancelled() {
+                lock().adopt_cosmos(universe, sibling);
+            }
+        });
     }
 
     /// The map's newest scene drawn for what the tab shows, while the one wanted is drawn.
     fn map_drawn(&self, colours: &GroupColours, now: Instant) -> Option<Drawn> {
         let map = self.map.clone()?;
-        let look = self.map_look(&map, colours);
-        let world = picture_key([WORLD.get(), self.maps_taken]);
-        let mut hasher = DefaultHasher::new();
-        look.hash(&mut hasher);
-        let key = picture_key([world, hasher.finish()]);
-        let tick = (!self.moment.still).then(|| self.drawings.tick(now));
+        let (look, world, key) = self.map_keys(&map, colours);
+        let rate = self.rate();
+        let tick = (!self.moment.still).then(|| self.drawings.tick(now, rate));
         self.drawings.want(key, tick, move |kept, cancel| {
             let stop = || cancel.cancelled();
             let grown = kept.grown(world, || Grown::unless(&map, SEED, &stop))?;
             let shown = kept.look(key, || MapLook::unless(&grown, &look, key, &stop))?;
-            let moment = tick.map_or(MapMoment::Still, MapMoment::of_tick);
+            let moment = tick.map_or(MapMoment::Still, |tick| MapMoment::of_tick(tick, rate));
             Some(Made {
                 scene: shown.scene(moment, key),
                 world: Some(grown),
                 globe: None,
             })
         })
+    }
+
+    /// The map's look, the key of the world it grows and the key of the look drawn from it.
+    fn map_keys(&self, map: &BehaviorMap, colours: &GroupColours) -> (Look, u64, u64) {
+        let look = self.map_look(map, colours);
+        let world = picture_key([WORLD.get(), self.maps_taken]);
+        let mut hasher = DefaultHasher::new();
+        look.hash(&mut hasher);
+        let key = picture_key([world, hasher.finish()]);
+        (look, world, key)
+    }
+
+    /// While the map shows: its planet, made ahead, so going out to it shows at once.
+    fn draw_planet_ahead(&self, colours: &GroupColours, theme: &crate::base::theme::Theme) {
+        let Some(parts) = self.planet_parts(colours, theme) else {
+            return;
+        };
+        self.drawings.ahead(parts.globe, move |kept, cancel| {
+            parts.make_ahead(kept, cancel)
+        });
+    }
+
+    /// While the planet shows: the universe round it and the map, made ahead, so going out or
+    /// back in shows at once.
+    fn draw_around_the_planet_ahead(
+        &self,
+        colours: &GroupColours,
+        look: CosmosLook<'_>,
+        cell: (u16, u16),
+    ) {
+        let Some(map) = self.map.clone() else {
+            return;
+        };
+        let (map_look, world, map_key) = self.map_keys(&map, colours);
+        let sky = self
+            .planet_parts(colours, look.theme)
+            .and_then(|parts| self.cosmos_parts(&parts, look));
+        let size = self.fit().pixels(cell);
+        let key = picture_key([map_key, sky.as_ref().map_or(0, |sky| sky.key)]);
+        self.drawings.ahead(key, move |kept, cancel| {
+            let lock = || kept.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(sky) = sky
+                && !lock().has_cosmos(sky.key)
+            {
+                let mut cosmos = sky.make();
+                let view = crate::world::cosmos::View::new(
+                    crate::world::cosmos::Level::Universe,
+                    size.0,
+                    size.1,
+                );
+                // Its first scene draws the sky it keeps.
+                let _ = cosmos.scene(&view, 0.0);
+                if cancel.cancelled() {
+                    return;
+                }
+                lock().offer_cosmos(sky.key, cosmos);
+            }
+            let grown = {
+                let kept = lock();
+                if kept.has_look(map_key) {
+                    return;
+                }
+                kept.grown_kept(world)
+            };
+            let stop = || cancel.cancelled();
+            if let Some(drawn) =
+                grown.and_then(|grown| MapLook::unless(&grown, &map_look, map_key, &stop))
+            {
+                lock().offer_look(map_key, drawn);
+            }
+        });
     }
 
     /// The look of the map the tab shows: its groups' colours, a group compared, nature shown
@@ -435,7 +596,8 @@ impl BehaviorsTab {
         let side = if self.night { Side::Night } else { Side::Day };
         let size = self.fit().pixels(cell);
         let still = self.moment.still;
-        let tick = (!still).then(|| self.drawings.tick(now));
+        let rate = self.rate();
+        let tick = (!still).then(|| self.drawings.tick(now, rate));
         let key = picture_key([
             parts.globe,
             u64::from(self.night),
@@ -467,13 +629,15 @@ impl BehaviorsTab {
                 None => (None, None),
             };
             let shown = parts.planet(kept, &grown)?;
-            let seconds = tick.map_or(0.0, |tick| tick as f64 / 8.0);
-            let view = crate::world::View::stepped(turned(&shown.planet, from, turning));
+            let seconds = tick.map_or(0.0, |tick| rate.seconds(tick));
+            let steps = shown.turn_steps(size, rate);
+            let view = crate::world::View::stepped_in(turned(&shown.planet, from, turning), steps);
             let moment = planet::Moment {
                 t: seconds,
                 drift: turning,
                 holding,
                 still,
+                rate,
             };
             let scene = shown.scene(Facing {
                 view,
@@ -485,7 +649,7 @@ impl BehaviorsTab {
             let globe = Globed {
                 planet: shown.planet.clone(),
                 side,
-                drift: planet::shown_drift(planet::CloudsIn::Apart, moment),
+                drift: planet::shown_drift(planet::CloudsIn::Apart, moment, steps),
                 sky: clusters,
             };
             Some(Made {
@@ -513,7 +677,8 @@ impl BehaviorsTab {
         let level = cosmos_level(self.level)?;
         let size = self.fit().pixels(cell);
         let still = self.moment.still;
-        let tick = (!still).then(|| self.drawings.tick(now));
+        let rate = self.rate();
+        let tick = (!still).then(|| self.drawings.tick(now, rate));
         let ringed = self.pointed.or(self.picked);
         let universe = sky.key;
         let key = picture_key([
@@ -531,9 +696,10 @@ impl BehaviorsTab {
         ]);
         let from = self.planet_view().lon;
         self.drawings.want(key, tick, move |kept, cancel| {
-            let seconds = tick.map_or(0.0, |tick| tick as f64 / 8.0);
+            let seconds = tick.map_or(0.0, |tick| rate.seconds(tick));
             let view = cosmos::View {
                 still,
+                rate,
                 ringed,
                 ..cosmos::View::new(level, size.0, size.1)
             };
@@ -543,13 +709,16 @@ impl BehaviorsTab {
                 let stop = || cancel.cancelled();
                 let grown = kept.grown(parts.world, || Grown::unless(&parts.map, SEED, &stop))?;
                 let home = parts.planet(kept, &grown)?;
-                let turned =
-                    crate::world::View::stepped(planet::turned(&home.planet, from, seconds));
+                let turned = crate::world::View::stepped_in(
+                    planet::turned(&home.planet, from, seconds),
+                    planet::turn_steps(rate),
+                );
                 let moment = planet::Moment {
                     t: seconds,
                     drift: seconds,
                     holding: false,
                     still,
+                    rate,
                 };
                 let (sprites, moves) = home.home(size, turned, moment);
                 for sprite in sprites {
@@ -619,20 +788,21 @@ impl BehaviorsTab {
             _ => Some(self.cosmos_parts(&parts, look)?),
         };
         let frame = zoom.frame(now);
-        let k = f64::from(frame) / f64::from(super::level::ZOOM_FRAMES);
+        let k = f64::from(frame) / f64::from(zoom.frames().max(1));
         let size = self.fit().pixels(cell);
         let side = if self.night { Side::Night } else { Side::Day };
         let facing = self.planet_view();
         let still = self.moment.still;
         // The level left as it was when the zoom began, the one arrived at as it will be.
-        let began = self.drawings.tick(zoom.since()) as f64 / 8.0;
+        let rate = zoom.rate();
+        let began = rate.seconds(self.drawings.tick(zoom.since(), rate));
         let times = cosmos::Times {
             from: began,
-            to: began + f64::from(super::level::ZOOM_FRAMES) / 8.0,
+            to: began + rate.seconds(u64::from(zoom.frames())),
         };
         // How far the planet has turned at its end of the zoom, as its level turns it.
         let planet_end = if zoom.to == Level::Planet {
-            zoom.since() + Duration::from_millis(125) * super::level::ZOOM_FRAMES
+            zoom.since() + zoom.lasts()
         } else {
             zoom.since()
         };
@@ -664,6 +834,7 @@ impl BehaviorsTab {
             drift: t,
             holding: false,
             still,
+            rate,
         };
         self.drawings
             .want_every_step(key, Some(u64::from(frame)), move |kept, cancel| {
@@ -706,7 +877,7 @@ impl BehaviorsTab {
                         let globe = parts.planet(kept, &grown)?;
                         let turned = planet::turned(&globe.planet, facing.lon, turning);
                         let facing = Facing {
-                            view: crate::world::View::stepped(turned),
+                            view: crate::world::View::stepped_in(turned, planet::turn_steps(rate)),
                             side,
                             size,
                             moment: planet::Moment {
@@ -723,6 +894,7 @@ impl BehaviorsTab {
                         let (from, to) = (cosmos_level(from)?, cosmos_level(to)?);
                         let view = |level| cosmos::View {
                             still,
+                            rate,
                             ringed,
                             ..cosmos::View::new(level, size.0, size.1)
                         };

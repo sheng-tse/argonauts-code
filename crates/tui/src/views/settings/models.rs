@@ -5,8 +5,6 @@
 //! "Other model…" to type any name. Under the list, ←/→ set the highlighted model's effort, and
 //! Enter saves both. Esc goes back a level, and closes from the first.
 
-use std::time::Instant;
-
 use time::OffsetDateTime;
 
 use argonauts_core::app::model_picker::{EffortLine, ListedFacts, ModelsLevel};
@@ -517,14 +515,13 @@ pub fn follow_pointer(picker: &mut Picker) {
     }
     picker.flow.effort = line;
     picker.note = memory_note(picker);
-    let gauge = match (&picker.flow.stage, &picker.banner, picker.flow.memory) {
+    // The bar stands at the pointed row's figures in the frame its words change in.
+    picker.gauge = match (&picker.flow.stage, &picker.banner, picker.flow.memory) {
         (Stage::ModelsOf { .. }, Some(_), Some(machine)) => {
             Some(memory_rows::gauge(pointed_choice(picker), &machine))
         }
         _ => None,
     };
-    picker.gauge =
-        gauge.map(|gauge| memory_rows::gauge_after(gauge, picker.gauge.as_ref(), Instant::now()));
 }
 
 /// The listed choice under the pointer on a models level.

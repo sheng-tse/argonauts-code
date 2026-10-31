@@ -90,7 +90,7 @@ pub async fn read(
                 NoteLevel::Warn,
                 format!(
                     "Dropped {}'s reading: {error}",
-                    crate::roles::display_name(&worker)
+                    host.names().worker(&worker)
                 ),
             )?,
             Err(error) => {

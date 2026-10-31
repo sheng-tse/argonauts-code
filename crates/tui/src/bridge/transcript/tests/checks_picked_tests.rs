@@ -126,6 +126,7 @@ fn screen() -> Screen {
             description: String::new(),
             phases: vec![phase(0, "Build"), phase(1, "Review"), phase(2, "Merge")],
             required: Vec::new(),
+            talks: false,
         }))),
     ));
     let task = TaskId::new("fix-rounding").expect("a task id");
@@ -175,7 +176,6 @@ fn checks_the_main_agent_picked_read_as_the_picture_draws_them() {
         &include_str!("../../../../tests/golden/transcript/checks_picked.html")
             .replace(SLUG, SLUG_WORDS),
         &Screen::theme(),
-        &[],
     );
 }
 
@@ -205,7 +205,6 @@ fn checks_you_ask_to_keep_say_kept_under_your_message() {
         include_str!("../../../../tests/golden/transcript/checks_kept.txt"),
         include_str!("../../../../tests/golden/transcript/checks_kept.html"),
         &Screen::theme(),
-        &[],
     );
 }
 
@@ -259,7 +258,6 @@ fn a_task_with_checks_held_back_says_which_file_holds_them() {
         include_str!("../../../../tests/golden/transcript/checks_held_back.txt"),
         include_str!("../../../../tests/golden/transcript/checks_held_back.html"),
         &Screen::theme(),
-        &[],
     );
 }
 
@@ -292,7 +290,6 @@ fn a_merged_runs_recap_says_what_its_checks_did() {
         include_str!("../../../../tests/golden/transcript/recap_checks.txt"),
         include_str!("../../../../tests/golden/transcript/recap_checks.html"),
         &Screen::theme(),
-        &[],
     );
 }
 
@@ -335,7 +332,6 @@ fn a_fallback_from_the_builders_provider_keeps_the_branch_and_names_the_task() {
         include_str!("../../../../tests/golden/transcript/fallback_kept.txt"),
         include_str!("../../../../tests/golden/transcript/fallback_kept.html"),
         &Screen::theme(),
-        &[],
     );
 }
 
@@ -366,6 +362,5 @@ fn a_task_nobody_but_its_builder_could_review_keeps_the_branch_and_names_it() {
         include_str!("../../../../tests/golden/transcript/nobody_left_kept.txt"),
         include_str!("../../../../tests/golden/transcript/nobody_left_kept.html"),
         &Screen::theme(),
-        &[],
     );
 }

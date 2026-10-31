@@ -23,10 +23,10 @@ const LISTED: &str = r#"{"location":{},"data":[
   "capabilities":{"tools":true},"variants":[{"id":"low"},{"id":"high"},{"id":"max"}],
   "time":{"released":1788998400000},"cost":[{"input":0,"output":0}],"status":"active",
   "enabled":true,"limit":{"context":200000}},
- {"id":"gemma3:12b-32k","providerID":"ollama","name":"gemma3:12b-32k",
+ {"id":"sample-gemma:12b-32k","providerID":"ollama","name":"sample-gemma:12b-32k",
   "capabilities":{"tools":false},"variants":[],"time":{"released":0},"cost":[],
   "status":"active","enabled":true,"limit":{"context":131072}},
- {"id":"qwen3-coder:30b-64k","providerID":"ollama","name":"Qwen3 Coder 30B (64k)",
+ {"id":"sample-coder:30b-64k","providerID":"ollama","name":"Sample Coder 30B (64k)",
   "capabilities":{"tools":true},"variants":[],"time":{"released":0},"cost":[],
   "status":"active","enabled":true,"limit":{"context":65536}}
 ]}"#;
@@ -100,8 +100,8 @@ async fn opencodes_models_come_in_their_groups_with_their_own_levels() {
         shown,
         [
             "opencode",
-            "opencode/ollama/qwen3-coder:30b-64k",
-            "opencode/ollama/gemma3:12b-32k",
+            "opencode/ollama/sample-coder:30b-64k",
+            "opencode/ollama/sample-gemma:12b-32k",
             "opencode/opencode/nemotron-3.5-super-vl-free",
             "opencode/opencode/deepseek-v4.1-flash-free",
         ],
@@ -117,7 +117,7 @@ async fn opencodes_models_come_in_their_groups_with_their_own_levels() {
     );
 
     let qwen = opencode[1];
-    assert_eq!(qwen.display_name(), "Qwen3 Coder 30B (64k)");
+    assert_eq!(qwen.display_name(), "Sample Coder 30B (64k)");
     assert!(qwen.efforts.is_empty(), "no variants, so it takes none");
     let facts = qwen.listed.as_ref().expect("OpenCode's facts");
     assert_eq!(facts.group.as_deref(), Some("Ollama"));
@@ -126,7 +126,7 @@ async fn opencodes_models_come_in_their_groups_with_their_own_levels() {
     assert!(!facts.no_tools);
 
     let gemma = opencode[2];
-    assert_eq!(gemma.display_name(), "Gemma3 12B 32K");
+    assert_eq!(gemma.display_name(), "Sample Gemma 12B 32K");
     assert!(gemma.listed.as_ref().unwrap().no_tools);
 
     let deepseek = opencode[4];

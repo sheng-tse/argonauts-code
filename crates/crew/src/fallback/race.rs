@@ -20,7 +20,6 @@ use tokio_util::sync::CancellationToken;
 
 use argonauts_core::agents::session_runner::SessionControl;
 use argonauts_core::base::names::{ModelRef, RoleName, SessionKey};
-use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::models::limits::FallbackNote;
 use argonauts_core::runs::events::session::SessionEvent;
 use argonauts_core::runs::events::task::TaskEvent;
@@ -33,7 +32,6 @@ use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::Host;
 use crate::engine::job_fallback;
 use crate::fallback::{assign, judge, notes, rules, upgrade};
-use crate::roles::display_name;
 use crate::sessions::labels;
 use crate::state::RunState;
 use crate::state::sessions::SessionRecord;
@@ -147,10 +145,9 @@ fn say_who_takes_it(
         (labels::task_label(state, task), stopped)
     });
     let still = stopped.and_then(|session| job_fallback::still_out(host, &session));
-    let names: Vec<String> = entrants
-        .iter()
-        .map(|entrant| display_name(&entrant.worker))
-        .collect();
+    let names = host
+        .names()
+        .workers(entrants.iter().map(|entrant| &entrant.worker));
     let together = match names.as_slice() {
         [one, other] => format!("{one} and {other} both take {label}"),
         names => format!("{} all take {label}", joined(names)),
@@ -177,13 +174,13 @@ fn say_who_passed(
 ) -> EngineResult<()> {
     let label = host.read(|state| labels::task_label(state, task));
     // The line that said who takes it named each in full, so the model alone names a loser.
-    let names = DisplayNames::default();
+    let names = host.names();
     let others: Vec<String> = entrants
         .iter()
         .filter(|entrant| &entrant.worker != winner)
         .map(|entrant| names.short(&entrant.worker))
         .collect();
-    let winner = display_name(winner);
+    let winner = host.names().worker(winner);
     let text = match until {
         Until::FirstPassed => format!(
             "{label} · {winner} passed first · {} stopped",

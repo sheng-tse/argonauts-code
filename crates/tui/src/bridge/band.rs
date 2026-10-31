@@ -248,6 +248,7 @@ mod tests {
             uncommitted: Vec::new(),
             settings_sha256: None,
             continues: false,
+            opens_a_talk: false,
         };
         bridge.on_event(&mut model, &conversation(started), now);
         let card = model.bottom.band.context.clone().expect("the loading card");

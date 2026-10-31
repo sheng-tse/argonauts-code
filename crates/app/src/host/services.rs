@@ -413,7 +413,7 @@ impl ModelRegistry for LiveRegistry {
 }
 
 /// Whether `binary` names a file here or on `PATH`.
-fn on_path(binary: &str) -> bool {
+pub(crate) fn on_path(binary: &str) -> bool {
     if binary.contains('/') {
         return std::path::Path::new(binary).is_file();
     }

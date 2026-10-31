@@ -2,20 +2,12 @@
 //! the colors, boldness and backgrounds with the `.html` that draws the same grid. A picture
 //! names its colors as the panel's own (`--term-dim` and so on), which map to theme roles.
 
+use argonauts_testkit::approved;
 use argonauts_testkit::pictures::picture;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 
 use crate::base::theme::{Role, Theme};
-
-/// A cell the screen is known to draw otherwise than its picture, and why.
-#[derive(Debug, Clone, Copy)]
-pub struct Unlike {
-    pub row: usize,
-    /// The first and last column, both included.
-    pub cols: (usize, usize),
-    pub why: &'static str,
-}
 
 /// A color the picture spells out, `#rrggbb`, as the theme's color level draws it. `None` for
 /// any other color, and where the terminal shows no color at all.
@@ -70,37 +62,29 @@ fn cells(lines: &[Line<'_>]) -> Vec<Vec<(char, Style)>> {
         .collect()
 }
 
-fn excused(unlike: &[Unlike], row: usize, col: usize) -> bool {
-    unlike
-        .iter()
-        .any(|u| u.row == row && (u.cols.0..=u.cols.1).contains(&col))
+fn same_char(want: Option<&char>, got: Option<&char>) -> bool {
+    match (want, got) {
+        (Some(want), Some(got)) => approved::same_mark(*want, *got),
+        _ => want == got,
+    }
 }
 
-/// Asserts the drawn rows match the picture, but for the cells `unlike` names.
-pub fn assert_matches(
-    name: &str,
-    lines: &[Line<'_>],
-    txt: &str,
-    html: &str,
-    theme: &Theme,
-    unlike: &[Unlike],
-) {
+/// Asserts the drawn rows match the picture.
+pub fn assert_matches(name: &str, lines: &[Line<'_>], txt: &str, html: &str, theme: &Theme) {
     crate::testing::pictures::picture_dump::lines(name, lines);
     crate::testing::pictures::picture_dump::lines_page(name, lines, theme);
     let want: Vec<&str> = txt.trim_end_matches('\n').split('\n').collect();
-    rows_match(name, lines, &want, &picture::grid(html), theme, unlike);
+    rows_match(name, lines, &want, &picture::grid(html), theme);
 }
 
-/// Asserts the drawn `lines` are the picture's rows `rows`, but for the cells `unlike` names,
-/// counting rows from the first of `rows`. For a picture whose rows the screen draws a part at
-/// a time, with other rows between.
+/// Asserts the drawn `lines` are the picture's rows `rows`. For a picture whose rows the screen
+/// draws a part at a time, with other rows between.
 pub fn assert_rows_match(
     name: &str,
     lines: &[Line<'_>],
     (txt, html): (&str, &str),
     rows: std::ops::Range<usize>,
     theme: &Theme,
-    unlike: &[Unlike],
 ) {
     let part = format!("{name}-rows-{}-{}", rows.start, rows.end);
     crate::testing::pictures::picture_dump::lines(&part, lines);
@@ -113,7 +97,6 @@ pub fn assert_rows_match(
         &want[rows.clone()],
         painted.get(rows).unwrap_or_default(),
         theme,
-        unlike,
     );
 }
 
@@ -123,14 +106,7 @@ fn rows_match(
     want: &[&str],
     painted: &[Vec<picture::Cell>],
     theme: &Theme,
-    unlike: &[Unlike],
 ) {
-    for u in unlike {
-        eprintln!(
-            "{name}: row {} cols {}-{} are different: {}",
-            u.row, u.cols.0, u.cols.1, u.why
-        );
-    }
     let drawn = cells(lines);
     let text = |row: &[(char, Style)]| -> String {
         let row: String = row.iter().map(|(ch, _)| ch).collect();
@@ -144,7 +120,7 @@ fn rows_match(
         let got: Vec<char> = text(cells).chars().collect();
         for col in 0..wanted.len().max(got.len()) {
             let (w, g) = (wanted.get(col), got.get(col));
-            if w != g && !excused(unlike, row, col) {
+            if !same_char(w, g) {
                 panic!(
                     "{name}: row {row} col {col}: the picture has {w:?}, the screen {g:?}\n\
                      want: {}\n got: {}\n\n{screen}",
@@ -155,7 +131,7 @@ fn rows_match(
     }
     for (row, cells_painted) in painted.iter().enumerate() {
         for (col, cell) in cells_painted.iter().enumerate() {
-            if cell.ch == ' ' || excused(unlike, row, col) {
+            if cell.ch == ' ' {
                 continue;
             }
             let Some((_, style)) = drawn.get(row).and_then(|r| r.get(col)) else {
@@ -277,7 +253,7 @@ mod tests {
     fn fails(lines: &[Line<'_>], txt: &str, html: &str) -> bool {
         let theme = theme();
         catch_unwind(AssertUnwindSafe(|| {
-            assert_matches("changed", lines, txt, html, &theme, &[]);
+            assert_matches("changed", lines, txt, html, &theme);
         }))
         .is_err()
     }
@@ -307,5 +283,10 @@ mod tests {
         chars[column] = '#';
         rows[row] = chars.into_iter().collect();
         assert!(fails(&lines, &rows.join("\n"), HTML), "a character changed");
+    }
+
+    #[test]
+    fn a_missing_cell_is_no_mark() {
+        assert!(!same_char(Some(&'⏺'), None));
     }
 }

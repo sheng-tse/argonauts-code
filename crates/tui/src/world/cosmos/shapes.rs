@@ -1,7 +1,8 @@
 //! Where everything sits. In a galaxy's own plane, radius 1: its biggest model at the core, each
 //! other model further out the less its behaviors look like its maker's whole mix, and each
 //! action on its model's arm, further from its star the older it is, so this week's work gathers
-//! round its star and old work trails along the arms. In the universe: each galaxy round your
+//! round its star and old work trails along the arms. A maker whose logo ships lays its actions
+//! along the logo instead, the newest nearest the core. In the universe: each galaxy round your
 //! planet, nearer the faint ring the more its maker's mix is like your whole mix.
 
 use std::collections::BTreeMap;
@@ -9,6 +10,9 @@ use std::f64::consts::{PI, TAU};
 
 use argonauts_core::behaviors::behavior_world::ModelFacts;
 
+use crate::world::raster::noise::Rng;
+
+use super::logo_shape::LogoShape;
 use super::model::{Universe, rng_for};
 
 /// The universe's sizes are tuned for a picture this big, 64 by 13 cells of 18 by 42 pixels,
@@ -32,6 +36,8 @@ pub(super) struct GalaxyShape {
     /// How far it is turned in the universe.
     pub turn: f64,
     pub points: Vec<Point>,
+    /// Its maker's logo, which its actions lie along; the spiral where none ships.
+    pub logo: Option<&'static LogoShape>,
 }
 
 /// Where a model's star sits in its galaxy's plane.
@@ -124,12 +130,14 @@ impl Shapes {
                     .map(|s| &models[universe.stars[*s].model]),
             );
             let apart = 1.0 - cosine(&mine, &all);
-            let tilt = if maker.dwarf {
-                0.75
-            } else {
-                0.45 + 0.2 * rng.next_f64()
+            let logo = maker.logo.mark.and_then(LogoShape::of);
+            // A logo is turned and tilted only a little, so it keeps reading.
+            let tilt = match (logo, maker.dwarf) {
+                (Some(_), _) => 0.82 + 0.08 * rng.next_f64(),
+                (None, true) => 0.75,
+                (None, false) => 0.45 + 0.2 * rng.next_f64(),
             };
-            let turn = (rng.next_f64() - 0.5) * 1.1;
+            let turn = (rng.next_f64() - 0.5) * if logo.is_some() { 0.36 } else { 1.1 };
             // The rest in order of how far their work is from the maker's mix, half by that
             // order and half by the difference itself, so no two stars share a place; neighbours
             // take turns by arm.
@@ -162,57 +170,68 @@ impl Shapes {
             }
             for star in &maker.stars {
                 let place = &mut stars[*star];
-                place.th = if maker.dwarf {
-                    rng.next_f64() * TAU
+                if let Some(logo) = logo {
+                    let (rad, th) = logo.near(place.rad, &mut rng);
+                    (place.rad, place.th) = (rad * LOGO_REACH, th);
                 } else {
-                    f64::from(place.arm) * PI + (place.rad / 0.08 + 1.0).ln() / PITCH.tan()
-                };
+                    place.th = if maker.dwarf {
+                        rng.next_f64() * TAU
+                    } else {
+                        f64::from(place.arm) * PI + (place.rad / 0.08 + 1.0).ln() / PITCH.tan()
+                    };
+                }
                 if let Some(binary) = universe.stars[*star].binary
                     && binary.companion
                 {
                     place.companion_of = Some(binary.with);
                 }
             }
-            let mut points = Vec::new();
-            for star in &maker.stars {
-                let base = stars[*star]
-                    .companion_of
-                    .map_or(stars[*star], |big| stars[big]);
-                for &at in &by_star[*star] {
-                    let action = &universe.actions[at];
-                    let age = (f64::from(action.day) / f64::from(universe.days)).clamp(0.0, 1.0);
-                    let (rad, th) = if maker.dwarf {
-                        let rad = rng.normal().abs() * 0.3 * (0.4 + age);
-                        (rad, rng.next_f64() * TAU)
-                    } else {
-                        let out = if base.rad < 0.15 || rng.next_f64() < 0.5 {
-                            1.0
+            let mut points = match logo {
+                Some(logo) => along_logo(universe, logo, &maker.stars, &by_star, &mut rng),
+                None => Vec::new(),
+            };
+            if logo.is_none() {
+                for star in &maker.stars {
+                    let base = stars[*star]
+                        .companion_of
+                        .map_or(stars[*star], |big| stars[big]);
+                    for &at in &by_star[*star] {
+                        let action = &universe.actions[at];
+                        let age =
+                            (f64::from(action.day) / f64::from(universe.days)).clamp(0.0, 1.0);
+                        let (rad, th) = if maker.dwarf {
+                            let rad = rng.normal().abs() * 0.3 * (0.4 + age);
+                            (rad, rng.next_f64() * TAU)
                         } else {
-                            -1.0
+                            let out = if base.rad < 0.15 || rng.next_f64() < 0.5 {
+                                1.0
+                            } else {
+                                -1.0
+                            };
+                            let rad = (base.rad
+                                + out * age * (0.25 + 0.35 * rng.next_f64())
+                                + rng.normal() * 0.03)
+                                .clamp(0.03, 1.08);
+                            let arm = if rng.next_f64() < 0.8 {
+                                base.arm
+                            } else {
+                                1 - base.arm
+                            };
+                            let th = f64::from(arm) * PI
+                                + (rad / 0.08 + 1.0).ln() / PITCH.tan()
+                                + rng.normal() * (0.05 + 0.22 * age) / rad.max(0.25);
+                            (rad, th)
                         };
-                        let rad = (base.rad
-                            + out * age * (0.25 + 0.35 * rng.next_f64())
-                            + rng.normal() * 0.03)
-                            .clamp(0.03, 1.08);
-                        let arm = if rng.next_f64() < 0.8 {
-                            base.arm
-                        } else {
-                            1 - base.arm
-                        };
-                        let th = f64::from(arm) * PI
-                            + (rad / 0.08 + 1.0).ln() / PITCH.tan()
-                            + rng.normal() * (0.05 + 0.22 * age) / rad.max(0.25);
-                        (rad, th)
-                    };
-                    points.push(Point {
-                        action: at,
-                        star: *star,
-                        rad,
-                        th,
-                        bright: 0.45 + 0.55 * rng.next_f64(),
-                        fresh: action.day < 7,
-                        failed: action.failed,
-                    });
+                        points.push(Point {
+                            action: at,
+                            star: *star,
+                            rad,
+                            th,
+                            bright: 0.45 + 0.55 * rng.next_f64(),
+                            fresh: action.day < 7,
+                            failed: action.failed,
+                        });
+                    }
                 }
             }
             galaxies.push(GalaxyShape {
@@ -220,10 +239,47 @@ impl Shapes {
                 tilt,
                 turn,
                 points,
+                logo,
             });
         }
         Shapes { galaxies, stars }
     }
+}
+
+/// How far into its frame a galaxy's logo reaches, so it shows as big as a spiral of its share.
+pub(super) const LOGO_REACH: f64 = 0.7;
+
+/// A maker's actions laid along its logo, one point each: sampled from the logo's ink, the newest
+/// nearest the core and older ones further out.
+fn along_logo(
+    universe: &Universe,
+    logo: &LogoShape,
+    stars: &[usize],
+    by_star: &[Vec<usize>],
+    rng: &mut Rng,
+) -> Vec<Point> {
+    let mut actions: Vec<(usize, usize)> = stars
+        .iter()
+        .flat_map(|star| by_star[*star].iter().map(move |at| (*star, *at)))
+        .collect();
+    actions.sort_by_key(|(_, at)| (universe.actions[*at].day, *at));
+    let places = logo.places(actions.len(), rng);
+    actions
+        .into_iter()
+        .zip(places)
+        .map(|((star, at), (rad, th))| {
+            let action = &universe.actions[at];
+            Point {
+                action: at,
+                star,
+                rad: rad * LOGO_REACH,
+                th,
+                bright: 0.45 + 0.55 * rng.next_f64(),
+                fresh: action.day < 7,
+                failed: action.failed,
+            }
+        })
+        .collect()
 }
 
 /// A galaxy as one picture places it: its centre, its radius in pixels and how far it is

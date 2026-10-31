@@ -11,7 +11,8 @@
 //! half drawn, however long the app stalls in the middle of it.
 //!
 //! A terminal set to take pictures keeps the kitty protocol's pictures as Ghostty does, one store
-//! for each screen (see [`super::pictures`]).
+//! for each screen, and pictures placed on the main screen go up with its text when rows scroll
+//! off its top (see [`super::pictures`]).
 
 use std::collections::VecDeque;
 
@@ -165,10 +166,16 @@ impl Emulator {
         }
     }
 
-    /// A terminal that keeps the kitty protocol's pictures, as Ghostty and kitty do.
-    pub(super) fn takes_pictures(mut self) -> Self {
-        self.pictures = Pictures::taking();
+    /// A terminal that keeps the kitty protocol's pictures, as Ghostty and kitty do, its cells
+    /// `cell` pixels.
+    pub(super) fn takes_pictures(mut self, cell: (u16, u16)) -> Self {
+        self.pictures = Pictures::taking(cell);
         self
+    }
+
+    /// The terminal's cells are `cell` pixels from now on, as after a font size change.
+    pub(super) fn use_cell(&mut self, cell: (u16, u16)) {
+        self.pictures.use_cell(cell);
     }
 
     /// The screen as the program has drawn it so far, which is where the cursor is.
@@ -185,12 +192,14 @@ impl Emulator {
     }
 
     /// The cells a person would see, a placeholder showing its picture when the stores the shown
-    /// screen draws from hold it.
+    /// screen draws from hold it, and a picture placed on the screen over the cells it covers.
     pub(super) fn cells(&self) -> Grid {
         let screen = self.shown();
         let stores = self.shown_stores();
         let alternate = screen.alternate_screen();
-        Grid::read(screen, &|id| self.pictures.shows(stores, alternate, id))
+        let mut cells = Grid::read(screen, &|id| self.pictures.shows(stores, alternate, id));
+        self.pictures.cover(&mut cells, stores);
+        cells
     }
 
     /// What keeps a picture the program meant to show from showing, one line each: placeholders
@@ -294,6 +303,7 @@ impl Emulator {
                 let (_, after) = self.parser.screen().cursor_position();
                 if after < col {
                     self.push(top);
+                    self.pictures.scroll(false, self.region.1, 1);
                 }
                 self.cursor = Some(self.parser.screen().cursor_position());
                 self.printed = 0;
@@ -328,7 +338,9 @@ impl Emulator {
                     self.pictures.empty(true);
                 }
             }
-            Action::Graphics => self.pictures.run(screen.alternate_screen()),
+            Action::Graphics => self
+                .pictures
+                .run(screen.alternate_screen(), screen.cursor_position()),
             _ => {}
         }
         self.parser.process(&[byte]);
@@ -355,6 +367,7 @@ impl Emulator {
         {
             self.push(row);
         }
+        self.pictures.scroll(false, self.region.1, count);
     }
 
     fn row_text(&self, row: usize) -> String {

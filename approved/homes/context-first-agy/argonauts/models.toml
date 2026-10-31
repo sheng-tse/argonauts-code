@@ -1,4 +1,4 @@
-# gemini-3.8-flash-low as agy names it, with the 1,000,000-token window the drawings give it.
+# gemini-3.8-flash-low as agy names it. Its window comes from the shipped catalog.
 
 [[model]]
 id = "antigravity-cli/gemini-3.8-flash-low"
@@ -8,4 +8,3 @@ kind = "cli"
 access = "subscription"
 tools = true
 cost = { unit = "plan_usage" }
-context_window = 1000000

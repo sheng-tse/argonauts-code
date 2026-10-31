@@ -6,10 +6,15 @@ use std::ops::Range;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Position;
+use ratatui::text::Line;
 
 use super::{Ui, UiAction};
 use crate::base::draw::picture::Picture;
+use crate::base::draw::render::RenderCtx;
 use crate::base::mascot::graphics::Graphics;
+use crate::cells::cell::HistoryCell;
+use crate::cells::cell::history::{CellId, History};
+use crate::council::draw::place::{Pictures, Placing, Under};
 use crate::council::screens::pick::starts_picking;
 
 impl<W: Write> Ui<W> {
@@ -79,8 +84,10 @@ impl<W: Write> Ui<W> {
         }
     }
 
-    /// After the full screen drew a frame: each kept picture goes where its rows show now.
-    pub(super) fn place_council_pictures(&mut self) -> io::Result<()> {
+    /// After the full screen drew a frame: each kept picture goes where its rows show now, or
+    /// off the screen while a view or the transcript covers the conversation (`shows` false),
+    /// to come back where its rows show as it closes.
+    pub(super) fn place_council_pictures(&mut self, shows: bool) -> io::Result<()> {
         let (Some(scrollback), Some((_, cell))) = (&self.scrollback, self.picture_terminal())
         else {
             return Ok(());
@@ -89,9 +96,45 @@ impl<W: Write> Ui<W> {
         let picked = self.model.bottom.council.picked.as_ref();
         let placing = self
             .council_pictures
-            .frame(width, cell, picked, |first, rows| {
-                scrollback.printed_rows_at(first, rows)
+            .frame(width, cell, picked, |under, first, rows| match under {
+                _ if !shows => None,
+                Under::Printed => scrollback.printed_rows_at(first, rows),
+                Under::Live => scrollback.live_rows_at(first, rows),
             });
+        self.send_council_placing(placing)
+    }
+
+    /// After the inline screen drew a frame: the pictures of the live cells it shows whole go
+    /// under their rows, the live region's `trailing` rows from screen row `top` on. The
+    /// printed ones went out once with their rows. `scrolled` says the terminal moved the rows
+    /// the live pictures sat under, and the pictures with them.
+    pub(super) fn place_live_council_pictures(
+        &mut self,
+        top: u16,
+        trailing: u16,
+        scrolled: bool,
+    ) -> io::Result<()> {
+        let Some(cell) = self.under_text_cell() else {
+            return Ok(());
+        };
+        if scrolled {
+            self.council_pictures.live_scrolled();
+        }
+        let width = self.terminal.screen_size().width;
+        let picked = self.model.bottom.council.picked.as_ref();
+        let placing = self
+            .council_pictures
+            .frame(width, cell, picked, |under, first, rows| {
+                let first = top.checked_add(u16::try_from(first).ok()?)?;
+                let end = first
+                    .saturating_add(u16::try_from(rows).ok()?)
+                    .min(top.saturating_add(trailing));
+                (under == Under::Live && first < end).then(|| (i32::from(first), first..end))
+            });
+        self.send_council_placing(placing)
+    }
+
+    fn send_council_placing(&mut self, placing: Vec<Placing>) -> io::Result<()> {
         for (at, escapes) in placing {
             let at = at.map(|(column, row)| Position::new(column, row));
             self.terminal.send_escapes(at, &escapes)?;
@@ -107,6 +150,30 @@ impl<W: Write> Ui<W> {
         }
         self.terminal.send_escapes(None, &escapes)
     }
+}
+
+/// The live cells a screen shows whole, `whole` among its `trailing` rows, keep their
+/// pictures under those rows, so a message shows in its bubble from the frame its words do.
+/// Each picture is drawn again only when its cell's rows change.
+pub(super) fn keep_live_pictures(
+    pictures: &mut Pictures,
+    history: &History,
+    (whole, trailing): (&[(CellId, Range<usize>)], &[Line<'static>]),
+    ctx: &RenderCtx<'_>,
+    cell: (u16, u16),
+) {
+    let shown: Vec<&(CellId, Range<usize>)> = whole
+        .iter()
+        .filter(|(_, rows)| rows.end <= trailing.len())
+        .collect();
+    let rows = shown
+        .iter()
+        .map(|(_, rows)| (rows.clone(), &trailing[rows.clone()]))
+        .collect();
+    pictures.keep_live(rows, ctx.width, cell, |n| {
+        let (id, _) = shown.get(n)?;
+        history.active(*id)?.picture_under(ctx, cell)
+    });
 }
 
 #[cfg(test)]

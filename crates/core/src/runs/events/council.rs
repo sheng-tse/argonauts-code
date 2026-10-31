@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::TaskId;
 use crate::base::names::{MessageId, ModelRef, SeatId};
+use crate::safety::macos_folders::FolderBlocked;
 use crate::workflows::workflow::StepRef;
 
 /// One moment of a council, written by the council's engine as it happens.
@@ -75,6 +76,15 @@ pub enum CouncilEventKind {
     SatOut { seat: SeatId },
     /// It came back, and read the messages it missed first.
     Rejoined { seat: SeatId, missed: u32 },
+    /// A seat's turn ran out or failed, so it sits that turn out and the talk goes on.
+    Missed(Missed),
+    /// macOS kept a seat's CLI out of a folder, said once per run and CLI. `cli` is the CLI's
+    /// id, which the screen names.
+    FolderBlocked {
+        seat: SeatId,
+        cli: String,
+        blocked: FolderBlocked,
+    },
     /// Who checks one task, and which rung of the ladder they came from.
     Check(CheckPick),
     /// What one move of the talk after the note keeper's list cost: its wall time, while some
@@ -378,6 +388,34 @@ pub enum PointState {
     Settled,
     /// The talk stopped in Autopilot, and the seats voted.
     Voted,
+}
+
+/// A seat's turn that ran out or failed, for the centred line: "Qwen3 Coder 30B didn't react
+/// within 2 minutes, so it sits this turn out".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Missed {
+    pub seat: SeatId,
+    pub turn: MissedTurn,
+    /// The turn's time limit in seconds, when it ran past it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit_secs: Option<u32>,
+    /// Its second miss, so it sits out the rest of the talk and the seats still in agree.
+    #[serde(default)]
+    pub for_good: bool,
+}
+
+/// The turn a seat missed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "turn", rename_all = "snake_case")]
+pub enum MissedTurn {
+    FirstAnswer,
+    /// Its reaction to this message, so its stance on the points stays as it was.
+    Reaction {
+        message: MessageId,
+    },
+    Message,
+    /// The note keeper's plan, which the next seat still in writes once the keeper sat out.
+    Plan,
 }
 
 /// A changed stance, for the centred line: "5.6 Luna moved to a token bucket".
@@ -826,6 +864,20 @@ mod tests {
                 seat: seat(1),
                 missed: 3,
             },
+            CouncilEventKind::Missed(Missed {
+                seat: seat(2),
+                turn: MissedTurn::Reaction {
+                    message: MessageId::numbered(4),
+                },
+                limit_secs: Some(120),
+                for_good: false,
+            }),
+            CouncilEventKind::Missed(Missed {
+                seat: seat(2),
+                turn: MissedTurn::Message,
+                limit_secs: None,
+                for_good: true,
+            }),
             CouncilEventKind::Check(CheckPick {
                 task: TaskId::numbered(1),
                 checker: Some("claude-code/opus".parse().unwrap()),

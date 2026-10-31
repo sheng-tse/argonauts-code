@@ -43,7 +43,7 @@ const LIMIT_WARN_SHARE: f64 = 0.8;
 pub(crate) const KEPT_AFTER_END: Duration = Duration::from_secs(30);
 
 pub fn sync(cx: &mut Cx<'_>) {
-    let wall = OffsetDateTime::now_utc();
+    let wall = argonauts_core::base::clock::now_utc();
     let panel = &cx.settings.panel;
     let bottom = &mut cx.model.bottom;
     let keep = bottom.workflows.selected_id(&bottom.agents);
@@ -99,8 +99,7 @@ pub fn run_rows(state: &AppState, wall: OffsetDateTime, now: Instant) -> Vec<Wor
             row.leaves_at = kept_for(run, wall).map(|left| now + left);
         }
         let tasks = shown_tasks(run);
-        let under = if tasks.is_empty() {
-            // A council shows its seats while it talks, until it has tasks.
+        let under = if tasks.is_empty() || (run.finished.is_none() && seats_shown(run, &tasks)) {
             let seats = run
                 .talk
                 .as_ref()
@@ -400,10 +399,10 @@ fn run_name(run: &RunState) -> String {
     if let Some(named) = run
         .named
         .as_ref()
-        .map(|named| named.name.trim())
-        .filter(|name| !name.is_empty())
+        .filter(|named| !named.name.trim().is_empty())
     {
-        return argonauts_core::base::text::title_words(named);
+        let spelled = format!("{} {}", named.description, run.title);
+        return argonauts_core::base::text::title_words_as(&named.name, &spelled);
     }
     row_name(workflow_name(run), &run.title, &run.id)
 }
@@ -502,8 +501,8 @@ fn run_row(
     let mut row = WorkflowRow::new(run.id.as_str(), run_name(run), row_state(run));
     row.answers = question_of(run, |_| true);
     let tasks = shown_tasks(run);
-    // A council talks before it has tasks, and its row counts the seats that back every point.
-    row.count = if let Some(talk) = run.talk.as_ref().filter(|_| tasks.is_empty()) {
+    // While a council's seats show, its row counts the seats that back every point.
+    row.count = if let Some(talk) = run.talk.as_ref().filter(|_| seats_shown(run, &tasks)) {
         Some(talk.backing())
     } else if tasks.is_empty() {
         (totals.agents_total > 0).then_some((totals.agents_done, totals.agents_total))
@@ -594,6 +593,18 @@ fn count(n: usize) -> u32 {
 /// The tasks a request's row counts and lists: every one but those cancelled, in their order. A
 /// run that is its one task's CLI workflow counts that workflow's agents instead, as Claude
 /// Code's own row of it does.
+/// A council shows its seats under its request while it talks and while its plan waits for
+/// you, though the plan's tasks are made, until work starts.
+fn seats_shown(run: &RunState, tasks: &[&TaskRow]) -> bool {
+    run.talk.is_some()
+        && tasks.iter().all(|task| {
+            matches!(
+                task.state,
+                None | Some(TaskState::Waiting | TaskState::Ready)
+            )
+        })
+}
+
 fn shown_tasks(run: &RunState) -> Vec<&TaskRow> {
     let tasks: Vec<&TaskRow> = run
         .tasks
@@ -1208,7 +1219,7 @@ mod tests {
     fn a_run_that_is_its_clis_workflow_is_one_row() {
         use argonauts_core::base::names::{RoleName, SessionKey};
         use argonauts_core::runs::events::session::{CliAgent, CliPhase};
-        let wall = OffsetDateTime::now_utc();
+        let wall = argonauts_core::base::clock::now_utc();
         let mut run = run_state("run-own", wall);
         let mut host = SessionState::new(
             SessionKey::numbered(1),
@@ -1293,7 +1304,7 @@ mod tests {
         use argonauts_core::base::names::{RoleName, SessionKey, WorkflowId};
         use argonauts_core::runs::events::session::{CliAgent, CliPhase};
         use argonauts_core::workflows::workflow::StepRef;
-        let wall = OffsetDateTime::now_utc();
+        let wall = argonauts_core::base::clock::now_utc();
         let mut run = run_state("run-due", wall);
         let step = StepRef {
             workflow: WorkflowId::numbered(1),
@@ -1451,7 +1462,7 @@ mod tests {
 
     #[test]
     fn near_its_limit_a_runs_bar_turns_amber() {
-        let wall = OffsetDateTime::now_utc();
+        let wall = argonauts_core::base::clock::now_utc();
         let now = Instant::now();
         let mut state = AppState::default();
         state
@@ -1498,7 +1509,7 @@ mod tests {
         use argonauts_core::app::FollowedPullRequest;
         use argonauts_core::runs::events::run::RunOutcome;
 
-        let wall = OffsetDateTime::now_utc();
+        let wall = argonauts_core::base::clock::now_utc();
         let now = Instant::now();
         let mut run = run_state("run-a", wall);
         run.finished = Some(RunOutcome::PullRequest);
@@ -1522,7 +1533,7 @@ mod tests {
     /// point, waiting out an outage, on a fallback model, stopped, and how it ended.
     #[test]
     fn a_row_follows_its_run() {
-        let wall = OffsetDateTime::now_utc();
+        let wall = argonauts_core::base::clock::now_utc();
         let now = Instant::now();
         let mut run = run_state("run-a", wall);
         let row = |run: &RunState| run_row(run, None, wall, now);
@@ -1582,7 +1593,7 @@ mod tests {
 
     #[test]
     fn a_row_names_the_workflow_and_the_title() {
-        let wall = OffsetDateTime::now_utc();
+        let wall = argonauts_core::base::clock::now_utc();
         let now = Instant::now();
         let mut run = run_state("run-a", wall);
         run.title = "add --json to export".into();
@@ -1641,7 +1652,7 @@ mod tests {
     /// its question counts with the rest.
     #[test]
     fn a_question_waiting_in_a_run_not_on_screen_counts_as_needing_you() {
-        let wall = OffsetDateTime::now_utc();
+        let wall = argonauts_core::base::clock::now_utc();
         let mut state = AppState::default();
         state.background = vec![
             waiting_summary("run-001", true),
@@ -1659,7 +1670,7 @@ mod tests {
     /// and how a run ended still show.
     #[test]
     fn a_run_not_on_screen_has_no_row_until_its_shape_is_known() {
-        let wall = OffsetDateTime::now_utc();
+        let wall = argonauts_core::base::clock::now_utc();
         let now = Instant::now();
         let mut state = AppState::default();
         let mut written = waiting_summary("run-001", false);
@@ -1701,7 +1712,7 @@ mod tests {
 
     #[test]
     fn a_run_not_on_screen_keeps_its_row_until_it_is_opened() {
-        let wall = OffsetDateTime::now_utc();
+        let wall = argonauts_core::base::clock::now_utc();
         let now = Instant::now();
         let mut state = AppState::default();
         state.background = vec![
@@ -1741,7 +1752,7 @@ mod tests {
     #[test]
     fn a_run_that_left_the_screen_follows_its_listing_and_goes_once_it_ends() {
         use argonauts_core::app::AppEvent;
-        let wall = OffsetDateTime::now_utc();
+        let wall = argonauts_core::base::clock::now_utc();
         let now = Instant::now();
         let first = RunId::new("run-001").unwrap();
         let second = RunId::new("run-002").unwrap();
@@ -1824,7 +1835,7 @@ mod tests {
         use argonauts_core::base::names::{RoleName, SessionKey};
         use argonauts_core::look::logos::{LogoMark, logo_for};
 
-        let wall = OffsetDateTime::now_utc();
+        let wall = argonauts_core::base::clock::now_utc();
         let mut state = AppState::default();
         state
             .names

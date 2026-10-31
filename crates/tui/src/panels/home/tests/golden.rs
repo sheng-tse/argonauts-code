@@ -31,7 +31,7 @@ const MODELS_COLOURS: &str = include_str!("../../../../tests/golden/home/ours_mo
 /// Models picture's 31 rows, or the Overview picture's 33.
 const WIDTH: u16 = 120;
 const HEIGHT: u16 = 32;
-const OVERVIEW_HEIGHT: u16 = 34;
+const OVERVIEW_HEIGHT: u16 = 37;
 
 /// A day's strength in the picture, as its quarter: `25%` is the quietest.
 fn strength(fg: &str) -> Option<usize> {
@@ -63,9 +63,14 @@ fn colour(theme: &Theme, value: &str) -> Color {
         "--v-claude" | "--m-opus" => Role::CliClaude,
         "--v-codex" | "--m-gpt" => Role::CliCodex,
         "--v-agy" | "--m-pro" => Role::CliAgy,
+        "--v-opencode" => Role::CliOpenCode,
         "--m-sonnet" => {
             let shade = crate::panels::stats::draw::shade(&kit, Role::CliClaude, 1);
             return shade.fg.unwrap_or(Color::Reset);
+        }
+        "--line-claude-deep" => {
+            let step = crate::base::theme::shades::hues::step_style(&kit, Role::CliClaude, 1);
+            return step.fg.unwrap_or(Color::Reset);
         }
         other => panic!("a colour the pictures don't use: {other}"),
     };
@@ -228,18 +233,18 @@ fn the_overview_sub_tab_matches_its_picture() {
         text: OVERVIEW_TEXT,
         colours: OVERVIEW_COLOURS,
         days: 5..=11,
-        colours_elsewhere: 17..27,
+        colours_elsewhere: 17..30,
         instead: &[
             (
-                28,
+                31,
                 "Your input and output are ~7087x the tokens in Animal Farm",
                 "the picture's ~920x of A Game of Thrones can't come from 69.1M in and 207.3M \
                  out, and the fact is picked by the day, as Claude Code picks one at random",
             ),
             (
-                30,
+                33,
                 "Stats from the last 147 days · imported: Claude Code since Oct 2025, Codex since \
-                 Feb, agy since Jun",
+                 Feb · ran here: agy, OpenCode",
                 "the numbers above it count 147 days, where the picture's last row was drawn \
                  for 365",
             ),
@@ -251,8 +256,7 @@ fn the_overview_sub_tab_matches_its_picture() {
 /// The three groups and the two bars from the numbers picture's example, at its 116 cells,
 /// every cell with its colour. The page names the kinds of tokens by its faint, blue and
 /// orange, which here are the tokens' own colours. The Tokens group's values stand three
-/// cells after its longest label, the app's name in full, and the Days group four after its
-/// longest note.
+/// cells after its longest label, a CLI's name, and the Days group where it always stood.
 #[test]
 fn the_numbers_match_their_picture() {
     numbers_match("overview_numbers", &sample::numbers());
@@ -289,7 +293,7 @@ fn numbers_match(name: &str, data: &argonauts_core::app::overview::OverviewData)
     for (y, line) in drawn.lines.iter().enumerate() {
         buf.set_line(0, y as u16, line, area.width);
     }
-    assert_eq!(count(&buf), 3, "a logo for each CLI");
+    assert_eq!(count(&buf), 4, "a logo for each CLI");
     let shown = with_stand_ins(&buf);
     keep(name, &shown);
     assert_eq!(drawn.lines.len(), picture.rows.len());
@@ -322,16 +326,22 @@ fn the_by_cli_legend_keys_each_cli_by_its_colour_then_its_logo() {
     let legend = |rows: &[String]| rows[rows.len() - 2..].join("\n");
     let without = legend(&without);
     assert!(
-        without.contains("▌ Claude Code    88%      ▌ Codex    12%"),
+        without.contains("▌ Claude Code    88%      ▌ Codex       12%"),
         "{without}"
     );
-    assert!(without.ends_with("▌ agy            <1%"), "{without}");
+    assert!(
+        without.ends_with("▌ agy            <1%      ▌ OpenCode    <1%"),
+        "{without}"
+    );
     let pictured = legend(&pictured);
     assert!(
-        pictured.contains("▌ ◧◨ Claude Code    88%      ▌ ◧◨ Codex    12%"),
+        pictured.contains("▌ ◧◨ Claude Code    88%      ▌ ◧◨ Codex       12%"),
         "{pictured}"
     );
-    assert!(pictured.ends_with("▌ ◧◨ agy            <1%"), "{pictured}");
+    assert!(
+        pictured.ends_with("▌ ◧◨ agy            <1%      ▌ ◧◨ OpenCode    <1%"),
+        "{pictured}"
+    );
 }
 
 /// A font that draws a square or a bar wider than its cell runs it into whatever touches it,
@@ -442,7 +452,8 @@ fn a_picture_changed_in_one_cell_no_longer_matches_the_models() {
 }
 
 /// Tab moves the sub-tabs from the models too, so with the keys there Models stays filled as
-/// the picture has it, and Tab takes the fill along to Overview and back.
+/// the picture has it. Shift+Tab takes the fill along to Overview, which has nothing to pick,
+/// so the keys go up to the sub-tabs, and Tab brings it back.
 #[test]
 fn in_the_models_the_chosen_sub_tab_stays_filled() {
     use crate::panels::view::subtabs::Level;
@@ -467,12 +478,8 @@ fn in_the_models_the_chosen_sub_tab_stays_filled() {
         0..3,
     );
     key(&mut view, &state, KeyCode::BackTab);
+    assert_eq!(view.level(), Level::SubTabs, "Overview has nothing to pick");
     key(&mut view, &state, KeyCode::Tab);
-    assert_eq!(
-        view.level(),
-        Level::Cards,
-        "Tab leaves the keys in the models"
-    );
     head.compare_rows(
         "ours_models_after_tab",
         &render(&mut view, &state, HEIGHT),

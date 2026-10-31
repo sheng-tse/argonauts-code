@@ -3,11 +3,14 @@
 //! never this. On a chip with performance and efficiency cores the same work costs about twice
 //! the time on an efficiency core, and a busy machine moves a thread there whatever its class,
 //! so each stretch also says which kind of core ran it, and only the performance cores' are
-//! judged.
+//! judged. Each stretch is judged as the reference Mac would have spent it, by the yardstick
+//! timed right after it.
 
 use std::time::Duration;
 
 use nix::libc;
+
+use super::yardstick;
 
 /// The CPU time the calling thread has used so far.
 pub fn of_this_thread() -> Duration {
@@ -44,6 +47,20 @@ pub struct Spent {
     /// The process ran nearly all of the stretch on performance cores, or the machine has one
     /// kind of core.
     pub on_performance_cores: bool,
+    /// The yardstick's time on the same thread right after the stretch.
+    pub yardstick: Duration,
+}
+
+impl Spent {
+    /// How many times the reference Mac's time the yardstick took after this stretch.
+    fn pace(&self) -> f64 {
+        yardstick::pace(self.yardstick)
+    }
+
+    /// The stretch's CPU time as the reference Mac would have spent it.
+    fn as_on_the_reference(&self) -> Duration {
+        self.cpu.div_f64(self.pace())
+    }
 }
 
 /// Times the calling thread's work from when it starts.
@@ -68,6 +85,7 @@ impl Stopwatch {
         Spent {
             cpu,
             on_performance_cores: retired.mostly_on_performance_cores_since(self.retired),
+            yardstick: yardstick::measure(),
         }
     }
 }
@@ -156,29 +174,46 @@ pub fn measured(seconds: &[Spent], wanted: usize) -> bool {
     on_performance_cores(seconds).count() >= wanted || seconds.len() >= wanted * 4
 }
 
-fn on_performance_cores(seconds: &[Spent]) -> impl Iterator<Item = Duration> + '_ {
-    seconds
-        .iter()
-        .filter(|second| second.on_performance_cores)
-        .map(|second| second.cpu)
+fn on_performance_cores(seconds: &[Spent]) -> impl Iterator<Item = &Spent> {
+    seconds.iter().filter(|second| second.on_performance_cores)
 }
 
-/// What a second of work costs, judged as the timed tests judge it: the mean must stay under
-/// its limit, while a second over the worst-second limit is only reported, since one busy
-/// second on a shared runner says little about the code. Only the seconds on performance cores
-/// are judged, unless fewer than a quarter of the seconds were.
+/// The middle of the yardstick's paces over a run.
+fn pace(seconds: &[Spent]) -> f64 {
+    let mut paces: Vec<f64> = seconds.iter().map(Spent::pace).collect();
+    paces.sort_by(f64::total_cmp);
+    paces.get(paces.len() / 2).copied().unwrap_or(f64::NAN)
+}
+
+/// What a second of work costs, judged as the timed tests judge it, each second as the
+/// reference Mac would have spent it: the mean must stay under its limit, while a second over
+/// the worst-second limit is only reported, since one busy second on a shared runner says
+/// little about the code. Only the seconds on performance cores are judged, unless fewer than
+/// a quarter of the seconds were. A machine too slow to compare with the reference fails.
 pub fn judge(what: &str, seconds: &[Spent], mean_under: Duration, worst_under: Duration) {
-    let fast: Vec<Duration> = on_performance_cores(seconds).collect();
+    let pace = pace(seconds);
+    eprintln!("{what}: the yardstick took {pace:.2} times as long as on the reference Mac");
+    assert!(
+        pace > 0.0 && pace <= yardstick::SLOWEST,
+        "{what}: the yardstick took {pace:.2} times as long as on the reference Mac, too slow \
+         to judge against limits set there"
+    );
+    let fast: Vec<&Spent> = on_performance_cores(seconds).collect();
     let judged = match fast.len() * 4 >= seconds.len() {
         true => fast,
-        false => seconds.iter().map(|second| second.cpu).collect(),
+        false => seconds.iter().collect(),
     };
     let count = u32::try_from(judged.len()).unwrap_or(u32::MAX).max(1);
-    let mean = judged.iter().sum::<Duration>() / count;
-    let worst = judged.iter().max().copied().unwrap_or_default();
+    let here = judged.iter().map(|second| second.cpu).sum::<Duration>() / count;
+    let on_the_reference: Vec<Duration> = judged
+        .iter()
+        .map(|second| second.as_on_the_reference())
+        .collect();
+    let mean = on_the_reference.iter().sum::<Duration>() / count;
+    let worst = on_the_reference.iter().max().copied().unwrap_or_default();
     eprintln!(
-        "{what}: {mean:?} of a core a second on average, {worst:?} at most, over {} of {} \
-         seconds",
+        "{what}: {mean:?} of a core a second on average as on the reference Mac ({here:?} \
+         here), {worst:?} at most, over {} of {} seconds",
         judged.len(),
         seconds.len()
     );
@@ -210,11 +245,22 @@ mod tests {
     const FAST: Spent = Spent {
         cpu: Duration::from_millis(5),
         on_performance_cores: true,
+        yardstick: yardstick::REFERENCE,
     };
     const SLOW: Spent = Spent {
         cpu: Duration::from_millis(12),
         on_performance_cores: false,
+        yardstick: yardstick::REFERENCE,
     };
+
+    /// A second of `cpu` on a machine whose yardstick takes `times` the reference's.
+    fn on_a_machine(cpu: u64, times: u32) -> Spent {
+        Spent {
+            cpu: Duration::from_millis(cpu),
+            on_performance_cores: true,
+            yardstick: yardstick::REFERENCE * times,
+        }
+    }
     const LIMITS: (Duration, Duration) = (Duration::from_millis(10), Duration::from_millis(30));
 
     #[test]
@@ -226,6 +272,33 @@ mod tests {
     #[should_panic(expected = "a second on average")]
     fn every_second_is_judged_once_too_few_ran_on_performance_cores() {
         judge("slow", &[FAST, SLOW, SLOW, SLOW, SLOW], LIMITS.0, LIMITS.1);
+    }
+
+    #[test]
+    fn a_machine_half_as_fast_is_judged_as_the_reference_would_spend_it() {
+        judge(
+            "half as fast",
+            &[on_a_machine(16, 2); 4],
+            LIMITS.0,
+            LIMITS.1,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "a second on average")]
+    fn the_same_seconds_on_the_reference_fail() {
+        judge("as fast", &[on_a_machine(16, 1); 4], LIMITS.0, LIMITS.1);
+    }
+
+    #[test]
+    #[should_panic(expected = "too slow to judge")]
+    fn a_machine_over_three_times_slower_than_the_reference_fails() {
+        judge(
+            "a quarter as fast",
+            &[on_a_machine(1, 4); 4],
+            LIMITS.0,
+            LIMITS.1,
+        );
     }
 
     #[test]

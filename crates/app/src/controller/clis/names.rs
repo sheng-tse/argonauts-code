@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use argonauts_core::app::AppEvent;
 use argonauts_core::base::names::ModelRef;
-use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::look::display_names::{self, DisplayNames};
 
 use crate::controller::Ctx;
 
@@ -67,43 +67,16 @@ fn names(ctx: &Ctx) -> DisplayNames {
                 .collect()
         })
         .unwrap_or_else(|_| BTreeMap::new());
-    let configured: BTreeMap<String, String> = ctx
-        .settings()
-        .agents
-        .iter()
-        .filter_map(|(id, agent)| Some((id.clone(), agent.model.clone()?)))
-        .collect();
-    // A session that names no model may print its row before it says which model it runs, so
-    // it's named by its CLI's default from the start, as the header is.
-    let defaults = cli_defaults(ctx, clis.keys().map(String::as_str));
-    DisplayNames {
-        clis,
-        catalog: ctx.services.registry.catalog(),
-        configured,
-        defaults,
-    }
+    DisplayNames::gathered(clis, ctx.services.registry.as_ref(), ctx.settings())
 }
 
-/// The model each CLI in `clis` runs when nothing names one: the one its model list marks, else
-/// the one the catalog's "Default (recommended)" runs. A CLI with neither is left out.
+/// The model each CLI in `clis` runs when nothing names one, as
+/// [`display_names::cli_defaults`] finds it.
 pub(crate) fn cli_defaults<'a>(
     ctx: &Ctx,
     clis: impl IntoIterator<Item = &'a str>,
 ) -> BTreeMap<String, String> {
-    let registry = &ctx.services.registry;
-    let catalog = registry.catalog();
-    let listed = registry.list();
-    clis.into_iter()
-        .filter_map(|cli| {
-            let marked = listed
-                .iter()
-                .find(|entry| entry.cli_default && entry.id.agent == cli)
-                .and_then(|entry| entry.id.model.clone());
-            let id = ModelRef::new(cli, None);
-            let model = marked.or_else(|| catalog.entry(&id)?.runs.clone())?;
-            Some((cli.to_owned(), model))
-        })
-        .collect()
+    display_names::cli_defaults(ctx.services.registry.as_ref(), clis)
 }
 
 #[cfg(test)]

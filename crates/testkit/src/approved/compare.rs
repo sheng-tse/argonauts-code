@@ -8,7 +8,7 @@ use std::fmt::{self, Write as _};
 use super::drawing::{Drawing, Paint, Wanted};
 use super::drawn::Drawn;
 use super::paint::{Painted, Palette, blank, light_ink, logo_half, logo_of, picture_words, solid};
-use super::place::{Placement, same_character};
+use super::place::{Placement, same_character, shows_mark};
 use crate::screen::Rgb;
 
 /// A cell of the screen that isn't as its drawing has it, at the drawing's own row and column,
@@ -202,7 +202,7 @@ impl Cell<'_> {
                     );
                 }
             }
-            (None, None) if text == got.text => {
+            (None, None) if shows_mark(wanted.text, got.text) => {
                 if ink != got.ink {
                     mismatch(
                         Aspect::TextColour,

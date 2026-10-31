@@ -141,14 +141,13 @@ impl AppEnv {
         }
     }
 
-    /// `path` with the user's home shown as `~`.
+    /// `path` with a folder under the user's home shown from `~`. The home folder itself keeps
+    /// its full path, as Claude Code's header names it.
     pub(crate) fn display(&self, path: &Path) -> String {
         if let Some(home) = &self.user_home
             && let Ok(rest) = path.strip_prefix(home)
+            && !rest.as_os_str().is_empty()
         {
-            if rest.as_os_str().is_empty() {
-                return "~".to_owned();
-            }
             return format!("~/{}", rest.display());
         }
         path.display().to_string()
@@ -224,13 +223,14 @@ mod tests {
     }
 
     #[test]
-    fn home_shows_as_a_tilde() {
+    fn a_folder_under_home_shows_from_a_tilde_and_home_in_full() {
         let repo = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
         let mut env = AppEnv::for_repo(Paths::new(home.path()), repo.path(), false).unwrap();
         env.user_home = Some(PathBuf::from("/Users/you"));
         assert_eq!(env.display(Path::new("/Users/you/code/app")), "~/code/app");
         assert_eq!(env.display(Path::new("/tmp/x")), "/tmp/x");
+        assert_eq!(env.display(Path::new("/Users/you")), "/Users/you");
     }
 
     #[test]

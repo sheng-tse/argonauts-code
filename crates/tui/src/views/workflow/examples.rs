@@ -171,7 +171,7 @@ pub(crate) const NEMOTRON: &str = "opencode/opencode/nemotron-3.5-super-vl-free"
 /// The names OpenCode's own list gives [`QWEN`] and [`NEMOTRON`].
 pub(crate) fn opencode_names(names: &mut argonauts_core::look::display_names::DisplayNames) {
     for (id, name) in [
-        (QWEN, "Qwen3 Coder 30B (64k)"),
+        (QWEN, "Qwen3 Coder 30B"),
         (NEMOTRON, "Nemotron 3.5 Super VL Free"),
     ] {
         let mut entry = argonauts_core::models::model_catalog::CatalogEntry::new(worker(id));

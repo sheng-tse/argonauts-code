@@ -1,0 +1,15 @@
+# Set up with Captain and vim keys, as the Behaviors drawings were, with the label map's
+# drawn crew in its records and times on a 24-hour clock.
+workflow = "captain"
+
+[crew]
+main = "claude-code"
+worker = ["claude-code", "codex", "antigravity-cli", "opencode"]
+reviewer = ["claude-code", "codex", "antigravity-cli", "opencode"]
+judge = ["claude-code", "codex", "antigravity-cli", "opencode"]
+
+[ui]
+keys = "vim"
+
+[ui.format]
+clock = "24h"

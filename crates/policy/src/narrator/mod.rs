@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use argonauts_core::agents::session_runner::{RunnerDirectory, RunnerEvent};
+use argonauts_core::base::clock;
 use argonauts_core::base::future::BoxFuture;
 use argonauts_core::base::names::{ModelRef, RoleName};
 use argonauts_core::runs::events::RunEvent;
@@ -206,7 +207,7 @@ impl LiveNarrator {
             run_dir,
             workers,
             steps,
-            started: OffsetDateTime::now_utc(),
+            started: clock::now_utc(),
             calling: tokio::sync::Mutex::new(()),
             lines,
             wake: Arc::new(Notify::new()),
@@ -349,7 +350,7 @@ impl LiveNarrator {
         let result = match outcome {
             Ok(text) => {
                 let line = NarratorLine {
-                    ts: OffsetDateTime::now_utc(),
+                    ts: clock::now_utc(),
                     run: Some(self.run.clone()),
                     kind,
                     text,
@@ -557,7 +558,7 @@ impl LiveNarrator {
 
     fn notice(&self, model: ModelRef, text: String) -> NarratorLine {
         NarratorLine {
-            ts: OffsetDateTime::now_utc(),
+            ts: clock::now_utc(),
             run: Some(self.run.clone()),
             kind: NarratorLineKind::Notice,
             text,
@@ -772,7 +773,7 @@ mod tests {
     fn event(kind: RunEventKind) -> RunEvent {
         RunEvent {
             seq: 0,
-            ts: OffsetDateTime::now_utc(),
+            ts: clock::now_utc(),
             run_id: RunId::new("run-01").unwrap(),
             task_id: Some(TaskId::numbered(1)),
             session: None,

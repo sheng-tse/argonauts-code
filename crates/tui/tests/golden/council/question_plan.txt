@@ -1,14 +1,9 @@
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ◆ Approve this plan?
   Approve with edits: change how any task is done, or who does it. Send back: the seats talk on.
-
   ❯ 1. Approve the plan
     2. Approve with edits
     3. Send back
     4. Run it as Captain
     5. Abandon
     6. Show the plan
-    7. Carry on without me
-       The plan goes ahead as written; the merge still asks you
-
-  Enter to choose · Tab to add a note · Esc back to the list · shift+tab to cycle modes
+  Enter to choose · Tab to add a note · Esc to set aside

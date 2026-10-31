@@ -1,0 +1,7 @@
+# The plan usage of three CLIs, in the order /bottom-line saves them.
+[plan-usage]
+clis = [
+  { cli = "claude-code", windows = "both" },
+  { cli = "codex" },
+  { cli = "antigravity-cli" },
+]

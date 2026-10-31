@@ -350,6 +350,7 @@ mod tests {
                         uncommitted: Vec::new(),
                         settings_sha256: None,
                         continues: false,
+                        opens_a_talk: false,
                     },
                     ConversationEvent::TurnFinished {
                         turn: TurnId::numbered(1),

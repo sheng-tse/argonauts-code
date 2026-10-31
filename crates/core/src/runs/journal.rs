@@ -12,6 +12,7 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use tokio::sync::mpsc;
 
+use crate::base::clock;
 use crate::base::layout::run_files;
 use crate::base::names::SessionKey;
 use crate::base::paths::create_private_dir_all;
@@ -130,7 +131,7 @@ impl Journal {
     ) -> Result<RunEvent, JournalError> {
         let event = RunEvent {
             seq: self.next_seq,
-            ts: OffsetDateTime::now_utc(),
+            ts: clock::now_utc(),
             run_id: run.clone(),
             task_id: task.cloned(),
             session: session.cloned(),
@@ -610,7 +611,7 @@ mod tests {
         let path = dir.path().join(run_files::EVENTS);
         let event = RunEvent {
             seq: 0,
-            ts: OffsetDateTime::now_utc(),
+            ts: clock::now_utc(),
             run_id: run(),
             task_id: None,
             session: None,
@@ -642,7 +643,7 @@ mod tests {
         let known = |seq: u64, kind: RunEventKind| {
             let event = RunEvent {
                 seq,
-                ts: OffsetDateTime::now_utc(),
+                ts: clock::now_utc(),
                 run_id: run(),
                 task_id: None,
                 session: None,
@@ -709,7 +710,7 @@ mod tests {
         let line = |seq: u64, kind: RunEventKind| {
             serde_json::to_string(&RunEvent {
                 seq,
-                ts: OffsetDateTime::now_utc(),
+                ts: clock::now_utc(),
                 run_id: run(),
                 task_id: None,
                 session: None,

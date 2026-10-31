@@ -86,7 +86,7 @@ pub fn task(state: &RunState, host: &Host) -> EngineResult<TaskSpec> {
     // The review comes after the report, so the worker never sets out to ask for it.
     let mut task = started.request.clone();
     if !reviewers.is_empty() {
-        let names: Vec<String> = reviewers.iter().map(roles::display_name).collect();
+        let names = host.names().workers(&reviewers);
         task.push_str(&format!(
             "\n\nArgonauts Code has {} review your change after you report.",
             names.join(" and ")

@@ -19,8 +19,8 @@
 
 
 
-  ◌ Checked git status or diff and read git history · ◧◨ 6 Luna · 4 of its 66 · everyone 6 · today at 8:32 AM
-
+  ◌ Checked git status or diff and read git history · ◧◨ 6 Luna · 4 of its 66 actions · 6 by every model
+  today at 8:32 AM
   Label map · 562 actions in 19 runs across 6 projects · last 30 days
   Most common
   Returned its structured answer   169    Ran the test suite                         27

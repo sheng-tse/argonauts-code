@@ -19,6 +19,9 @@ fn displaced_by(key: &str) -> &'static [&'static str] {
     match key {
         "data.source" => &["command", "every", "timeout"],
         "data.command" => &["source"],
+        // The bottom line's list of CLIs stands in for `show`, so choosing how to pick them
+        // drops the list.
+        "plan-usage.show" => &["clis"],
         _ => &[],
     }
 }
@@ -112,6 +115,29 @@ mod tests {
     use argonauts_core::settings::mods::{ModBody, ModForm, ModSource, bottom_line, builtin};
 
     use super::*;
+
+    #[test]
+    fn choosing_how_the_line_picks_its_clis_drops_the_list() {
+        let text = "[plan-usage]\nshow = \"all\"\nclis = [{ cli = \"codex\" }]\n";
+        let pairs = [("plan-usage.show".to_owned(), "\"near-limit\"".to_owned())];
+        let saved = apply(text, &pairs).unwrap();
+        assert_eq!(saved, "[plan-usage]\nshow = \"near-limit\"\n");
+    }
+
+    #[test]
+    fn an_automatic_choice_with_the_same_show_saves_without_the_list() {
+        use argonauts_core::settings::mods::bottom_line::PageEdits as _;
+
+        let text = "[plan-usage]\nshow = \"all\"\nclis = [{ cli = \"codex\" }]\n";
+        let before = bottom_line::read(text).unwrap();
+        let mut after = before.clone();
+        after.plan_usage.clis = None;
+        let pairs = after.changes_from(&before);
+        assert!(!pairs.is_empty(), "the page has something to save");
+        let saved = apply(text, &pairs).unwrap();
+        assert_eq!(bottom_line::read(&saved).unwrap(), after, "{saved}");
+        assert!(!saved.contains("clis"), "{saved}");
+    }
 
     fn pair(key: &str, value: &str) -> (String, String) {
         (key.to_owned(), value.to_owned())

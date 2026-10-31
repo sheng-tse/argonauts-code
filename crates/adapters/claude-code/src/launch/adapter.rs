@@ -8,6 +8,7 @@ use argonauts_core::agents::cli_sessions::{
 };
 use argonauts_core::agents::screen::ScreenRequest;
 use argonauts_core::app::UltraColour;
+use argonauts_core::base::clock;
 use argonauts_core::look::keywords::Keyword;
 use argonauts_core::models::limits::{PlanUsageAnswer, PlanUsageReading};
 use argonauts_core::runs::events::context::ContextDetail;
@@ -16,7 +17,6 @@ use argonauts_core::{
     Adapter, Capabilities, CommandSpec, LaunchTweak, PARENT_SESSION_ENV_VARS, SessionRequest,
     SetupHints, StopPlan, StreamParser, UltraMode, UltraOn, extract_version,
 };
-use time::OffsetDateTime;
 
 use crate::commands::keywords::KEYWORDS;
 use crate::commands::{self, BUILTIN_COMMANDS};
@@ -238,15 +238,15 @@ impl Adapter for ClaudeCodeAdapter {
     }
 
     fn parse_plan_usage_probe_answer(&self, stdout: &str) -> Option<PlanUsageAnswer> {
-        plan_usage::answer(stdout, OffsetDateTime::now_utc())
+        plan_usage::answer(stdout, clock::now_utc())
     }
 
     fn parse_plan_usage_probe_end(&self, stdout: &str) -> Option<PlanUsageAnswer> {
-        plan_usage::answer_at_end(stdout, OffsetDateTime::now_utc())
+        plan_usage::answer_at_end(stdout, clock::now_utc())
     }
 
     fn parse_plan_usage_probe_early(&self, stdout: &str) -> Option<PlanUsageAnswer> {
-        plan_usage::windows_first(stdout, OffsetDateTime::now_utc())
+        plan_usage::windows_first(stdout, clock::now_utc())
     }
 
     fn stream_reports_plan_usage(&self) -> bool {

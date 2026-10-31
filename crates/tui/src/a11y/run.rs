@@ -57,7 +57,7 @@ pub fn run_lines(event: &RunEvent, state: &AppState) -> Vec<String> {
                     return Vec::new();
                 }
                 NoteLevel::Info | NoteLevel::Aside | NoteLevel::Quiet => "note",
-                NoteLevel::Warn | NoteLevel::Caution => "warning",
+                NoteLevel::Warn | NoteLevel::Caution | NoteLevel::Ask => "warning",
                 NoteLevel::Error => "error",
             };
             // The plain line; its detail is for Ctrl+O on screen.

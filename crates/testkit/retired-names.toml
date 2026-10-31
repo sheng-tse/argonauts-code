@@ -26,7 +26,7 @@ allowed_in = [
     # drawing
     "crates/tui/src/mods/**",
     "crates/tui/src/panels/**",
-    "crates/tui/src/base/theme/shades.rs",
+    "crates/tui/src/base/theme/shades/mod.rs",
     "crates/tui/src/config/**",
     "crates/tui/src/testing/sample/**",
     "crates/tui/src/testing/pictures/golden.rs",
@@ -591,6 +591,44 @@ what = "a real mail address"
 fix = "a reserved address, such as you@example.com"
 length = 22
 hash = "0x9d392f0bfbe1f65"
+
+# The maintainer's own local models: two Ollama tags made with a longer window, each in the
+# ways the screens write them.
+[[private.banned]]
+what = "the maintainer's own local model tag (the coder, as a tag)"
+fix = "a stock tag, such as qwen3-coder:30b or gemma3:12b, or sample-coder:30b-64k and sample-gemma:12b-32k where the window matters"
+length = 19
+hash = "0xe58a0bba7880fec8"
+
+[[private.banned]]
+what = "the maintainer's own local model tag (the coder, as a list draws it)"
+fix = "a stock tag, such as qwen3-coder:30b or gemma3:12b, or sample-coder:30b-64k and sample-gemma:12b-32k where the window matters"
+length = 20
+hash = "0xf7f1bd41b051e424"
+
+[[private.banned]]
+what = "the maintainer's own local model tag (the coder, as setup draws it)"
+fix = "a stock tag, such as qwen3-coder:30b or gemma3:12b, or sample-coder:30b-64k and sample-gemma:12b-32k where the window matters"
+length = 19
+hash = "0x5cbe8b118fbe3922"
+
+[[private.banned]]
+what = "the maintainer's own local model tag (the small model, as a tag)"
+fix = "a stock tag, such as qwen3-coder:30b or gemma3:12b, or sample-coder:30b-64k and sample-gemma:12b-32k where the window matters"
+length = 14
+hash = "0x3733a9a054f6ff9d"
+
+[[private.banned]]
+what = "the maintainer's own local model tag (the small model, as a list draws it)"
+fix = "a stock tag, such as qwen3-coder:30b or gemma3:12b, or sample-coder:30b-64k and sample-gemma:12b-32k where the window matters"
+length = 15
+hash = "0x17eead89c38c53f6"
+
+[[private.banned]]
+what = "the maintainer's own local model tag (the small model, as setup draws it)"
+fix = "a stock tag, such as qwen3-coder:30b or gemma3:12b, or sample-coder:30b-64k and sample-gemma:12b-32k where the window matters"
+length = 14
+hash = "0x2e8048d9afffb2fe"
 
 # The maintainer's address, which the community files give for conduct and security
 # reports. It passes only in those files, and is kept as its length and hash like the names

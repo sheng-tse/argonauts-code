@@ -116,7 +116,8 @@ impl PtyCommand {
 
     /// A terminal that takes the kitty protocol's pictures, as Ghostty and kitty do: it answers
     /// a graphics query with OK, and keeps what it is sent in one store for each screen, so
-    /// [`Pty::check_pictures`] can say whether a placeholder shows its picture.
+    /// [`Pty::check_pictures`] can say whether a placeholder shows its picture, and a picture
+    /// placed straight on the screen shows over the cells it covers.
     pub fn takes_pictures(mut self) -> Self {
         self.pictures = true;
         self
@@ -342,7 +343,7 @@ impl Pty {
         ));
         let mut emulator = Emulator::new(command.rows, command.cols, SCROLLBACK);
         if command.pictures {
-            emulator = emulator.takes_pictures();
+            emulator = emulator.takes_pictures(command.cell);
         }
         let terminal = Arc::new(Mutex::new(Terminal {
             emulator,
@@ -656,7 +657,10 @@ impl Pty {
         self.master
             .resize(window(rows, cols, cell))
             .map_err(|err| anyhow!("resizing the pty: {err}"))?;
-        lock(&self.terminal).emulator.set_size(rows, cols);
+        let mut terminal = lock(&self.terminal);
+        terminal.emulator.set_size(rows, cols);
+        terminal.emulator.use_cell(cell);
+        drop(terminal);
         self.size = (rows, cols);
         self.cell = cell;
         Ok(())
@@ -752,7 +756,7 @@ fn read_output(
 /// The screen a terminal `cols` × `rows` that takes pictures, as Ghostty does, shows once it has
 /// read `bytes`.
 pub(crate) fn read_bytes(cols: u16, rows: u16, bytes: &[u8]) -> Grid {
-    let mut emulator = Emulator::new(rows, cols, 0).takes_pictures();
+    let mut emulator = Emulator::new(rows, cols, 0).takes_pictures(CELL_PIXELS);
     emulator.process(bytes);
     emulator.release();
     emulator.cells()

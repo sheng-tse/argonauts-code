@@ -459,6 +459,9 @@ static OPENAI: Shipped = two_inks!("openai");
 static MISTRAL: Shipped = coloured!("mistral");
 static META: Shipped = coloured!("meta");
 static OPENROUTER: Shipped = coloured!("openrouter");
+static CLAUDE: Shipped = coloured!("claude");
+static GEMINI: Shipped = coloured!("gemini");
+static GEMMA: Shipped = coloured!("gemma");
 
 fn shipped(mark: LogoMark) -> &'static Shipped {
     match mark {
@@ -473,6 +476,9 @@ fn shipped(mark: LogoMark) -> &'static Shipped {
         LogoMark::Mistral => &MISTRAL,
         LogoMark::Meta => &META,
         LogoMark::OpenRouter => &OPENROUTER,
+        LogoMark::Claude => &CLAUDE,
+        LogoMark::Gemini => &GEMINI,
+        LogoMark::Gemma => &GEMMA,
     }
 }
 

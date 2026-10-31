@@ -8,6 +8,7 @@ use std::sync::{Arc, OnceLock};
 use anyhow::anyhow;
 use argonauts_core::Paths;
 use argonauts_core::agents::session_runner::RunnerDirectory;
+use argonauts_core::base::clock;
 use argonauts_core::base::names::ModelRef;
 use argonauts_core::behaviors::deep_map::{
     DeepDone, DeepOffer, DeepProgress, DeepScope, DeepStart, EmbedderNote, MadeBy, ScopeOffer,
@@ -16,7 +17,6 @@ use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::models::registry::ModelRegistry;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::behaviors::WORD_VECTORS;
-use time::OffsetDateTime;
 use tokio_util::sync::CancellationToken;
 
 use super::action::DeepAction;
@@ -24,8 +24,9 @@ use super::choose::{self, Candidate, HostedModel, Place};
 use super::embed::{Embedder, EmbeddingEndpoint, KeyedEndpoint, NOMIC, pull_nomic};
 use super::gather::{Gathered, cheapest_effort, gather, project_of};
 use super::offer::{covers, embedder_note, keyed_embedder, offer, scope_offer};
+use super::open::{START_WAIT, installed_servers, pull, start};
 use super::prompt::PROMPT_VERSION;
-use super::records::recorded;
+use super::records::{Recorded, recorded};
 use super::session::SessionSummarizer;
 use super::store::Store;
 use super::summarize::{LocalServer, Summarizer};
@@ -43,7 +44,7 @@ pub struct DeepMaps {
     project: Option<String>,
     store: Store,
     /// The records as they were first read, which every question and the update count.
-    recorded: OnceLock<Vec<DeepAction>>,
+    recorded: OnceLock<Recorded>,
     /// The app's own sessions, which a CLI's model summarizes through. Without them, the
     /// settings' CLIs are started as `argonauts behaviors` starts them.
     workers: Option<Arc<dyn RunnerDirectory>>,
@@ -101,7 +102,7 @@ impl DeepMaps {
         &self.settings
     }
 
-    fn recorded(&self) -> &[DeepAction] {
+    fn recorded(&self) -> &Recorded {
         self.recorded.get_or_init(|| recorded(&self.paths))
     }
 
@@ -111,7 +112,7 @@ impl DeepMaps {
         let gathered = gather(&self.settings, &self.registry).await;
         let candidates = self.candidates(&gathered);
         let mut offer = offer(
-            self.recorded(),
+            &self.recorded().actions,
             self.project.as_deref(),
             &candidates,
             self.registry.as_ref(),
@@ -121,10 +122,11 @@ impl DeepMaps {
                 gathered.keyed.as_ref(),
                 &gathered.names,
             ),
-            OffsetDateTime::now_utc(),
+            clock::now_utc(),
         );
         offer.named = choose::named(&self.settings.behaviors.summarizer, &candidates);
         offer.keyed_embedder = keyed_embedder(gathered.keyed.as_ref());
+        offer.open = gathered.open.clone();
         let everything = offer.scopes.first().map_or(0, |scope| scope.actions);
         offer.made_by = self.store.layout().map(|layout| {
             let model = layout
@@ -149,7 +151,7 @@ impl DeepMaps {
 
     /// The summarizers offered, the one the settings name first, else auto's order. A model
     /// the settings name that a server here serves is this machine's, even where the list
-    /// offers its twin, such as `qwen3-coder:30b` for `qwen3-coder:30b-64k`, which then goes.
+    /// offers its twin, such as `sample-coder:30b` for `sample-coder:30b-64k`, which then goes.
     fn candidates(&self, gathered: &Gathered) -> Vec<Candidate> {
         let mut candidates =
             choose::candidates(&gathered.locals, &gathered.hosted, &gathered.names);
@@ -176,10 +178,55 @@ impl DeepMaps {
         candidates
     }
 
+    /// Starts the server installed here for `runtime`, as you chose, and waits for it to answer.
+    pub async fn start_server(&self, runtime: &str) -> bool {
+        let installed = installed_servers(
+            std::path::Path::new("/Applications"),
+            crate::host::services::on_path,
+        );
+        match installed.iter().find(|starter| starter.runtime == runtime) {
+            Some(starter) => start(starter, &self.settings, START_WAIT).await,
+            None => false,
+        }
+    }
+
+    /// Downloads `summarizer` into this computer's Ollama, its megabytes told to `progress`.
+    async fn download(
+        &self,
+        gathered: &Gathered,
+        summarizer: &ModelRef,
+        progress: &mut (dyn FnMut(DeepProgress) + Send),
+    ) -> anyhow::Result<()> {
+        let (Some((base_url, _)), Some(tag)) = (&gathered.ollama, summarizer.model.as_deref())
+        else {
+            anyhow::bail!("Ollama isn't answering, so {summarizer} can't be downloaded");
+        };
+        let name = gathered
+            .open
+            .models
+            .iter()
+            .find(|choice| &choice.worker == summarizer)
+            .map_or_else(|| tag.to_owned(), |choice| choice.display_name());
+        let mut told = |done: u64, total: u64| {
+            progress(DeepProgress {
+                done: done as usize,
+                total: total as usize,
+                seconds_left: None,
+                summarizer: format!("{name} on {}", gathered.names.cli(&summarizer.agent)),
+                short: name.clone(),
+                redo: false,
+                downloading: true,
+            })
+        };
+        pull(base_url, tag, &mut told)
+            .await
+            .map_err(|why| anyhow!("{name} didn't download: {why}"))
+    }
+
     /// The counts of one scope, for a question about it.
     pub fn scope(&self, scope: DeepScope, summarizer_local: bool) -> ScopeOffer {
-        let recorded = self.recorded();
-        let now = OffsetDateTime::now_utc();
+        let recorded = &self.recorded().actions;
+        let now = clock::now_utc();
         let covered: Vec<&DeepAction> =
             recorded.iter().filter(|a| covers(&scope, a, now)).collect();
         scope_offer(scope, &covered, summarizer_local, &DisplayNames::default())
@@ -187,8 +234,8 @@ impl DeepMaps {
 
     /// How many of `scope`'s actions `summarizer` summarized already.
     pub fn already(&self, scope: &DeepScope, summarizer: &ModelRef) -> usize {
-        let recorded = self.recorded();
-        let now = OffsetDateTime::now_utc();
+        let recorded = &self.recorded().actions;
+        let now = clock::now_utc();
         let covered: Vec<DeepAction> = recorded
             .iter()
             .filter(|action| covers(scope, action, now))
@@ -219,7 +266,12 @@ impl DeepMaps {
         progress: &mut (dyn FnMut(DeepProgress) + Send),
         placed: &mut (dyn FnMut() + Send),
     ) -> anyhow::Result<DeepDone> {
-        let gathered = gather(&self.settings, &self.registry).await;
+        let mut gathered = gather(&self.settings, &self.registry).await;
+        if start.download_summarizer {
+            self.download(&gathered, &start.summarizer, progress)
+                .await?;
+            gathered = gather(&self.settings, &self.registry).await;
+        }
         let candidates = self.candidates(&gathered);
         let chosen = candidates
             .iter()
@@ -238,7 +290,7 @@ impl DeepMaps {
         let summarizer = self.summarizer_for(&chosen)?;
         let embedding = self.embedder_for(&gathered, start.download_embedder).await;
         let recorded = self.recorded();
-        let now = OffsetDateTime::now_utc();
+        let now = clock::now_utc();
         let deep = Deep {
             store: &self.store,
             summarizer: summarizer.as_ref(),
@@ -249,6 +301,8 @@ impl DeepMaps {
             },
         };
         let name = chosen.name.clone();
+        let short = chosen.short.clone();
+        let redo = start.redo;
         let updated = deep
             .update(
                 recorded,
@@ -260,6 +314,9 @@ impl DeepMaps {
                         total: at.total,
                         seconds_left: at.left().map(|left| left.as_secs()),
                         summarizer: name.clone(),
+                        short: short.clone(),
+                        redo,
+                        downloading: false,
                     });
                 },
                 placed,
@@ -279,6 +336,8 @@ impl DeepMaps {
                 .layout()
                 .is_some_and(|layout| layout.maker.embedder == WORD_VECTORS),
             embedder_failed: updated.embedder_failed,
+            unread: updated.unread,
+            fewer: updated.fewer,
         })
     }
 
@@ -318,6 +377,7 @@ impl DeepMaps {
             summarizer,
             download_embedder: false,
             redo: false,
+            download_summarizer: false,
         }))
     }
 
@@ -550,6 +610,7 @@ mod tests {
             summarizer: "claude-code/haiku".parse().unwrap(),
             download_embedder: false,
             redo: false,
+            download_summarizer: false,
         };
         let refused = maps
             .update(&start, &CancellationToken::new(), &mut |_| {}, &mut || {})
@@ -626,19 +687,19 @@ mod tests {
             .count()
     }
 
-    /// Ollama serves `qwen3-coder:30b` and `qwen3-coder:30b-64k`, which the list offers once;
+    /// Ollama serves `sample-coder:30b` and `sample-coder:30b-64k`, which the list offers once;
     /// the settings name the one with the longer window.
     #[tokio::test]
     async fn a_model_the_settings_name_on_this_machine_is_offered_as_this_machines() {
         let (_home, paths, _server) = home_and_server();
         let ollama = FakeModelServer::start(
             FakeKind::Ollama,
-            &["qwen3-coder:30b", "qwen3-coder:30b-64k"],
+            &["sample-coder:30b", "sample-coder:30b-64k"],
         )
         .unwrap();
         let mut settings = Settings::default();
         settings.registry.local_servers = false;
-        settings.behaviors.summarizer = "ollama/qwen3-coder:30b-64k".to_owned();
+        settings.behaviors.summarizer = "ollama/sample-coder:30b-64k".to_owned();
         settings.endpoints.insert(
             "ollama".to_owned(),
             EndpointSettings {
@@ -655,7 +716,7 @@ mod tests {
         );
         let offer = maps.offer().await;
         let first = &offer.summarizers[0];
-        assert_eq!(first.model.to_string(), "ollama/qwen3-coder:30b-64k");
+        assert_eq!(first.model.to_string(), "ollama/sample-coder:30b-64k");
         assert!(first.local(), "{first:?}");
         let qwens = offer
             .summarizers

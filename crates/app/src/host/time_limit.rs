@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use argonauts_core::NoteLevel;
+use argonauts_core::base::clock;
 use argonauts_core::settings::Settings;
 use time::OffsetDateTime;
 use tokio::task::JoinHandle;
@@ -40,7 +41,7 @@ impl Host {
             &self.settings,
             self.start.request.outside_agent.as_deref(),
             self.start.created,
-            OffsetDateTime::now_utc(),
+            clock::now_utc(),
         )?;
         let limit = self.settings.mcp.run_limit.0.clone();
         let state = Arc::clone(&self.state);
@@ -79,7 +80,7 @@ mod tests {
 
     #[test]
     fn only_a_outside_agent_run_with_a_limit_has_time_left() {
-        let started = OffsetDateTime::now_utc();
+        let started = clock::now_utc();
         let later = started + time::Duration::minutes(10);
         assert_eq!(time_left(&limit("60m"), None, started, later), None);
         assert_eq!(

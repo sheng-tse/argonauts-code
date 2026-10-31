@@ -190,14 +190,15 @@ impl Look<'_> {
             let comparison = self.map.comparisons.get(group);
             let said = match comparison.and_then(|c| c.why_not.as_deref()) {
                 Some(why) => vec![kit.dim(format!(" {why}."))],
-                None => vec![
-                    kit.dim(" Red behind the dots: "),
-                    Span::styled("  ", super::braille::more_style(kit)),
-                    kit.dim(format!(
-                        " {} does this more · blue: less",
-                        self.group_name(group)
-                    )),
-                ],
+                None => {
+                    let name = self.group_name(group);
+                    vec![
+                        kit.dim(" red: "),
+                        kit.span(format!("{name} does this more"), Role::Text),
+                        kit.dim(" · blue: "),
+                        kit.span(format!("{name} does this less"), Role::Text),
+                    ]
+                }
             };
             out.push(crate::base::text::truncate_spans(&said, self.width));
         }

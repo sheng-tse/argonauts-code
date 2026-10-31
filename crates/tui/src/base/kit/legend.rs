@@ -197,6 +197,19 @@ pub fn width_in_rows(kit: &Kit<'_>, entries: &[Entry], rows: usize) -> usize {
     row_cells(&counted(kit.theme, entries, cols, Counted::SHORT))
 }
 
+/// One row of entries that each bring their own key, such as a chart's line before a model's
+/// name, with as many blanks between two as between a legend's entries.
+pub fn keyed_row(entries: impl IntoIterator<Item = Vec<Span<'static>>>) -> Vec<Span<'static>> {
+    let mut row = Vec::new();
+    for (at, entry) in entries.into_iter().enumerate() {
+        if at > 0 {
+            row.push(Span::raw(" ".repeat(BETWEEN_ENTRIES)));
+        }
+        row.extend(entry);
+    }
+    row
+}
+
 /// The legend's rows in `width` cells, at most `max_cols` entries to a row, as many as fit
 /// counted as [`Counted::SHORT`] counts them.
 pub fn legend(

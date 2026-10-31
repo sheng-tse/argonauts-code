@@ -1245,6 +1245,7 @@ fn global_keys_ask_the_host() {
     assert_eq!(ui.model().bottom.mode.approval, ApprovalMode::Auto);
     assert_eq!(chord(&mut ui, 't', t0), [UiAction::OpenTree]);
     assert_eq!(chord(&mut ui, 'g', t0), [UiAction::EditDraft]);
+    assert_eq!(chord(&mut ui, 'z', t0), [UiAction::Suspend]);
     assert_eq!(
         press(&mut ui, KeyCode::Left, t0),
         [UiAction::OpenAgentPanel]

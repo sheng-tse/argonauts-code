@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use anyhow::{Context as _, bail};
 use argonauts_core::agents::session_runner::RunnerDirectory;
 use argonauts_core::app::{AppEvent, PlanUsageChip, SettingRow, ViewData};
+use argonauts_core::base::clock;
 use argonauts_core::base::names::AgentId;
 use argonauts_core::base::names::ModelRef;
 use argonauts_core::models::limits::{
@@ -72,7 +73,7 @@ pub(crate) async fn usage(
 ) -> anyhow::Result<Vec<Effect>> {
     let opens_on = ctx.settings().ui.views.usage.period.usage();
     let period = parse_period(period.as_deref(), opens_on)?;
-    let now = OffsetDateTime::now_utc();
+    let now = clock::now_utc();
     let settings = ctx.settings();
     let mut crew = vec![settings.crew.main.clone()];
     crew.extend(settings.crew.members());
@@ -141,7 +142,7 @@ pub(crate) async fn limits_report(
     ctx: &mut Ctx,
     conversation: Option<Spend>,
 ) -> anyhow::Result<Vec<Effect>> {
-    let now = OffsetDateTime::now_utc();
+    let now = clock::now_utc();
     let summary = usage_summary(ctx, conversation, UsagePeriod::Today).await;
     let settings = ctx.settings();
     let mut crew = vec![settings.crew.main.clone()];
@@ -204,7 +205,7 @@ async fn usage_summary(
     conversation: Option<Spend>,
     period: UsagePeriod,
 ) -> UsageSummary {
-    let now = OffsetDateTime::now_utc();
+    let now = clock::now_utc();
     let settings = ctx.settings();
     let mut crew = vec![settings.crew.main.clone()];
     crew.extend(settings.crew.members());
@@ -808,7 +809,7 @@ pub(crate) fn feedback(ctx: &mut Ctx, text: Option<String>) -> anyhow::Result<Ve
         return Ok(Vec::new());
     }
     let path = ctx.env.paths.home().join(FEEDBACK_FILE);
-    let at = OffsetDateTime::now_utc()
+    let at = clock::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_default();
     let entry = serde_json::json!({
@@ -1626,7 +1627,7 @@ mod tests {
             MemoryPlanUsageBoard::default(),
             MemoryHealthBoard::default(),
         );
-        let now = OffsetDateTime::now_utc();
+        let now = clock::now_utc();
         let resets = now + Duration::hours(2);
         let read = |account: &str, used: f64| {
             let mut reading =

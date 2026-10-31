@@ -618,6 +618,6 @@ fn a_waiting_runs_row_opens_on_its_question_and_comes_back_once_answered() {
     let answer = driver.wait_command("answer");
     assert_eq!(answer["to"]["id"], "approval-001");
     driver.wait_gone(VIEW_HEADER);
-    driver.wait_visible("enter to open its workflow");
+    driver.wait_visible("enter to view · x to stop");
     driver.wait_visible("^❯ .*Export-json");
 }

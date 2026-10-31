@@ -6,11 +6,11 @@
 //!
 //! ```text
 //! ╭──────────────────────────────────────────────────────────────────────────────────╮
-//! │ ◆ context                                 32.3k of 1M · compacts at 967k    3%  │
+//! │ ◆ context                                 28.8k of 1M · compacts at 967k    3%  │
 //! │ ██████▋                                                                  ▏█████ │
 //! │                                                                                 │
 //! │ ▌ System prompt             4.4k   0.4%      ▌ System tools   19.4k   1.9%      │
-//! │ ▌ Messages                    10  <0.1%      ▌ Free space      935k  93.5%      │
+//! │ ▌ Messages                    10  <0.1%      ▌ Free space      938k  93.8%      │
 //! ```
 
 use ratatui::style::{Color, Style};
@@ -38,9 +38,6 @@ pub const CLAUDE_CODE_PARTS: [(&str, &str); 7] = [
 
 /// Legend entries a row at most.
 const LEGEND_COLUMNS: usize = 3;
-/// Blanks a legend row keeps from the frame's border beyond the frame's own, as a column of
-/// numbers keeps from its neighbour.
-const LEGEND_EDGE: usize = legend::BEFORE_NUMBERS - 1;
 /// Items in each line a screen reader hears.
 const SPOKEN_ITEMS: usize = 4;
 /// Pills in the folded line.
@@ -341,10 +338,8 @@ impl ContextCard {
     }
 
     pub fn header(&self, kit: &Kit<'_>) -> Header {
-        let amount = match self.reading() {
-            None => String::from(UNKNOWN),
-            Some((used, _)) => self.amount(Some(used), self.stale || self.used_estimated),
-        };
+        // How full it is shows even while no list gives the window.
+        let amount = self.amount(self.used, self.stale || self.used_estimated);
         Header {
             subject: self.subject.clone(),
             amount: Some(amount),
@@ -417,8 +412,10 @@ impl ContextCard {
     /// The legend's entries in `roles`: each part, then the free space.
     fn entries_in(&self, roles: &[Role]) -> Vec<Entry> {
         let window = self.reading().map(|(_, window)| window);
+        let blank_window = self.used.is_some() && window.is_none();
         let share = |n: Option<u64>| match (n, window) {
             (Some(n), Some(w)) => share_of_window(n, w),
+            _ if blank_window => String::from(UNKNOWN),
             _ => String::new(),
         };
         let mut entries: Vec<Entry> = self
@@ -426,7 +423,7 @@ impl ContextCard {
             .iter()
             .zip(roles)
             .map(|(part, role)| {
-                let tokens_count = part.tokens.filter(|_| window.is_some());
+                let tokens_count = part.tokens.filter(|_| window.is_some() || blank_window);
                 Entry::new(
                     *role,
                     part.name.clone(),
@@ -453,7 +450,8 @@ impl ContextCard {
     }
 
     /// The rows inside the frame: the header, the bar, and in the full form a blank row and
-    /// the legend.
+    /// the legend. The legend takes the whole inner width, so the card above the input, four
+    /// cells narrower than the tab's, puts the same parts on a row at the real sizes.
     pub fn body(&self, kit: &Kit<'_>, inner: usize, form: Form) -> Drawn {
         let (theme, roles) = self.palette(kit);
         let painted = Kit::new(&theme);
@@ -464,9 +462,8 @@ impl ContextCard {
         if form == Form::Full {
             body.push(Vec::new());
             let entries = self.entries_in(&roles);
-            let width = inner.saturating_sub(LEGEND_EDGE);
             for row in
-                legend::legend_counted(&painted, &entries, width, LEGEND_COLUMNS, Counted::WIDEST)
+                legend::legend_counted(&painted, &entries, inner, LEGEND_COLUMNS, Counted::WIDEST)
             {
                 body.push(row);
             }

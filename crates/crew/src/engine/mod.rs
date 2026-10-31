@@ -17,11 +17,14 @@ use argonauts_core::base::paths::create_private_dir_all;
 use argonauts_core::models::limits::{ModelState, PlanUsageStatus};
 use argonauts_core::runs::engine::{EngineCommand, EngineContext, EngineExit, RunEngine};
 use argonauts_core::runs::events::run::{RunLifecycle, RunMode, RunOutcome, WaitReason};
+use argonauts_core::runs::events::session::EndReason;
 use argonauts_core::runs::events::{AgentStatusEvent, RunEventKind};
 use argonauts_core::settings::Settings;
+use argonauts_core::settings::approvals::ApprovalMode;
+use argonauts_core::workflows::steps::StepError;
 
 use crate::ENGINE_NOT_BUILT;
-use crate::engine::error::{EngineError, EngineResult};
+use crate::engine::error::{EngineError, EngineResult, limit_line};
 use crate::engine::host::Host;
 use crate::engine::shared::{Admission, PolicyResult, Shared, lock};
 use crate::git::GitError;
@@ -33,6 +36,7 @@ use crate::{approvals, fallback, run_review, status::closing};
 
 pub mod commands;
 pub mod error;
+pub mod folder_blocks;
 pub mod host;
 pub mod idempotency;
 pub(crate) mod job_fallback;
@@ -122,6 +126,8 @@ async fn drive(engine: CrewEngine, mut context: EngineContext) -> EngineResult<E
     let fresh = context.agent_events.resubscribe();
     let agent_events = std::mem::replace(&mut context.agent_events, fresh);
     let mode = state.run.mode.unwrap_or(engine.mode);
+    // Only the run host's `RunStarted` so far.
+    let supervised_from_the_start = context.starts_supervised && state.seq.unwrap_or(0) == 0;
     let mut shared = Shared::new(&context, state)?;
     shared.mode = mode;
     drop(context);
@@ -133,6 +139,11 @@ async fn drive(engine: CrewEngine, mut context: EngineContext) -> EngineResult<E
 
     ensure_base_worktree(&host).await?;
     recover::recover(&host, answers).await?;
+    if supervised_from_the_start {
+        // Recorded in the log, so the screen shows it and a later run host keeps it, and before
+        // the workflow starts, so no approval opens in another mode first.
+        commands::approval_mode(&host, ApprovalMode::Supervised)?;
+    }
     change::apply_decided(&host)?;
     pursue::on_resume(&host)?;
 
@@ -502,11 +513,36 @@ impl Loop {
                 .await
                 .map(Some)
             }
-            Err(err) => self
-                .finish(RunOutcome::Failed, Some(err.run_detail()))
-                .await
-                .map(Some),
+            Err(err) => {
+                let detail = self.limit_end(&err).unwrap_or_else(|| err.run_detail());
+                self.finish(RunOutcome::Failed, Some(detail))
+                    .await
+                    .map(Some)
+            }
         }
+    }
+
+    /// The line for a run a session's limit ended: the session's worker and the limit in
+    /// words, then the error as it came.
+    fn limit_end(&self, err: &EngineError) -> Option<String> {
+        let EngineError::Step(StepError::Session(end)) = err else {
+            return None;
+        };
+        let EndReason::LimitHit { dimension } = end.reason else {
+            return None;
+        };
+        let (key, worker) = self.host.read(|state| {
+            let ran = state.sessions.in_order().into_iter().rev();
+            ran.filter(|record| record.end.as_ref() == Some(end.as_ref()))
+                .map(|record| (record.key.clone(), record.started.worker.clone()))
+                .next()
+        })?;
+        let limits = lock(&self.host.shared().session_limits).get(&key).cloned();
+        let worker = self.host.names().worker(&worker);
+        Some(format!(
+            "{}\n{err}",
+            limit_line(&worker, dimension, limits.as_ref())
+        ))
     }
 
     /// A pause that was cancelled cut a step short: the workflow is entered again, and the

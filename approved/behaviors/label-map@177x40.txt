@@ -7,7 +7,7 @@ text
 
  ￼￼￼￼￼￼￼￼￼ Argonauts Code v0.2.0
  ￼￼￼￼￼￼￼￼￼ Claude Code · Opus 5.5 with xhigh effort · Captain
- ￼￼￼￼￼￼￼￼￼ ~/github/argonauts-code
+ ￼￼￼￼￼￼￼￼￼ ~/code/tasks-api
 
 
 ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -34,8 +34,8 @@ text
   ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  Most common
   ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  Returned its structured answer    183
                                                                                             Wrote a doc                       115
-  ￼￼ Hurricane, category 1 · 27 ‘tried an edit that didn't apply’ actions within one        Tried an edit that didn't apply   105
-     hour, 8 days ago at 14:01                                                              Built the project                  64
+  ￼￼ Hurricane · 27 ‘tried an edit that didn't apply’ actions within one hour, 8 days       Tried an edit that didn't apply   105
+     ago at 14:01                                                                           Built the project                  64
   Label map · 961 actions in 41 runs and 27 conversations across 6 projects                 Changed git state                  50
                                                                                             Ran the test suite                 41
 
@@ -48,35 +48,35 @@ paint
 
 .aaaaaaaaa.bbbbbbbbb.bbbb.bbbbbb
 .aaaaaaaaa.cccccc.cccc.c.cccc.ccc.cccc.ccccc.cccccc.c.ccccccc
-.aaaaaaaaa.ccccccccccccccccccccccc
+.aaaaaaaaa.cccccccccccccccc
 
 
 ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
-.eeeeeeee..fggggggggf...bbbbbb....bbbbbb....bbbbb....bbbbbbb....bbbbbb....bbbbb..............................................................hhh.hhhh..cccc.c.cccc..cccc.cc.cccc
+.eeeeeeee..fggggggggf...bbbbbb....bbbbbb....bbbbb....bbbbbbb....bbbbbb....bbbbb..............................................................hhh.hhhh..bbbb.b.bbbb..bbbb.bb.bbbb
 
-..cccccccc....cccccc...ijjjjjjjjji....................................................................fggfgggggf...cc.ccc....cc.cccc....cc.cccccccc....cc.ccccccc....cc.ccccccc
+..bbbbbbbb....bbbbbb...ijjjjjjjjji....................................................................fggfgggggf...bb.bbb....bb.bbbb....bb.bbbbbbbb....bb.bbbbbbb....bb.bbbbbbb
 
-..h.hhh.c.c.cccccc.c.c.cccccccc..............................................................................................................................hhhhhh.c.ccccccccc
+..h.hhh.c.b.bbbbbb.c.b.bbbbbbbb..............................................................................................................................hhhhhh.c.bbbbbbbbb
 
 ..kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk..eeeee.eeeee
 ..kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk..ccccccc.cccccccc.c.c..c..cccccccc.ccc
-..kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk..l..mm.bbbbb.bbb.........ccc
-..kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk..n..oo.bbb.bbb............cc
-..kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk..n..oo.b.bbbb.............cc
-..kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk..l..mm.bbbb.bbb...........cc
-..kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk..p..qq.bbbbb.bbbbb.bbb....cc
-..kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk..n..oo.b.bbbbb............cc
-..kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk..r..ss.bbb.bbbbb..........cc
-..kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk..l..mm.bbbbbb.bbb.........cc
-..kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk..p..tt.bbbb.bbbb..........cc
+..kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk..l..ww.bbbbb.bbb.........ccc
+..kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk..n..xx.bbb.bbb............cc
+..kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk..n..xx.b.bbbb.............cc
+..kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk..l..ww.bbbb.bbb...........cc
+..kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk..p..yy.bbbbb.bbbbb.bbb....cc
+..kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk..n..xx.b.bbbbb............cc
+..kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk..r..zz.bbb.bbbbb..........cc
+..kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk..l..ww.bbbbbb.bbb.........cc
+..kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk..p..AA.bbbb.bbbb..........cc
 ..kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk..p..tt.bbb.b...............c
-..kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk..u..qq.bbbbb.b.bbb.........c
+..kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk..u..BB.bbbbb.b.bbb.........c
 ..kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk
 ..kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk..eeee.eeeeee
 ..kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk..bbbbbbbb.bbb.bbbbbbbbbb.bbbbbb....bbb
 ............................................................................................bbbbb.b.bbb.......................bbb
-..vv.bbbbbbbbbb.bbbbbbbb.b.b.bb.bbbbbb.bb.bbbb.bbbb.bbbbbb.bbbbbb.bbbbbbb.bbbbbb.bbb........bbbbb.bb.bbbb.bbbb.bbbbbb.bbbbb...bbb
-.....bbbbb.b.bbbb.bbb.bb.bbbbb..............................................................bbbbb.bbb.bbbbbbb..................bb
+..vv.bbbbbbbbb.b.bb.bbbbbb.bb.bbbb.bbbb.bbbbbb.bbbbbb.bbbbbbb.bbbbbb.bbb.bbbbb.b.bbbb.......bbbbb.bb.bbbb.bbbb.bbbbbb.bbbbb...bbb
+.....bbb.bb.bbbbb...........................................................................bbbbb.bbb.bbbbbbb..................bb
 ..ccccc.ccc.c.ccc.ccccccc.cc.cc.cccc.ccc.cc.ccccccccccccc.cccccc.c.cccccccc.................bbbbbbb.bbb.bbbbb..................bb
 ............................................................................................bbb.bbb.bbbb.bbbbb.................bb
 
@@ -92,20 +92,22 @@ b fg=#c8d3f5  ; the terminal's own
 c fg=#999999  ; Dim, ModeSupervised, SyntaxComment
 d fg=#b1b9f9  ; Code, Question, BarFill, CatMcp
 e fg=#c8d3f5 bold  ; the terminal's own
-f bg=#373737  ; UserBand
-g fg=#c8d3f5 bg=#373737 bold  ; the terminal's own, on UserBand
+f bg=#b1b9f9  ; Code, Question, BarFill, CatMcp
+g fg=#14161f bg=#b1b9f9 bold  ; BadgeText, on Code, on Question, on BarFill, on CatMcp
 h fg=#b1b9f9 bold  ; Code, Question, BarFill, CatMcp
 i bg=#fb923c  ; AgentOrange
 j fg=#14161f bg=#fb923c bold  ; BadgeText, on AgentOrange
 k picture=label-map
 l fg=#f7a07f  ; CliClaude
-m logo=claudecode
 n fg=#6a9ee6  ; CliCodex
-o logo=codex
 p fg=#c27cb4  ; CliOpenCode
-q logo=ollama
 r fg=#6cd1cf  ; CliAgy
-s logo=antigravity
 t logo=opencode
 u fg=#8a8fa8  ; CatOther
 v picture=pointer-icon
+w logo=claude
+x logo=openai
+y logo=qwen
+z logo=gemini
+A logo=kimi
+B logo=gemma

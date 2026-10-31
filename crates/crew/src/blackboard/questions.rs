@@ -412,7 +412,7 @@ fn own_call(host: &Host, task: &TaskId, id: &MessageId) -> EngineResult<()> {
     let line = format!(
         "Decided on autopilot · {} ({}) kept its own call on: {}",
         task_label(host, task),
-        roles::display_name(&asker),
+        host.names().worker(&asker),
         one_line(&question.text)
     );
     note(host, task, NoteLevel::Info, line)?;
@@ -452,16 +452,16 @@ async fn proposed_answer(
             Err(EngineError::Interrupted) => return Err(EngineError::Interrupted),
             Err(err) => err,
         };
-        let name = roles::display_name(answerer);
+        let name = host.names().worker(answerer);
         let text = match in_line.get(n + 1) {
             Some(next) if roles::provider(host, next) == roles::provider(host, asker) => format!(
                 "{name} couldn't answer the question from {from}, so the main agent, {}, answers \
                  it though it shares the asker's provider: {failed}",
-                roles::display_name(next)
+                host.names().worker(next)
             ),
             Some(next) => format!(
                 "{name} couldn't answer the question from {from}, so {} answers it: {failed}",
-                roles::display_name(next)
+                host.names().worker(next)
             ),
             None => format!(
                 "{name} couldn't answer the question from {from}, so its agent goes with its \

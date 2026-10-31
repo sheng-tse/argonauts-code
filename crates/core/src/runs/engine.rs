@@ -65,6 +65,9 @@ pub struct EngineContext {
     /// `Resumed` and goes on from its last committed state. Without it, an engine over a
     /// finished run only answers what it can and returns at once.
     pub reopen: bool,
+    /// The request asked the run's approvals to wait for you, as a supervised session does. A
+    /// new run takes that mode before anything can open an approval.
+    pub starts_supervised: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

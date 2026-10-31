@@ -1,0 +1,48 @@
+# Set up with Orchestrator on its fixed phases and Claude Code to talk to, the workflow run as
+# written. Your prompt is the goal, your rules approve the plan, and each task gets the builder and
+# the one reviewer the orchestrator picks, so the run goes from your prompt to its reviews and
+# waits at the merge. The one check prints a pytest summary, which the reviewers are given.
+workflow = "orchestrator"
+
+[crew]
+main = "claude-code"
+worker = ["claude-code", "codex", "antigravity-cli", "opencode"]
+reviewer = ["claude-code", "codex", "antigravity-cli", "opencode"]
+judge = ["claude-code", "codex", "antigravity-cli", "opencode"]
+
+[crew.orchestrator_picks]
+worker = true
+reviewer = true
+
+[workflows]
+adapt_with = "phases"
+orchestrator_designs = false
+adapt_at_phase_ends = false
+final_check = false
+
+[understand]
+when = "off"
+
+[approvals]
+spot_check_sample = 0.0
+
+[approvals.plan]
+mode = "auto"
+decide_with = "rules"
+
+[approvals.merge]
+mode = "supervised"
+
+[review]
+per_task = 1
+
+[[checks.run]]
+name = "tests"
+command = ["sh", "-c", "echo '============ 14 passed in 0.31s ============'"]
+
+[divide]
+contracts_first = false
+predictions = false
+
+[ui]
+agents_in_conversation = "when_done"

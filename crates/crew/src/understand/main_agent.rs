@@ -103,7 +103,7 @@ pub async fn answer_in_slot(
         // Said plainly; what the session or the validator said waits for Ctrl+O.
         let line = format!(
             "{} couldn't answer the goal's questions, so the main agent answers them.",
-            crate::roles::display_name(&picked)
+            host.names().worker(&picked)
         );
         round::note_with_detail(host, NoteLevel::Warn, &line, &err.to_string())?;
         main_agent = the_main_agent;
@@ -276,14 +276,14 @@ pub fn without_answers(goal: &GoalFile) -> Option<GoalFile> {
     Some(file::hashed(yours))
 }
 
-/// The line the transcript shows once the main agent, or the model you `picked` in its place, has
-/// answered.
-pub fn answered_line(picked: Option<&ModelRef>, answered: usize, yours: usize) -> String {
+/// The line the transcript shows once the main agent, or the model you picked in its place (by
+/// its name in `picked`), has answered.
+pub fn answered_line(picked: Option<String>, answered: usize, yours: usize) -> String {
     let questions = match answered {
         1 => "1 of the goal's questions".to_owned(),
         n => format!("{n} of the goal's questions"),
     };
-    let who = picked.map_or_else(|| "The main agent".to_owned(), crate::roles::display_name);
+    let who = picked.unwrap_or_else(|| "The main agent".to_owned());
     let mut line = format!(
         "{who} answered {questions} for you. Its answers are assumptions in the goal, which \
          Ctrl+O and /status show"
@@ -298,6 +298,7 @@ pub fn answered_line(picked: Option<&ModelRef>, answered: usize, yours: usize) -
 
 #[cfg(test)]
 mod tests {
+    use argonauts_core::look::display_names::DisplayNames;
     use argonauts_core::runs::events::goal::ChoiceOption;
     use argonauts_core::workflows::steps::understand::DiffTag;
 
@@ -383,6 +384,7 @@ mod tests {
         );
         assert!(answered_line(None, 1, 0).ends_with("Ctrl+O and /status show"));
         let picked: ModelRef = "codex/gpt-x".parse().expect("a model");
-        assert!(answered_line(Some(&picked), 1, 0).starts_with("GPT X on Codex answered 1 of"));
+        let named = Some(DisplayNames::default().worker(&picked));
+        assert!(answered_line(named, 1, 0).starts_with("GPT X on Codex answered 1 of"));
     }
 }

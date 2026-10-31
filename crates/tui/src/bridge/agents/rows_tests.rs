@@ -11,7 +11,7 @@ use std::time::Instant;
 use argonauts_core::agents::session_runner::{Access, RunnerKind};
 use argonauts_core::app::AppEvent;
 use argonauts_core::app::overview::ModelTokens;
-use argonauts_core::base::names::{AgentId, ModelRef, RoleName, SessionKey, WorkflowId};
+use argonauts_core::base::names::{AgentId, ModelRef, RoleName, SeatId, SessionKey, WorkflowId};
 use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::models::model_catalog::CatalogEntry;
 use argonauts_core::runs::api::UsageSummary;
@@ -118,38 +118,8 @@ impl Run {
     }
 
     fn agent(&mut self, agent: &Agent) {
-        let worker: ModelRef = agent.worker.parse().unwrap();
-        let reads = agent.role != RoleName::Worker;
-        let started = SessionStarted {
-            agent_id: AgentId(worker.agent.clone()),
-            worker,
-            provider: "provider".to_owned(),
-            kind: RunnerKind::Cli,
-            role: agent.role,
-            step: Some(agent.step),
-            access: if reads {
-                Access::ReadOnly
-            } else {
-                Access::Build
-            },
-            lifetime: SessionLifetime::Task,
-            resumed_from: None,
-            follow_key: None,
-            workflow_step: None,
-            label: Some(agent.label.to_owned()),
-            asked: None,
-            asked_by: None,
-            asked_why: None,
-            forked: false,
-            seat: None,
-            billing: None,
-        };
+        self.start(agent, None);
         let (at, task) = (Some(agent.session), agent.task);
-        self.send(
-            at,
-            task,
-            RunEventKind::Session(SessionEvent::Started(Box::new(started))),
-        );
         if agent.role == RoleName::Reviewer {
             self.send(
                 at,
@@ -210,6 +180,41 @@ impl Run {
         );
     }
 
+    /// The agent's session starts, at a council's `seat` when it sits at one.
+    fn start(&mut self, agent: &Agent, seat: Option<SeatId>) {
+        let worker: ModelRef = agent.worker.parse().unwrap();
+        let reads = agent.role != RoleName::Worker;
+        let started = SessionStarted {
+            agent_id: AgentId(worker.agent.clone()),
+            worker,
+            provider: "provider".to_owned(),
+            kind: RunnerKind::Cli,
+            role: agent.role,
+            step: Some(agent.step),
+            access: if reads {
+                Access::ReadOnly
+            } else {
+                Access::Build
+            },
+            lifetime: SessionLifetime::Task,
+            resumed_from: None,
+            follow_key: None,
+            workflow_step: None,
+            label: Some(agent.label.to_owned()),
+            asked: None,
+            asked_by: None,
+            asked_why: None,
+            forked: false,
+            seat,
+            billing: None,
+        };
+        self.send(
+            Some(agent.session),
+            agent.task,
+            RunEventKind::Session(SessionEvent::Started(Box::new(started))),
+        );
+    }
+
     /// The run declares its workflow, an orchestrator's, which prints its Workflow call.
     fn declare(&mut self) {
         let id = WorkflowId::numbered(1);
@@ -243,6 +248,7 @@ impl Run {
                 description: "Add --due to the todo CLI".into(),
                 phases: vec![phase(0, "Plan"), phase(1, "Build"), phase(2, "Review")],
                 required: Vec::new(),
+                talks: false,
             }))),
         );
     }
@@ -646,4 +652,61 @@ fn builders_on_codexs_other_models_read_in_its_hue() {
             .unwrap_or_else(|| panic!("no {model:?} in {line:?}"));
         assert_eq!(span.style.fg, theme.style(Role::CliCodex).fg, "{label}");
     }
+}
+
+/// A council's seats start their first answers together, yet the conversation prints no
+/// `agents started` tree and no rows for them: each seat's work shows in its bubble and on its
+/// row under the request. Sessions that sit at no council still print theirs.
+#[test]
+fn seats_print_no_agent_rows_in_the_conversation() {
+    let theme = theme(false);
+    let agent = |session, label, worker| Agent {
+        session,
+        label,
+        worker,
+        role: RoleName::Worker,
+        step: StepName::Talk,
+        task: None,
+        calls: 0,
+        seconds: 0,
+        tokens: 0,
+    };
+    let seats = [
+        agent("s-001", "talk:anthropic", OPUS),
+        agent("s-002", "talk:openai", LUNA),
+    ];
+    let mut run = Run::new(None);
+    for (n, seat) in (1..).zip(&seats) {
+        run.start(seat, Some(SeatId::numbered(n)));
+    }
+    run.send(
+        Some("s-001"),
+        None,
+        RunEventKind::Agent(AgentEvent::ToolStarted {
+            id: "read-1".to_owned(),
+            name: "Read".to_owned(),
+            input: json!({"file_path": "src/server.ts"}),
+            parent: None,
+        }),
+    );
+    let rows = as_text(&run.printed(&theme));
+    assert!(!rows.contains("agents started"), "{rows}");
+    assert!(!rows.contains("talk:"), "{rows}");
+
+    let mut run = Run::new(None);
+    for seat in &seats {
+        run.start(seat, None);
+    }
+    run.send(
+        Some("s-001"),
+        None,
+        RunEventKind::Agent(AgentEvent::ToolStarted {
+            id: "read-1".to_owned(),
+            name: "Read".to_owned(),
+            input: json!({"file_path": "src/server.ts"}),
+            parent: None,
+        }),
+    );
+    let rows = as_text(&run.printed(&theme));
+    assert!(rows.contains("2 agents started"), "{rows}");
 }

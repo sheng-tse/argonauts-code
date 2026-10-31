@@ -1,0 +1,12 @@
+# Set up with Captain and vim keys, as the Behaviors drawings were, with the label map's
+# sample crew in its records.
+workflow = "captain"
+
+[crew]
+main = "claude-code"
+worker = ["claude-code", "codex", "antigravity-cli", "opencode"]
+reviewer = ["claude-code", "codex", "antigravity-cli", "opencode"]
+judge = ["claude-code", "codex", "antigravity-cli", "opencode"]
+
+[ui]
+keys = "vim"

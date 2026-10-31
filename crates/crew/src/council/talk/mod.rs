@@ -6,6 +6,8 @@
 //! from the last thing it recorded instead of asking anyone again.
 
 pub mod folder;
+mod missed;
+mod plan;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -15,35 +17,31 @@ use futures::future::join_all;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-use argonauts_core::TaskId;
 use argonauts_core::agents::session_runner::Access;
 use argonauts_core::base::names::{MessageId, RoleName, SeatId, SessionKey};
-use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::runs::events::RunEventKind;
 use argonauts_core::runs::events::council::{
     CouncilEvent, CouncilEventKind, CouncilMessage, FloorReason, Held, HeldChoice, MessageKind,
-    Moved, MovedBecause, Point, PointStance, PointState, ReplyTo, Seat, Seating, Side, Speaker,
-    Stance, TalkStop, TextPart,
+    MissedTurn, Moved, MovedBecause, Point, PointStance, PointState, ReplyTo, Seat, Seating, Side,
+    Speaker, Stance, TalkStop, TextPart,
 };
-use argonauts_core::runs::events::plan::PlanEvent;
 use argonauts_core::runs::events::session::InputPartKind;
 use argonauts_core::settings::council::WhenYouWrite;
 use argonauts_core::workflows::steps::StepName;
-use argonauts_core::workflows::steps::plan::{PlanChoice, PlanDraft};
 use argonauts_core::workflows::steps::talk::{Talk, TalkInput, TalkStance, TalkTurn};
 use argonauts_core::workflows::workflow::StepRef;
+use argonauts_core::{Spend, TaskId};
 
 use super::deliver::DrawKey;
 use super::guards::{self, Limits, Spent};
 use super::lift::Position;
 use super::points::{self, Stances};
-use super::relay::{self, Relay, Taken, YourMove};
+use super::relay::{Relay, Taken, YourMove};
 use super::{deliver, floor, private, seats, ways};
 use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::{Answered, Ask, Host};
-use crate::plan::{context, decisions, drafts};
+use crate::plan::context;
 use crate::state::ids::IdKind;
-use crate::state::plan::MERGED_LABEL;
 use crate::understand::round;
 use crate::workflow::{StepAt, StepCall, StepDone};
 
@@ -181,6 +179,15 @@ pub struct Council {
     /// once all are cast, so none of the round reached the seat before its next turn.
     #[serde(default)]
     pub round_from: BTreeMap<SeatId, usize>,
+    /// How many turns each seat missed.
+    #[serde(default)]
+    pub missed: BTreeMap<SeatId, u32>,
+    /// The reactions a seat missed, by message: it isn't asked for one again.
+    #[serde(default)]
+    pub reactions_missed: BTreeSet<(MessageId, SeatId)>,
+    /// The seats that missed twice and sit out the rest of the talk.
+    #[serde(default)]
+    pub left: BTreeSet<SeatId>,
     /// Events folded so far.
     pub seen: usize,
 }
@@ -235,6 +242,9 @@ impl Council {
             checked: BTreeSet::new(),
             worked: Worked::default(),
             round_from: BTreeMap::new(),
+            missed: BTreeMap::new(),
+            reactions_missed: BTreeSet::new(),
+            left: BTreeSet::new(),
             seen: 0,
         }
     }
@@ -359,6 +369,17 @@ impl Council {
             CouncilEventKind::Rejoined { seat, .. } => {
                 self.sat_out.remove(seat);
             }
+            CouncilEventKind::Missed(missed) => {
+                self.stop_writing(&missed.seat);
+                *self.missed.entry(missed.seat.clone()).or_default() += 1;
+                if let MissedTurn::Reaction { message } = &missed.turn {
+                    self.reactions_missed
+                        .insert((message.clone(), missed.seat.clone()));
+                }
+                if missed.for_good {
+                    self.left.insert(missed.seat.clone());
+                }
+            }
             CouncilEventKind::Check(pick) => {
                 self.checked.insert(pick.task.clone());
             }
@@ -367,6 +388,8 @@ impl Council {
                 self.worked.tokens = self.worked.tokens.saturating_add(*tokens);
             }
             CouncilEventKind::RunReview { .. } => self.reviewed = true,
+            // The seat goes on with what it can read.
+            CouncilEventKind::FolderBlocked { .. } => {}
         }
     }
 
@@ -445,11 +468,12 @@ impl Council {
         self.seating.as_ref()?.notes.as_ref()
     }
 
-    /// The seats at the table now: every seat but those carrying on in their own CLI.
+    /// The seats at the table now: every seat but those carrying on in their own CLI and those
+    /// that missed two turns.
     pub fn table(&self) -> Vec<SeatId> {
         self.seats()
             .iter()
-            .filter(|seat| !self.sat_out.contains(&seat.id))
+            .filter(|seat| !self.sat_out.contains(&seat.id) && !self.left.contains(&seat.id))
             .map(|seat| seat.id.clone())
             .collect()
     }
@@ -635,11 +659,19 @@ pub enum Next {
 /// agreement, the stop guard and the floor. `spent` gives the tokens and the working time; the
 /// messages that moved nobody are the council's own count.
 pub fn next_move(council: &Council, spent: &Spent, limits: &Limits) -> Next {
+    // A keeper that missed two turns hands the notes to the next seat still in.
     let keeper = || {
         council
             .notes()
+            .filter(|keeper| !council.left.contains(*keeper))
             .cloned()
-            .or_else(|| council.seats().first().map(|seat| seat.id.clone()))
+            .or_else(|| {
+                council
+                    .seats()
+                    .iter()
+                    .find(|seat| !council.left.contains(&seat.id))
+                    .map(|seat| seat.id.clone())
+            })
     };
     if council.ending.is_some() {
         if council.plan.is_some() {
@@ -730,6 +762,11 @@ fn reactions_due(council: &Council, table: &[SeatId]) -> Option<(MessageId, Vec<
             message.kind == MessageKind::Notes || message.from != Speaker::Seat((*seat).clone())
         })
         .filter(|seat| reacted.is_none_or(|by| !by.contains_key(*seat)))
+        .filter(|seat| {
+            !council
+                .reactions_missed
+                .contains(&(message.id.clone(), (*seat).clone()))
+        })
         .cloned()
         .collect();
     (!seats.is_empty()).then(|| (message.id.clone(), seats))
@@ -740,7 +777,9 @@ fn reactions_due(council: &Council, table: &[SeatId]) -> Option<(MessageId, Vec<
 /// it. Then the note keeper writes the plan, which goes on to your plan approval like any
 /// other.
 pub async fn step(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
-    host.read(context::require_approved_goal)?;
+    // The seats answer your request as you wrote it, so it stands as the goal, and the plan is
+    // the first thing you approve.
+    crate::roles::captain::prompt_is_the_goal(host).await?;
     context::phase_started(host)?;
     let talk = call.at.step.clone();
     if council_now(host, &talk).is_none_or(|council| council.seating.is_none()) {
@@ -787,7 +826,9 @@ pub async fn step(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
             }
             Next::Stop(why) => record(host, &talk, CouncilEventKind::Stopped { why })?,
             Next::Settle => points::settle(host, call, &council).await?,
-            Next::Plan(keeper) => write_plan(host, call, &council, &keeper, &mut table).await?,
+            Next::Plan(keeper) => {
+                plan::write_plan(host, call, &council, &keeper, &mut table).await?
+            }
         }
         let tokens = table.tokens.swap(0, Ordering::Relaxed);
         if counted {
@@ -829,8 +870,8 @@ pub(crate) fn record(host: &Host, talk: &StepRef, kind: CouncilEventKind) -> Eng
 /// from council to council.
 fn sit_down(host: &Host, call: &StepCall) -> EngineResult<()> {
     let settings = host.settings();
-    let seats = seats::seat(settings, &DisplayNames::default())
-        .map_err(|err| EngineError::Refused(err.to_string()))?;
+    let seats =
+        seats::seat(settings, host.names()).map_err(|err| EngineError::Refused(err.to_string()))?;
     let talk = &call.at.step;
     let path: Vec<String> = talk.path.iter().map(u32::to_string).collect();
     // Drawn the same when the run resumes and anew for each run, then one seat on for each
@@ -855,6 +896,14 @@ fn sit_down(host: &Host, call: &StepCall) -> EngineResult<()> {
         talk,
         CouncilEventKind::Seated(Seating { seats, notes }),
     )?;
+    // Your request opens the talk as your first message, which each seat reads as it writes
+    // its first answer.
+    let request = host.read(round::request).unwrap_or_default();
+    if !request.trim().is_empty() {
+        let id = MessageId::numbered(host.allocate(IdKind::Message)?);
+        let message = Box::new(yours(id, &request));
+        record(host, talk, CouncilEventKind::Message(message))?;
+    }
     let limits = Limits::of(&settings.council.stop_after, None);
     record(
         host,
@@ -866,7 +915,6 @@ fn sit_down(host: &Host, call: &StepCall) -> EngineResult<()> {
     )?;
     // A way your request names for a task binds from the start, as a point of yours, with
     // each seat it names held as the seat.
-    let request = host.read(round::request).unwrap_or_default();
     let mut yours = Vec::new();
     let council = council_now(host, talk);
     let relay = council
@@ -954,7 +1002,7 @@ struct Table {
     relay: Relay,
     key: DrawKey,
     sessions: BTreeMap<SeatId, SessionKey>,
-    /// The billable tokens of the seats' turns since the talk last counted them.
+    /// The tokens the seats wrote in their turns since the talk last counted them.
     tokens: AtomicU64,
 }
 
@@ -1051,10 +1099,19 @@ async fn ask(
             .sessions
             .get(&answered.session)
             .and_then(|session| session.end.as_ref())
-            .map_or(0, |end| end.spend.billable_tokens())
+            .map_or(0, |end| talk_tokens(&end.spend))
     });
     table.tokens.fetch_add(tokens, Ordering::Relaxed);
     Ok(answered)
+}
+
+/// What a seat's turn adds to the talk's token count: the tokens it wrote. The limit is there
+/// to stop a talk that goes round in circles, and what the seats write is the talk; the context
+/// a CLI reads again each turn grows with the CLI and the folder, not with the talk, and one
+/// turn of it can pass the whole limit. It is the count every seat's row, the working line and
+/// the stop line show.
+pub(crate) fn talk_tokens(spend: &Spend) -> u64 {
+    spend.output_tokens
 }
 
 /// The slot of a seat's next turn: its newest turn here while that can still resume, else the
@@ -1092,6 +1149,14 @@ async fn first_answers(
 ) -> EngineResult<()> {
     let talk = &call.at.step;
     let seats: Vec<&Seat> = missing.iter().filter_map(|id| council.seat(id)).collect();
+    // Your request, the talk's first message, which each seat reads with its first answer.
+    let request = council.messages.first().map(|said| &said.message);
+    if let Some(request) = request.filter(|message| message.from == Speaker::You) {
+        for seat in &seats {
+            let (message, seat) = (request.id.clone(), seat.id.clone());
+            record(host, talk, CouncilEventKind::Read { message, seat })?;
+        }
+    }
     for seat in &seats {
         record(
             host,
@@ -1113,7 +1178,21 @@ async fn first_answers(
     });
     let answers = join_all(asks).await;
     for (seat, answer) in seats.iter().zip(answers) {
-        let answered = answer?;
+        let answered = match answer {
+            Ok(answered) => answered,
+            Err(err) => {
+                missed::missed(
+                    host,
+                    talk,
+                    council,
+                    &seat.id,
+                    MissedTurn::FirstAnswer,
+                    None,
+                    err,
+                )?;
+                continue;
+            }
+        };
         table
             .sessions
             .insert(seat.id.clone(), answered.session.clone());
@@ -1353,7 +1432,16 @@ async fn react(
     });
     let answers = join_all(asks).await;
     for (seat, answer) in seats.iter().zip(answers) {
-        let answered = answer?;
+        let answered = match answer {
+            Ok(answered) => answered,
+            Err(err) => {
+                let turn = MissedTurn::Reaction {
+                    message: message.clone(),
+                };
+                missed::missed(host, talk, council, &seat.id, turn, Some(TAPBACK_TIME), err)?;
+                continue;
+            }
+        };
         table
             .sessions
             .insert(seat.id.clone(), answered.session.clone());
@@ -1490,7 +1578,9 @@ async fn write(
                 CouncilEventKind::WritingEnded { seat: seat.clone() },
             );
         }
-        Err(err) => return Err(err),
+        Err(err) => {
+            return missed::missed(host, talk, council, seat, MissedTurn::Message, None, err);
+        }
     };
     table
         .sessions
@@ -1521,161 +1611,6 @@ fn yours_since_writing(host: &Host, talk: &StepRef, seat: &SeatId) -> bool {
             .any(|(to, _, at)| to == seat && *at > since);
         to_all || to_it
     })
-}
-
-async fn write_plan(
-    host: &Host,
-    call: &StepCall,
-    council: &Council,
-    keeper: &SeatId,
-    table: &mut Table,
-) -> EngineResult<()> {
-    let talk = &call.at.step;
-    let Some(seat) = council.seat(keeper) else {
-        return Err(EngineError::Refused(format!("{keeper} doesn't sit")));
-    };
-    record(
-        host,
-        talk,
-        CouncilEventKind::Writing {
-            seat: keeper.clone(),
-            why: FloorReason::Notes,
-        },
-    )?;
-    let mut text = handed(host, table, council, keeper, YourMove::Write)?;
-    text.push('\n');
-    text.push_str(&deliver::settled(&table.relay, council, keeper));
-    // Every task reads the plan, so a plan that repeats what you told the note keeper alone
-    // waits for you, as one of its messages would, before it is sealed.
-    let (answered, plan) = loop {
-        let turn = Turn {
-            seat,
-            template: PLAN,
-            access: Access::ReadOnly,
-            text: text.clone(),
-        };
-        let answered = ask(host, call, council, table, turn).await?;
-        table
-            .sessions
-            .insert(keeper.clone(), answered.session.clone());
-        let plan = answered
-            .output
-            .plan
-            .clone()
-            .unwrap_or_else(|| plan_from_points(&council.points));
-        // Every later step and task reads the plan, and none may learn which model wrote it.
-        let plan = relay::plan_without_who_wrote(table.relay.lexicon(), plan);
-        let now = council_now(host, talk).unwrap_or_else(|| council.clone());
-        let words = plan_words(&plan);
-        let Some(hold) = private::held(host, &now, keeper, &words)? else {
-            break (answered, plan);
-        };
-        match private::decide_plan(host, call, &now, keeper, &hold, &words).await? {
-            HeldChoice::Rewrite => text.push_str(
-                "\nYour plan repeated what the user told you in private, so no task reads it. \
-                 Write it again without that.",
-            ),
-            _ => break (answered, plan),
-        }
-    };
-    let round = host.read(|state| state.plan.blind_round(false));
-    let id = drafts::seal(
-        host,
-        MERGED_LABEL,
-        &answered.worker,
-        round,
-        &plan,
-        Some(&answered.session),
-    )?;
-    host.record(
-        None,
-        None,
-        RunEventKind::Plan(PlanEvent::FastPath {
-            merged_by: answered.worker.clone(),
-        }),
-    )?;
-    let sealed = host
-        .read(|state| {
-            state
-                .plan
-                .drafts
-                .iter()
-                .find(|draft| draft.draft == id)
-                .cloned()
-        })
-        .ok_or_else(|| EngineError::Refused(format!("the plan {id} was not recorded")))?;
-    decisions::record_for(host, &sealed).await?;
-    let summary = format!("The council agreed on {} points", council.points.len());
-    context::phase_finished(host, &summary)?;
-    let words = if answered.output.message.trim().is_empty() {
-        plan.summary.clone()
-    } else {
-        answered.output.message.clone()
-    };
-    let notes = TalkTurn {
-        message: words,
-        ..TalkTurn::default()
-    };
-    // The plan is sealed already, so its words go out as code strips them.
-    let taken = taken_again(&table.relay, keeper, notes.message.trim());
-    let now = council_now(host, talk).unwrap_or_else(|| council.clone());
-    land(
-        host,
-        &table.relay,
-        &now,
-        seat,
-        &notes,
-        Landing::of(MessageKind::Notes, taken),
-    )
-}
-
-/// Every word of the plan a task reads, for checking against what you said in private.
-fn plan_words(plan: &PlanDraft) -> String {
-    let mut words = vec![plan.summary.clone(), plan.approach.clone()];
-    for piece in &plan.pieces {
-        words.push(piece.name.clone());
-        words.push(piece.description.clone());
-    }
-    for choice in &plan.choices {
-        words.extend([
-            choice.topic.clone(),
-            choice.choice.clone(),
-            choice.rationale.clone(),
-        ]);
-    }
-    words.extend(plan.risks.iter().cloned());
-    words.push(plan.test_strategy.clone());
-    words.join("\n")
-}
-
-/// The plan a note keeper that gave none would have written: the settled points as choices.
-fn plan_from_points(settled: &[Point]) -> PlanDraft {
-    // The plan reaches the seats that build it, so a seat a point names is no one in particular.
-    let words: Vec<String> = settled
-        .iter()
-        .map(|point| relay::draw_markers(&point.words, |_| "a seat".to_owned()))
-        .collect();
-    PlanDraft {
-        summary: words.join(". "),
-        approach: words
-            .iter()
-            .map(|words| format!("- {words}"))
-            .collect::<Vec<_>>()
-            .join("\n"),
-        pieces: Vec::new(),
-        choices: settled
-            .iter()
-            .zip(&words)
-            .map(|(point, words)| PlanChoice {
-                topic: format!("Point {}", point.number),
-                choice: words.clone(),
-                rationale: "The council settled it".to_owned(),
-            })
-            .collect(),
-        risks: Vec::new(),
-        test_strategy: String::new(),
-        new_dependencies: Vec::new(),
-    }
 }
 
 /// Where a moved stance's reason comes from.
@@ -1996,6 +1931,7 @@ fn yours_unread_since_writing(council: &Council, seat: &SeatId) -> Option<Messag
 #[cfg(test)]
 pub(crate) mod tests {
     use argonauts_core::base::names::WorkflowId;
+    use argonauts_core::look::display_names::DisplayNames;
     use argonauts_core::runs::events::council::{SeatRole, TextPart};
 
     use super::*;
@@ -2220,6 +2156,19 @@ pub(crate) mod tests {
         );
     }
 
+    /// A turn counts what its seat wrote, never the context its CLI read again: one turn that
+    /// read 373k tokens of it moves the talk's count by its 900 written.
+    #[test]
+    fn a_turn_counts_the_tokens_its_seat_wrote() {
+        let spend = Spend {
+            input_tokens: 373_000,
+            cached_tokens: 12_000,
+            output_tokens: 900,
+            ..Spend::default()
+        };
+        assert_eq!(talk_tokens(&spend), 900);
+    }
+
     #[test]
     fn the_stop_guard_ends_a_talk_that_moves_nobody() {
         let mut events = vec![
@@ -2379,6 +2328,7 @@ pub(crate) mod tests {
             council: "1/1/0".to_owned(),
         };
         let relay = deliver::seated_relay(
+            &DisplayNames::default(),
             &talk,
             &key.draw(),
             crate::council::lexicon::Lexicon::built_in(),

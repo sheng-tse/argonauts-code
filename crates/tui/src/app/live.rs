@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use ratatui::text::{Line, Span};
 
 use crate::base::draw::render::RenderCtx;
@@ -5,7 +7,7 @@ use crate::base::text::truncate_line;
 use crate::base::theme::Role;
 use crate::bottom::BottomState;
 use crate::cells::cell::HistoryCell;
-use crate::cells::cell::history::{History, LiveBlock};
+use crate::cells::cell::history::{CellId, History, LiveBlock};
 
 /// A block's header and one more row, kept while there is room for every block to keep them.
 const BLOCK_MIN_ROWS: usize = 2;
@@ -18,6 +20,8 @@ pub struct LiveView {
     pub trailing: usize,
     /// (column, row) within `lines`.
     pub cursor: Option<(u16, u16)>,
+    /// The live cells shown whole among the trailing lines, each by its rows there.
+    pub whole: Vec<(CellId, Range<usize>)>,
 }
 
 /// The blocks get at most half of `max_height`, so a terminal made a little shorter pushes only
@@ -84,7 +88,7 @@ fn compose(
         .saturating_sub(bottom_view.lines.len() + separator)
         .min(max / 2);
 
-    let mut lines = fit_blocks(&blocks, history, ctx, room);
+    let (mut lines, whole) = fit_blocks(&blocks, history, ctx, room);
     let trailing = lines.len();
     if separator == 1 {
         lines.push(Line::default());
@@ -97,6 +101,7 @@ fn compose(
         cursor: bottom_view
             .cursor
             .map(|(column, row)| (column, row.saturating_add(offset))),
+        whole,
     }
 }
 
@@ -105,7 +110,7 @@ fn fit_blocks(
     history: &History,
     ctx: &RenderCtx<'_>,
     room: usize,
-) -> Vec<Line<'static>> {
+) -> (Vec<Line<'static>>, Vec<(CellId, Range<usize>)>) {
     let wants: Vec<usize> = blocks.iter().map(|b| b.lines.len()).collect();
     let gaps: Vec<usize> = blocks.iter().map(|b| usize::from(b.gap_before)).collect();
     let total: usize = wants.iter().sum::<usize>() + gaps.iter().sum::<usize>();
@@ -160,9 +165,15 @@ fn fit_blocks(
     }
     let mut rows = vec![0; blocks.len()];
     rows[shown.clone()].copy_from_slice(&allot);
-    lines.extend(stack(blocks, &rows, first, history, ctx));
+    let above = lines.len();
+    let (stacked, mut whole) = stack(blocks, &rows, first, history, ctx);
+    lines.extend(stacked);
     lines.truncate(room);
-    lines
+    for (_, rows) in &mut whole {
+        *rows = rows.start + above..rows.end + above;
+    }
+    whole.retain(|(_, rows)| rows.end <= lines.len());
+    (lines, whole)
 }
 
 /// Rows per block: each starts at its minimum, then every block that wants more gets one row
@@ -195,8 +206,9 @@ fn stack(
     first: usize,
     history: &History,
     ctx: &RenderCtx<'_>,
-) -> Vec<Line<'static>> {
+) -> (Vec<Line<'static>>, Vec<(CellId, Range<usize>)>) {
     let mut lines = Vec::new();
+    let mut whole = Vec::new();
     for (block, &limit) in blocks.iter().zip(rows).skip(first) {
         if limit == 0 {
             continue;
@@ -204,9 +216,15 @@ fn stack(
         if block.gap_before {
             lines.push(Line::default());
         }
+        let start = lines.len();
         lines.extend(squeeze_block(block, limit, history, ctx));
+        if let Some(id) = block.id
+            && limit >= block.lines.len()
+        {
+            whole.push((id, start..lines.len()));
+        }
     }
-    lines
+    (lines, whole)
 }
 
 fn squeeze_block(

@@ -11,6 +11,7 @@ use serde_json::Value;
 use time::OffsetDateTime;
 
 use crate::agents::session::SessionRole;
+use crate::base::clock;
 use crate::base::ids::{RunId, TaskId};
 use crate::base::names::ModelRef;
 use crate::base::paths::create_private_dir_all;
@@ -38,7 +39,7 @@ impl RunEvent {
         kind: RunEventKind,
     ) -> Self {
         Self {
-            ts: OffsetDateTime::now_utc(),
+            ts: clock::now_utc(),
             run_id,
             task_id,
             source: source.into(),
@@ -266,6 +267,9 @@ pub enum NoteLevel {
     /// Worth one line in the warning colour and no mark, about how the app goes on, such as
     /// autopilot coming back at start as you left it.
     Caution,
+    /// A warning that asks you to do something, such as letting a CLI into a folder macOS
+    /// keeps it out of: drawn with `◆`.
+    Ask,
 }
 
 /// The note a failed run review leaves. Why it failed is in the run review phase's `Failed`

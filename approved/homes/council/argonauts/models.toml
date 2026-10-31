@@ -2,12 +2,12 @@
 # names it as OpenCode does.
 
 [[model]]
-id = "opencode/ollama/qwen3-coder:30b-64k"
+id = "opencode/ollama/qwen3-coder:30b"
 provider = "qwen"
 kind = "cli"
 access = "local"
 tools = true
 cost = { unit = "none" }
 launch = { oss = true, local_provider = "ollama" }
-name = "Qwen3 Coder 30B (64k)"
-context_window = 65536
+name = "Qwen3 Coder 30B"
+context_window = 262144

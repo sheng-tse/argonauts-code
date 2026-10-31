@@ -37,7 +37,7 @@ use crate::engine::error::{Beside, EngineError, EngineResult, Stall, StalledJob}
 use crate::engine::host::{Host, round_window};
 use crate::engine::shared::lock;
 use crate::fallback::rules;
-use crate::roles::{self, display_name};
+use crate::roles;
 use crate::state::RunState;
 use crate::state::sessions::SessionRecord;
 use crate::workflow::StepAt;
@@ -441,7 +441,7 @@ fn remember_startup_crash(
     if !twice {
         return Ok(());
     }
-    let cli = DisplayNames::default().cli(worker.agent.as_str());
+    let cli = host.names().cli(worker.agent.as_str());
     let how = if message.is_empty() {
         String::new()
     } else {
@@ -651,7 +651,7 @@ fn say_retry(
     retry: &Retry,
     span: Duration,
 ) -> EngineResult<()> {
-    let name = display_name(&record.started.worker);
+    let name = host.names().worker(&record.started.worker);
     let (stopped, _) = passing_words(reason);
     let again = if span.is_zero() {
         "trying again".to_owned()
@@ -1024,11 +1024,11 @@ fn say_builders_provider(
     if !new {
         return Ok(());
     }
-    let stopped = stopped_in_words(&display_name(from), why);
+    let stopped = stopped_in_words(&host.names().worker(from), why);
     let text = format!(
         "{stopped}, and nobody outside the builder's provider is left, so {} takes {} on \
          autopilot · its work stays on its branch for you",
-        display_name(taker),
+        host.names().worker(taker),
         job_in_words(job),
     );
     note(
@@ -1091,7 +1091,7 @@ fn left_to_builders_provider(
     };
     let mut seen = BTreeSet::new();
     elsewhere.retain(|model| seen.insert(model.clone()));
-    let from = display_name(stop.from);
+    let from = host.names().worker(stop.from);
     let why = match stop.why {
         Some(why) => stopped_in_words(&from, why),
         None => format!("{from} stopped"),
@@ -1118,10 +1118,9 @@ fn job_title(host: &Host, job: &Job) -> String {
 }
 
 /// `Haiku 5.5's work`, or `the work of Haiku 5.5 and Sonnet 5.5` for several builders.
-pub(crate) fn work_of(builders: &[ModelRef]) -> String {
-    let names: Vec<String> = builders.iter().map(roles::short_name).collect();
+pub(crate) fn work_of(names: &DisplayNames, builders: &[ModelRef]) -> String {
     let mut unique: Vec<String> = Vec::new();
-    for name in names {
+    for name in builders.iter().map(|worker| names.short(worker)) {
         if !unique.contains(&name) {
             unique.push(name);
         }
@@ -1398,7 +1397,7 @@ fn say_fallback(
     if !new || made_before {
         return Ok(());
     }
-    let (from_name, taker_name) = (display_name(from), display_name(taker));
+    let (from_name, taker_name) = (host.names().worker(from), host.names().worker(taker));
     let text = match why {
         Why::LoggedOut(_) => format!(
             "{from_name} says it's logged out: log in again; {taker_name} takes its roles \
@@ -1411,7 +1410,7 @@ fn say_fallback(
         // this one names only the CLI that steps in.
         Why::Ended(reason) if repeats(reason) => format!(
             "Fell back to {} as {} · {NO_SECOND_TRY}",
-            DisplayNames::default().cli(taker.agent.as_str()),
+            host.names().cli(taker.agent.as_str()),
             job_as_role(job),
         ),
         Why::Ended(reason) => format!(
@@ -1434,7 +1433,7 @@ fn say_fallback(
     let text = match kept_off {
         Some(other) => format!(
             "{text}\n{SAME_CLI_IS_ON}{} isn't asked",
-            DisplayNames::default().cli(other.0.as_str())
+            host.names().cli(other.0.as_str())
         ),
         None => text,
     };
@@ -1489,6 +1488,7 @@ fn in_the_view(from_name: &str, taker_name: &str, why: Option<&Why>, same_cli: b
 /// by the model it runs, and a taker that runs the very model that stopped says so: `fell back
 /// to Qwen3 Coder 30B on OpenCode (the same model)`.
 pub(crate) fn task_in_the_view(
+    names: &DisplayNames,
     from: &ModelRef,
     taker: &ModelRef,
     ended: Option<&EndReason>,
@@ -1499,11 +1499,11 @@ pub(crate) fn task_in_the_view(
         .map(|reason| Why::Ended(reason.clone()));
     let same_model = taker.model.is_some() && taker == from;
     let taker_name = if same_model {
-        format!("{} (the same model)", display_name(taker))
+        format!("{} (the same model)", names.worker(taker))
     } else {
-        display_name(taker)
+        names.worker(taker)
     };
-    in_the_view(&display_name(from), &taker_name, why.as_ref(), same_cli)
+    in_the_view(&names.worker(from), &taker_name, why.as_ref(), same_cli)
 }
 
 /// Who stopped and why, in one clause, such as `Opus 5.5 on Claude Code is signed out`.
@@ -1542,16 +1542,16 @@ fn stalled(
     let memory = lock(&host.shared().job_fallbacks);
     let mut logged_out: Vec<String> = Vec::new();
     for worker in failed.iter().copied().chain([from]) {
-        let name = display_name(worker);
+        let name = host.names().worker(worker);
         if memory.logged_out(worker) && !logged_out.contains(&name) {
             logged_out.push(name);
         }
     }
     drop(memory);
     let role = job_in_words(job);
-    let from_name = display_name(from);
+    let from_name = host.names().worker(from);
     let stopped = stopped_in_words(&from_name, why);
-    let cli = DisplayNames::default().cli(from.agent.as_str());
+    let cli = host.names().cli(from.agent.as_str());
     let builders = match kept.as_ref().map(|wait| &wait.kept_by) {
         Some(JobKeeper::BuildersProvider { builders, .. }) => Some(builders),
         _ => None,
@@ -1564,7 +1564,7 @@ fn stalled(
                  is left to {} {}.",
                 argonauts_core::base::text::sentence_case(&role),
                 verb_of(job.role),
-                work_of(builders),
+                work_of(host.names(), builders),
             ),
         )
     } else if mode == FallbackMode::Wait {
@@ -1710,7 +1710,7 @@ fn first_line(text: &str) -> &str {
 /// Why each other installed CLI couldn't take the job either, one clause each, as far as the
 /// run knows without asking: `OpenCode has no model set`, `Codex is signed out`.
 fn tried_elsewhere(host: &Host, from: &ModelRef) -> Vec<String> {
-    let names = DisplayNames::default();
+    let names = host.names();
     let memory = lock(&host.shared().job_fallbacks);
     let mut tried: Vec<String> = Vec::new();
     let mut seen = BTreeSet::new();
@@ -1741,7 +1741,7 @@ fn tried_elsewhere(host: &Host, from: &ModelRef) -> Vec<String> {
 /// step never share a CLI, so the proposals stay independent. A job whose session ended on
 /// its agent's failure isn't at work.
 fn working_in_step(host: &Host, job: &Job, from: &ModelRef) -> Vec<String> {
-    let names = DisplayNames::default();
+    let names = host.names();
     let mut working: Vec<String> = Vec::new();
     for model in host.read(|state| at_work_in_step(state, job, from)) {
         let cli = names.cli(model.agent.as_str());
@@ -2094,13 +2094,16 @@ mod tests {
     fn the_work_is_named_by_its_builders() {
         let model = |text: &str| -> ModelRef { text.parse().expect("a model") };
         let (haiku, sonnet) = (model("claude-code/haiku"), model("claude-code/sonnet"));
-        let short = |model: &ModelRef| roles::short_name(model);
+        let short = |model: &ModelRef| DisplayNames::default().short(model);
         assert_eq!(
-            work_of(std::slice::from_ref(&haiku)),
+            work_of(&DisplayNames::default(), std::slice::from_ref(&haiku)),
             format!("{}'s work", short(&haiku))
         );
         assert_eq!(
-            work_of(&[haiku.clone(), sonnet.clone(), haiku.clone()]),
+            work_of(
+                &DisplayNames::default(),
+                &[haiku.clone(), sonnet.clone(), haiku.clone()]
+            ),
             format!("the work of {} and {}", short(&haiku), short(&sonnet))
         );
         assert_eq!(verb_of(RoleName::Judge), "judge");
@@ -2166,26 +2169,32 @@ mod tests {
         let sonnet: ModelRef = "claude-code/claude-sonnet-5-5".parse().expect("a model");
         let codex: ModelRef = "codex/gpt-5.6".parse().expect("a model");
         let (from, on_its_cli, elsewhere) = (
-            display_name(&opus),
-            display_name(&sonnet),
-            display_name(&codex),
+            DisplayNames::default().worker(&opus),
+            DisplayNames::default().worker(&sonnet),
+            DisplayNames::default().worker(&codex),
         );
         let overloaded = EndReason::CliError {
             category: ErrorCategory::Overloaded,
             message: "Overloaded".to_owned(),
         };
         assert_eq!(
-            task_in_the_view(&opus, &sonnet, Some(&overloaded), true),
+            task_in_the_view(
+                &DisplayNames::default(),
+                &opus,
+                &sonnet,
+                Some(&overloaded),
+                true
+            ),
             format!("{from} is overloaded · fell back to {on_its_cli}, as same_cli asks")
         );
         let limit = EndReason::UsageLimit { resets_at: None };
         assert_eq!(
-            task_in_the_view(&opus, &codex, Some(&limit), false),
+            task_in_the_view(&DisplayNames::default(), &opus, &codex, Some(&limit), false),
             format!("{from}'s session ended early (its usage limit) · fell back to {elsewhere}")
         );
         for no_failure in [None, Some(&EndReason::Stopped), Some(&EndReason::Completed)] {
             assert_eq!(
-                task_in_the_view(&opus, &codex, no_failure, false),
+                task_in_the_view(&DisplayNames::default(), &opus, &codex, no_failure, false),
                 format!("{from} stopped · fell back to {elsewhere}")
             );
         }
@@ -2198,10 +2207,8 @@ mod tests {
     fn a_fallback_to_the_same_model_says_so() {
         use argonauts_core::runs::events::session::{CallCount, Watchdog};
 
-        let qwen: ModelRef = "opencode/ollama/qwen3-coder:30b-64k"
-            .parse()
-            .expect("a model");
-        let name = display_name(&qwen);
+        let qwen: ModelRef = "opencode/ollama/qwen3-coder:30b".parse().expect("a model");
+        let name = DisplayNames::default().worker(&qwen);
         let repeated = EndReason::Stuck {
             watchdog: Watchdog::Repeat,
             calls: Some(CallCount {
@@ -2210,7 +2217,13 @@ mod tests {
             }),
         };
         assert_eq!(
-            task_in_the_view(&qwen, &qwen, Some(&repeated), false),
+            task_in_the_view(
+                &DisplayNames::default(),
+                &qwen,
+                &qwen,
+                Some(&repeated),
+                false
+            ),
             format!(
                 "{name}'s session ended early (it repeated the same execute call 12 times) · \
                  fell back to {name} (the same model)"
@@ -2218,7 +2231,13 @@ mod tests {
         );
         let bare: ModelRef = "opencode".parse().expect("a CLI");
         assert_eq!(
-            task_in_the_view(&qwen, &bare, Some(&repeated), false),
+            task_in_the_view(
+                &DisplayNames::default(),
+                &qwen,
+                &bare,
+                Some(&repeated),
+                false
+            ),
             format!(
                 "{name}'s session ended early (it repeated the same execute call 12 times) · \
                  fell back to OpenCode"

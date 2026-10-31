@@ -7,21 +7,22 @@
 //! maker's own.
 
 use argonauts_core::behaviors::behavior_world::{
-    ModelBehavior, ModelFacts, RisenWonder, Wonder, WorldFacts,
+    MODEL_LOOP_LENGTH, ModelBehavior, ModelFacts, NIGHT_FROM, NIGHT_TO, RisenWonder, Wonder,
+    WorldFacts,
 };
 use argonauts_core::look::display_names::DisplayNames;
-use argonauts_core::look::logos::{Logo, logo_for};
+use argonauts_core::look::logos::{self, Logo};
 use ratatui::text::Span;
 use time::OffsetDateTime;
 
 use super::universe::{Body, PLANETS, Universe};
 use super::words::Look;
-use crate::base::format::WallClock;
+use crate::base::format::{ClockTime, WallClock};
 use crate::base::kit::logo::LOGO_WIDTH;
 use crate::base::text::str_width;
 use crate::base::theme::Role;
 use crate::world::Pointed;
-use crate::world::cosmos::{maker_logo, served_logo};
+use crate::world::cosmos::{maker_logo, model_logo};
 
 /// A hover line takes at most two rows of this many cells.
 pub const LINE_CELLS: usize = 116;
@@ -65,8 +66,9 @@ fn ago(minutes: i64) -> String {
     }
 }
 
-fn percent(part: u32, whole: u32) -> u32 {
-    (f64::from(part) * 100.0 / f64::from(whole.max(1))).round() as u32
+/// `part` of `whole` as the app writes a share: `12%`, `0.4%`.
+fn share(part: u32, whole: u32) -> String {
+    crate::base::format::percent(f64::from(part) / f64::from(whole.max(1)))
 }
 
 /// What raises each wonder, as its line says once the pointer finds it.
@@ -169,17 +171,6 @@ impl Climate {
             Climate::Desert => "last used 21 or more days ago",
         }
     }
-
-    /// Seconds a turn of the innermost planet of this climate takes; a desert's stands still.
-    fn orbit(self) -> u32 {
-        match self {
-            Climate::Rainforest => 20,
-            Climate::Forest => 40,
-            Climate::Grassland => 80,
-            Climate::Savanna => 160,
-            Climate::Desert => 0,
-        }
-    }
 }
 
 /// What only the planet shows and the map's own lines don't say: the aurora on its night side
@@ -227,14 +218,16 @@ impl Nature {
             Nature::Aurora => {
                 let night = reading.world.crew.night_actions;
                 format!(
-                    "aurora · {night} actions between 10:00 PM and 5:00 AM ({}%)",
-                    percent(night, reading.actions)
+                    "aurora · {night} actions between {} and {}, {} of all",
+                    ClockTime::new(NIGHT_FROM, 0)?,
+                    ClockTime::new(NIGHT_TO, 0)?,
+                    share(night, reading.actions)
                 )
             }
             Nature::Clouds => format!(
-                "clouds · {} actions fit no label ({}%)",
+                "clouds · {} actions fit no label, {} of all",
                 reading.unlabelled,
-                percent(reading.unlabelled, reading.actions + reading.unlabelled)
+                share(reading.unlabelled, reading.actions + reading.unlabelled)
             ),
         };
         Some(cap(&text))
@@ -252,7 +245,7 @@ pub fn wonder_lines(wonder: &RisenWonder, names: &[String]) -> [String; 2] {
     [
         format!("{} · {}{named}", wonder.wonder.name(), wonder.why),
         format!(
-            "{} · about {}",
+            "{} · beside {}",
             trigger(wonder.wonder),
             quoted(&wonder.behavior)
         ),
@@ -273,7 +266,7 @@ pub(super) fn wonder_said(wonder: &RisenWonder, look: &Look<'_>) -> Vec<Said> {
                 .names
                 .model(cli, model)
                 .unwrap_or_else(|| look.names.cli(cli));
-            let logo = logo_for(cli, model);
+            let logo = logos::model_logo(cli, model);
             let shown = look.named_after(&logo, &name);
             logos.push(logo);
             format!("{LOGO} {shown}")
@@ -433,7 +426,6 @@ pub fn cosmos_lines(
     level: super::Level,
     named: &dyn Fn(&Logo, &ModelFacts) -> String,
 ) -> Option<Vec<Said>> {
-    let share = |part: u32| format!("{}%", percent(part, universe.actions));
     match pointed {
         Pointed::Home => {
             let newest = world
@@ -472,21 +464,25 @@ pub fn cosmos_lines(
             let head = format!(
                 "{LOGO} {name} · {} actions, {} of yours · {}{failed}",
                 maker.actions,
-                share(maker.actions),
+                share(maker.actions, universe.actions),
                 plural(u32::try_from(models.len()).unwrap_or(u32::MAX), "model")
             );
-            let motion = if recent > 0 {
+            let recent = if recent > 0 {
                 format!(
-                    "Turning: {}% of its actions came in the last 7 days",
-                    percent(recent, maker.actions)
+                    "{} of its actions came in the last 7 days",
+                    share(recent, maker.actions)
                 )
             } else {
-                "Still: none of its actions came in the last 7 days".to_owned()
+                "None of its actions came in the last 7 days".to_owned()
             };
-            let dwarf = if percent(maker.actions, universe.actions) < 3 {
-                format!("A dwarf galaxy, under 3% of your actions · {motion}")
+            let dwarf_share = crate::world::cosmos::rules::DWARF_SHARE;
+            let dwarf = if f64::from(maker.actions) < dwarf_share * f64::from(universe.actions) {
+                format!(
+                    "A dwarf galaxy, under {} of your actions · {recent}",
+                    crate::base::format::percent(dwarf_share)
+                )
             } else {
-                motion
+                recent
             };
             let inside = matches!(level, super::Level::Galaxy(_));
             let key = if inside { "" } else { "enter to go in" };
@@ -501,7 +497,7 @@ pub fn cosmos_lines(
             let maker = universe.makers.get(star.maker)?;
             let maker_name = argonauts_core::models::registry::provider::provider_name(&maker.key);
             let kind = StarKind::of(model, world);
-            let logo = served_logo(model);
+            let logo = model_logo(model);
             let name = named(&logo, model);
             let failed = if model.failed > 0 {
                 format!("{} failed", model.failed)
@@ -516,10 +512,19 @@ pub fn cosmos_lines(
             let mut logos = vec![logo];
             let binary = star.binary.and_then(|other| {
                 let other = world.models.get(universe.stars.get(other)?.model)?;
-                let logo = served_logo(other);
+                let logo = model_logo(other);
                 let name = named(&logo, other);
                 logos.push(logo);
-                Some(format!(" in a binary with {LOGO} {name}"))
+                let together = world
+                    .pairs
+                    .iter()
+                    .find(|pair| {
+                        pair.models.contains(&model.model) && pair.models.contains(&other.model)
+                    })
+                    .map_or_else(String::new, |pair| {
+                        format!(", together in {}", plural(pair.runs, "run"))
+                    });
+                Some(format!(" in a binary with {LOGO} {name}{together}"))
             });
             let remnant = if star.supernova {
                 " in a supernova remnant"
@@ -560,10 +565,15 @@ pub fn cosmos_lines(
                 super::Level::Galaxy(_) => "enter to see its system",
                 _ => "",
             };
-            Some(vec![
-                Said::with(head, logos),
-                Said::plain(fit(&[why, key.to_owned()])),
-            ])
+            // What a remnant means goes first, so the room left can't drop it.
+            let remnant = star.supernova.then(|| {
+                format!(
+                    "Its CLI failed in {} or more sessions in one day",
+                    crate::world::cosmos::rules::SUPERNOVA_FAILURES
+                )
+            });
+            let tail: Vec<String> = remnant.into_iter().chain([why, key.to_owned()]).collect();
+            Some(vec![Said::with(head, logos), Said::plain(fit(&tail))])
         }
         Pointed::Body(at) => {
             let (star, body) = match universe.body(at)? {
@@ -572,12 +582,12 @@ pub fn cosmos_lines(
                 other => return between_lines(other, universe, world, reading, named),
             };
             let model = world.models.get(universe.stars.get(star)?.model)?;
-            let logo = served_logo(model);
+            let logo = model_logo(model);
             let name = named(&logo, model);
             match body {
                 Some(behavior) => {
                     let b = model.behaviors.get(behavior)?;
-                    Some(planet_lines(b, behavior, &name, logo))
+                    Some(planet_lines(b, &name, logo))
                 }
                 None => {
                     let rest = &model.behaviors[PLANETS.min(model.behaviors.len())..];
@@ -592,8 +602,7 @@ pub fn cosmos_lines(
                             vec![logo],
                         ),
                         Said::plain(
-                            "One rock per action, round the belt the days of the period, today at \
-                             the front; red rocks failed",
+                            "One rock per action, the newest at the front; red rocks failed",
                         ),
                     ])
                 }
@@ -607,8 +616,8 @@ pub fn cosmos_lines(
             {
                 Some((back, month)) => [
                     format!(
-                        "The far stars · {} of your actions from {} before this period, one star \
-                         each",
+                        "The far stars · {} of your actions from {} before the dates shown, one \
+                         star each",
                         thousands(month.actions),
                         match back {
                             0 => "the month".to_owned(),
@@ -620,8 +629,8 @@ pub fn cosmos_lines(
                 ],
                 None => [
                     format!(
-                        "The far stars · your {} actions before this period, one star each, in {}, \
-                         one per month",
+                        "The far stars · your {} actions before the dates shown, one star each, \
+                         in {}, one per month",
                         thousands(earlier),
                         plural(u32::try_from(months.len()).unwrap_or(0), "cluster")
                     ),
@@ -645,7 +654,7 @@ fn between_lines(
 ) -> Option<Vec<Said>> {
     let star_model = |star: usize| world.models.get(universe.stars.get(star)?.model);
     let named = |model: &ModelFacts, logos: &mut Vec<Logo>| {
-        let logo = served_logo(model);
+        let logo = model_logo(model);
         let name = named_after(&logo, model);
         logos.push(logo);
         format!("{LOGO} {name}")
@@ -713,7 +722,7 @@ fn between_lines(
                     plural(shared.runs, "run")
                 ),
                 format!(
-                    "{:.1} times as many as chance would give: they work together",
+                    "They work together, {:.1} times as often as chance would pair them",
                     shared.lift
                 ),
             )
@@ -723,8 +732,8 @@ fn between_lines(
     Some(vec![Said::with(head, logos), Said::plain(tail)])
 }
 
-/// A planet of a model's system: its behavior and numbers, then its climate and its turn.
-fn planet_lines(b: &ModelBehavior, at: usize, model: &str, logo: Logo) -> Vec<Said> {
+/// A planet of a model's system: its behavior and numbers, then its climate and its rings.
+fn planet_lines(b: &ModelBehavior, model: &str, logo: Logo) -> Vec<Said> {
     let climate = Climate::of(b.last_used, b.days_in_last_7);
     let failed = if b.failed > 0 {
         format!(", {} failed", b.failed)
@@ -741,16 +750,13 @@ fn planet_lines(b: &ModelBehavior, at: usize, model: &str, logo: Logo) -> Vec<Sa
     rows.push(format!("{}: {}", climate.word(), climate.rule()));
     match b.runs_in_a_row {
         0 => {}
-        1 => rows.push("rings: it looped once".to_owned()),
-        n => rows.push(format!("rings: it looped {n} times")),
+        1 => rows.push(format!(
+            "rings: once an agent did it {MODEL_LOOP_LENGTH} or more times in a row"
+        )),
+        n => rows.push(format!(
+            "rings: {n} times an agent did it {MODEL_LOOP_LENGTH} or more times in a row"
+        )),
     }
-    rows.push(match climate.orbit() {
-        0 => "still: not used in 14 days".to_owned(),
-        seconds => {
-            let turn = (f64::from(seconds) * (1.0 + 0.45 * at as f64)).round();
-            format!("once round in {turn} s")
-        }
-    });
     vec![
         Said::with(
             fit(&[
@@ -809,7 +815,7 @@ impl Look<'_> {
         line.push(kit.dim(" · "));
         line.extend(self.group_label(action.group));
         line.push(kit.dim(format!(
-            " · {mine} of its {} · everyone {everyone} · {when}",
+            " · {mine} of its {} actions · {everyone} by every model · {when}",
             group.actions
         )));
         Some(line)
@@ -855,7 +861,7 @@ mod tests {
 
     #[test]
     fn a_row_too_wide_goes_on_in_the_row_under_it() {
-        let logo = logo_for("claude-code", None);
+        let logo = logos::logo_for("claude-code", None);
         let said = Said::with(
             format!("Earthquake · {LOGO} Claude Code crashed an hour ago · 2 sessions ended here"),
             vec![logo.clone()],
@@ -901,12 +907,54 @@ mod tests {
         assert_eq!(Climate::of(21, 0), Climate::Desert);
     }
 
+    /// The aurora's hours follow your clock, as every other time on the map does.
+    #[test]
+    fn the_auroras_hours_follow_your_clock() {
+        use argonauts_core::settings::ui::ClockStyle;
+
+        let mut world = WorldFacts::default();
+        world.crew.night_actions = 3;
+        let names = DisplayNames::default();
+        let reading = Reading {
+            world: &world,
+            actions: 12,
+            unlabelled: 0,
+            clock: WallClock::pinned(world.end),
+            names: &names,
+        };
+        crate::base::format::set_clock(ClockStyle::TwelveHour);
+        assert_eq!(
+            Nature::Aurora.line(&reading).as_deref(),
+            Some("Aurora · 3 actions between 10:00 PM and 5:00 AM, 25% of all")
+        );
+        crate::base::format::set_clock(ClockStyle::TwentyFourHour);
+        assert_eq!(
+            Nature::Aurora.line(&reading).as_deref(),
+            Some("Aurora · 3 actions between 22:00 and 5:00, 25% of all")
+        );
+    }
+
+    /// A planet's rings count the runs the app counts, at the length it counts them from.
+    #[test]
+    fn a_planets_rings_say_the_length_of_a_loop() {
+        let behavior = ModelBehavior {
+            behavior: "read a source file".to_owned(),
+            count: 9,
+            runs_in_a_row: 2,
+            ..ModelBehavior::default()
+        };
+        let logo = logos::logo_for("claude-code", None);
+        let rows = planet_lines(&behavior, "Haiku 5.5", logo);
+        let rings = format!("rings: 2 times an agent did it {MODEL_LOOP_LENGTH} or more times");
+        assert!(rows[1].text.contains(&rings), "{rows:?}");
+    }
+
     #[test]
     fn day_words_and_capitals_read_as_the_world_writes_them() {
         assert_eq!(day_word(0), "today");
         assert_eq!(day_word(1), "1 day ago");
         assert_eq!(day_word(8), "8 days ago");
-        assert_eq!(cap("hurricane, category 1"), "Hurricane, category 1");
+        assert_eq!(cap("hurricane · 27 actions"), "Hurricane · 27 actions");
         assert_eq!(quoted("read a source file"), "‘read a source file’");
     }
 }

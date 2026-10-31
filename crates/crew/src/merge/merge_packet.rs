@@ -206,7 +206,7 @@ pub async fn build(host: &Host, check: &FinalCheck) -> EngineResult<MergeEvidenc
                 approved_within_provider.push(WithinProvider {
                     task: host
                         .read(|state| crate::sessions::labels::task_label(state, &record.spec.id)),
-                    reviewer: roles::display_name(&reviewer),
+                    reviewer: host.names().worker(&reviewer),
                     fallback,
                 });
             }

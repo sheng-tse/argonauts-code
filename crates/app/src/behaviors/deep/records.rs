@@ -2,9 +2,10 @@
 //! (`state/<project>/runs/<run>/events.jsonl`) and the main agent's own in your conversations
 //! (`state/<project>/conversation/<id>.jsonl`). Reading writes nothing.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::io;
+use std::path::{Path, PathBuf};
 
 use super::action::{ActionKey, DeepAction, PatchCounts};
 use crate::behaviors::turn_times::TurnTimes;
@@ -18,40 +19,129 @@ use argonauts_core::{AgentEvent, Paths};
 /// The run of a conversation's action, so pruning finds it when the conversation is deleted.
 pub(crate) const CONVERSATION: &str = "conversation";
 
+/// Every recorded action, and the folders and logs that couldn't be read.
+#[derive(Debug, Default)]
+pub(crate) struct Recorded {
+    pub actions: Vec<DeepAction>,
+    /// Each with why, such as `…/runs/run-07/events.jsonl: Permission denied (os error 13)`.
+    pub unread: Vec<String>,
+    /// The projects' state folders, where a run that wasn't read is told from one that's gone.
+    /// Actions handed in have none, so a run not among them is gone.
+    state: Option<PathBuf>,
+}
+
+impl From<Vec<DeepAction>> for Recorded {
+    fn from(actions: Vec<DeepAction>) -> Recorded {
+        Recorded {
+            actions,
+            ..Recorded::default()
+        }
+    }
+}
+
+impl Recorded {
+    /// Of `kept`, each a run by its project's state folder and its id, the runs that are
+    /// gone: none of their actions was read and their folder is no longer on disk. A run
+    /// whose folder or log couldn't be read stays, and when no action was read at all,
+    /// nothing is gone, since that says nothing of which runs are.
+    pub fn gone(&self, kept: &HashSet<(String, String)>) -> HashSet<(String, String)> {
+        if self.actions.is_empty() {
+            return HashSet::new();
+        }
+        let read: HashSet<(&str, &str)> = self
+            .actions
+            .iter()
+            .map(|action| (action.key.repo.as_str(), action.key.run.as_str()))
+            .collect();
+        kept.iter()
+            .filter(|(repo, run)| !read.contains(&(repo.as_str(), run.as_str())))
+            .filter(|(repo, run)| self.folder_gone(repo, run))
+            .cloned()
+            .collect()
+    }
+
+    /// An entry kept before keys named the project can't say whose run it was, so it's gone.
+    fn folder_gone(&self, repo: &str, run: &str) -> bool {
+        let Some(state) = &self.state else {
+            return true;
+        };
+        if repo.is_empty() {
+            return true;
+        }
+        let project = state.join(repo);
+        let folder = match run
+            .strip_prefix(CONVERSATION)
+            .and_then(|id| id.strip_prefix('/'))
+        {
+            Some(id) => project
+                .join(repo_state::CONVERSATION)
+                .join(format!("{id}.jsonl")),
+            None => project.join(repo_state::RUNS).join(run),
+        };
+        matches!(fs::symlink_metadata(folder), Err(err) if err.kind() == io::ErrorKind::NotFound)
+    }
+}
+
 /// Every recorded action under `paths`, oldest project first, in the order each was taken.
-pub(crate) fn recorded(paths: &Paths) -> Vec<DeepAction> {
+pub(crate) fn recorded(paths: &Paths) -> Recorded {
+    let state = paths.home().join("state");
+    let mut unread = Vec::new();
     let mut actions = Vec::new();
-    for project_dir in sorted_dirs(&paths.home().join("state")) {
+    for project_dir in sorted_dirs(&state, &mut unread) {
         let Some(id) = project_dir
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
         else {
             continue;
         };
+        // A project's folder that can't be read is said once, not for each folder in it.
+        if let Err(err) = fs::read_dir(&project_dir) {
+            unread.push(format!("{}: {err}", project_dir.display()));
+            continue;
+        }
         let project = Project {
             repo: id.clone(),
             name: project_name(&id),
         };
-        for run_dir in sorted_dirs(&project_dir.join(repo_state::RUNS)) {
+        for run_dir in sorted_dirs(&project_dir.join(repo_state::RUNS), &mut unread) {
             let run = run_dir
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let events = read_events(&run_dir.join(run_files::EVENTS));
+            let events = read_events(&run_dir.join(run_files::EVENTS), &mut unread);
             actions.extend(run_actions(&events, &run, &project));
         }
         actions.extend(conversation_actions(
             &project_dir.join(repo_state::CONVERSATION),
             &project,
+            &mut unread,
         ));
     }
-    actions
+    Recorded {
+        actions,
+        unread,
+        state: Some(state),
+    }
+}
+
+/// The text of `path`, or nothing where there's none yet. Another failure is noted in
+/// `unread`.
+fn read_text(path: &Path, unread: &mut Vec<String>) -> String {
+    match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) => {
+            if err.kind() != io::ErrorKind::NotFound {
+                unread.push(format!("{}: {err}", path.display()));
+            }
+            String::new()
+        }
+    }
 }
 
 /// The events of a run's log the map reads: sessions starting, and tool calls with their
 /// patches and results. Most of a log is what the agents said, so a line is parsed only when it
 /// could be one of these. A torn line is skipped.
-fn read_events(path: &Path) -> Vec<RunEvent> {
+fn read_events(path: &Path, unread: &mut Vec<String>) -> Vec<RunEvent> {
     const WANTED: [&str; 5] = [
         "\"tool_started\"",
         "\"tool_finished\"",
@@ -59,8 +149,7 @@ fn read_events(path: &Path) -> Vec<RunEvent> {
         "\"started\"",
         "\"init\"",
     ];
-    fs::read_to_string(path)
-        .unwrap_or_default()
+    read_text(path, unread)
         .lines()
         .filter(|line| WANTED.iter().any(|wanted| line.contains(wanted)))
         .filter_map(|line| serde_json::from_str(line).ok())
@@ -86,15 +175,32 @@ pub(crate) fn project_name(id: &str) -> String {
     }
 }
 
-fn sorted_dirs(dir: &Path) -> Vec<std::path::PathBuf> {
-    let mut dirs: Vec<_> = fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.is_dir())
-        .collect();
-    dirs.sort();
+/// The entries of `dir`, sorted, where there's a `dir`. What couldn't be read is noted in
+/// `unread`.
+fn sorted_entries(dir: &Path, unread: &mut Vec<String>) -> Vec<PathBuf> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            if err.kind() != io::ErrorKind::NotFound {
+                unread.push(format!("{}: {err}", dir.display()));
+            }
+            return Vec::new();
+        }
+    };
+    let mut paths = Vec::new();
+    for entry in entries {
+        match entry {
+            Ok(entry) => paths.push(entry.path()),
+            Err(err) => unread.push(format!("{}: {err}", dir.display())),
+        }
+    }
+    paths.sort();
+    paths
+}
+
+fn sorted_dirs(dir: &Path, unread: &mut Vec<String>) -> Vec<PathBuf> {
+    let mut dirs = sorted_entries(dir, unread);
+    dirs.retain(|path| path.is_dir());
     dirs
 }
 
@@ -204,16 +310,14 @@ fn ran_by(worker: &ModelRef) -> Ran {
 }
 
 /// The main agent's own calls in each conversation of a project, each dated by its turn.
-fn conversation_actions(dir: &Path, project: &Project) -> Vec<DeepAction> {
+fn conversation_actions(
+    dir: &Path,
+    project: &Project,
+    unread: &mut Vec<String>,
+) -> Vec<DeepAction> {
     let mut actions = Vec::new();
-    let mut journals: Vec<_> = fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
-        .collect();
-    journals.sort();
+    let mut journals = sorted_entries(dir, unread);
+    journals.retain(|path| path.extension().is_some_and(|ext| ext == "jsonl"));
     for path in journals {
         let Some(id) = path
             .file_stem()
@@ -221,7 +325,7 @@ fn conversation_actions(dir: &Path, project: &Project) -> Vec<DeepAction> {
         else {
             continue;
         };
-        let text = fs::read_to_string(&path).unwrap_or_default();
+        let text = read_text(&path, unread);
         let times = TurnTimes::read(&path, &text);
         let events: Vec<ConversationEvent> = text
             .lines()
@@ -382,7 +486,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         conversation_in(home.path(), "alpha-3f9a1c2b4d5e", "git log -3");
         conversation_in(home.path(), "beta-4e8b2d3c5f6a", "pytest");
-        let actions = recorded(&Paths::new(home.path()));
+        let actions = recorded(&Paths::new(home.path())).actions;
         assert_eq!(actions.len(), 2);
         assert_ne!(actions[0].key, actions[1].key);
         assert_eq!(actions[0].key.repo, "alpha-3f9a1c2b4d5e");
@@ -416,12 +520,102 @@ mod tests {
         ];
         let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
         fs::write(conversations.join("c-01.jsonl"), text).unwrap();
-        let actions = recorded(&paths);
+        let read = recorded(&paths);
+        assert!(read.unread.is_empty(), "{:?}", read.unread);
+        let actions = read.actions;
         assert_eq!(actions.len(), 2, "{actions:?}");
         assert_eq!(actions[0].key.run, "run-01");
         assert_eq!(actions[0].cli, "claude-code");
         assert_eq!(actions[1].key.run, "conversation/c-01");
         assert_eq!(actions[1].model.as_deref(), Some("opus"));
         assert_eq!(actions[1].project, "council");
+    }
+    /// A run of `project` whose one call ran `command`.
+    fn run_in(home: &Path, project: &str, run: &str, command: &str) {
+        let dir = home.join("state").join(project).join("runs").join(run);
+        fs::create_dir_all(&dir).unwrap();
+        let line = json!({"seq": 0, "ts": "2026-10-17T07:17:01Z", "run_id": run,
+            "source": "codex", "session": "s-001",
+            "kind": {"type": "agent", "data": {"type": "tool_started", "id": "t1",
+                "name": "Bash", "input": {"command": command}, "parent": null}}});
+        fs::write(dir.join("events.jsonl"), format!("{line}\n")).unwrap();
+    }
+
+    fn kept(runs: &[(&str, &str)]) -> HashSet<(String, String)> {
+        runs.iter()
+            .map(|(repo, run)| ((*repo).to_owned(), (*run).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn a_folder_that_cant_be_read_is_said_and_its_runs_are_not_gone() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let home = tempfile::tempdir().unwrap();
+        run_in(home.path(), "alpha-3f9a1c2b4d5e", "run-1", "git log -3");
+        run_in(home.path(), "beta-4e8b2d3c5f6a", "run-2", "pytest");
+        conversation_in(home.path(), "beta-4e8b2d3c5f6a", "ls");
+        let beta = home.path().join("state").join("beta-4e8b2d3c5f6a");
+        fs::set_permissions(&beta, fs::Permissions::from_mode(0o000)).unwrap();
+        let read = recorded(&Paths::new(home.path()));
+        fs::set_permissions(&beta, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(read.actions.len(), 1, "{:?}", read.actions);
+        assert_eq!(read.actions[0].key.repo, "alpha-3f9a1c2b4d5e");
+        assert_eq!(read.unread.len(), 1, "{:?}", read.unread);
+        assert!(
+            read.unread[0].contains("beta-4e8b2d3c5f6a: Permission denied"),
+            "{:?}",
+            read.unread
+        );
+        let gone = read.gone(&kept(&[
+            ("alpha-3f9a1c2b4d5e", "run-1"),
+            ("beta-4e8b2d3c5f6a", "run-2"),
+            ("beta-4e8b2d3c5f6a", "conversation/conversation-001"),
+        ]));
+        assert!(gone.is_empty(), "{gone:?}");
+    }
+
+    #[test]
+    fn a_log_that_cant_be_read_is_said_and_its_run_is_not_gone() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let home = tempfile::tempdir().unwrap();
+        run_in(home.path(), "alpha-3f9a1c2b4d5e", "run-1", "git log -3");
+        run_in(home.path(), "alpha-3f9a1c2b4d5e", "run-2", "pytest");
+        let log = home
+            .path()
+            .join("state/alpha-3f9a1c2b4d5e/runs/run-2/events.jsonl");
+        fs::set_permissions(&log, fs::Permissions::from_mode(0o000)).unwrap();
+        let read = recorded(&Paths::new(home.path()));
+        assert_eq!(read.actions.len(), 1);
+        assert_eq!(read.unread.len(), 1, "{:?}", read.unread);
+        assert!(read.unread[0].contains("run-2"), "{:?}", read.unread);
+        let gone = read.gone(&kept(&[("alpha-3f9a1c2b4d5e", "run-2")]));
+        assert!(gone.is_empty(), "{gone:?}");
+    }
+
+    #[test]
+    fn a_run_is_gone_only_once_its_folder_is() {
+        let home = tempfile::tempdir().unwrap();
+        run_in(home.path(), "alpha-3f9a1c2b4d5e", "run-1", "git log -3");
+        let runs = kept(&[
+            ("alpha-3f9a1c2b4d5e", "run-1"),
+            ("alpha-3f9a1c2b4d5e", "run-9"),
+            ("alpha-3f9a1c2b4d5e", "conversation/conversation-009"),
+            ("", "run-1"),
+        ]);
+        let gone = recorded(&Paths::new(home.path())).gone(&runs);
+        assert_eq!(
+            gone,
+            kept(&[
+                ("alpha-3f9a1c2b4d5e", "run-9"),
+                ("alpha-3f9a1c2b4d5e", "conversation/conversation-009"),
+                ("", "run-1"),
+            ])
+        );
+        fs::create_dir_all(home.path().join("state/alpha-3f9a1c2b4d5e/runs/run-9")).unwrap();
+        let gone = recorded(&Paths::new(home.path())).gone(&runs);
+        assert!(
+            !gone.contains(&("alpha-3f9a1c2b4d5e".to_owned(), "run-9".to_owned())),
+            "a run with no log yet is still there"
+        );
     }
 }

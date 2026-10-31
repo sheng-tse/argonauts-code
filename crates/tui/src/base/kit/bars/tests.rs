@@ -335,3 +335,20 @@ fn a_blank_always_parts_a_bar_from_what_follows() {
     assert_eq!(touching_bar("━━━━100%"), Some(3));
     assert_eq!(touching_bar("week ━━━━ 36%  ▪▪▪ 4"), None);
 }
+
+#[test]
+fn only_a_used_up_window_fills_its_last_cell() {
+    let theme = dark();
+    let kit = Kit::new(&theme);
+    let whole = |share| text(&whole_window_meter(&kit, share, 6, Role::BarFill));
+    assert_eq!(whole(0.92), "▄▄▄▄▄▁");
+    assert_eq!(whole(0.99), "▄▄▄▄▄▁");
+    assert_eq!(whole(1.0), "▄▄▄▄▄▄");
+    assert_eq!(whole(0.01), "▄▁▁▁▁▁", "any use fills a cell");
+    assert_eq!(whole(0.0), "▁▁▁▁▁▁");
+    assert_eq!(text(&whole_window_meter(&kit, 0.5, 1, Role::BarFill)), "▄");
+
+    let halves = |share| text(&window_meter(&kit, share, 6, Role::BarFill));
+    assert_eq!(halves(0.97), "▄▄▄▄▄▖");
+    assert_eq!(halves(1.0), "▄▄▄▄▄▄");
+}

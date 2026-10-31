@@ -40,10 +40,7 @@ pub struct Part {
 
 /// The frame a motion shows at a moment, or the still pose's own.
 fn frame_of(moment: Moment, motion: Motion) -> u64 {
-    match moment {
-        Moment::Still => u64::MAX,
-        Moment::At(t) => u64::from(motion.frame(t)),
-    }
+    moment.frame(motion).map_or(u64::MAX, u64::from)
 }
 
 /// A pad over a box, its corner on whole pixels.
@@ -129,9 +126,9 @@ impl Area {
 }
 
 /// Bytes of pixels the frames of the parts' loops keep at most, for one look of one map: room
-/// for every loop of a busy map, whose loops take about 33 MB, so after the first time round
-/// a step draws nothing.
-pub(super) const LOOPS_KEPT: usize = 40 << 20;
+/// for every loop of a busy map, whose loops take about 33 MB at 8 steps a second and twice that
+/// at 16, so after the first time round a step draws nothing.
+pub(super) const LOOPS_KEPT: usize = 80 << 20;
 /// A frame bigger than this is kept only as its part's last frame: a loop of them would fill the
 /// room alone.
 pub(super) const LOOP_FRAME_AT_MOST: usize = 1 << 20;
@@ -416,10 +413,7 @@ impl Weather {
     fn storm_frame(&self, flying: &super::Flying, moment: Moment) -> u64 {
         match (flying.storm, moment) {
             (_, Moment::Still) => u64::MAX,
-            (Storm::Hurricane(storm), _) => {
-                let degrees = hurricane::angle(&storm, moment).to_degrees().abs();
-                (degrees / 7.5).round() as u64
-            }
+            (Storm::Hurricane(storm), _) => u64::from(hurricane::frame(&storm, moment)),
             (Storm::Thunder { .. }, _) => frame_of(moment, LIGHTNING),
         }
     }

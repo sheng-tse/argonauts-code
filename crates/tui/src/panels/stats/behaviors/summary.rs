@@ -29,7 +29,7 @@ fn plural(count: usize, one: &str) -> String {
 }
 
 /// What the map on screen is and what it's drawn from: `Label map · 562 actions in 19 runs across
-/// 6 projects · last 30 days`, or `Summaries · 650 of 823 summarized by Qwen3 Coder 30B (64k) ·
+/// 6 projects · last 30 days`, or `Summaries · 650 of 823 summarized by Qwen3 Coder 30B ·
 /// 173 newer not yet`. With no action to show, where none were and what shows more. The
 /// grouping shows on the selector at the right of the sub-tabs, so the line leaves it out.
 pub(super) fn headline_words(map: &BehaviorMap) -> String {
@@ -45,7 +45,7 @@ struct Headline {
     name: &'static str,
     /// `650 of 823`, or `562 actions`.
     counts: String,
-    /// ` summarized by Qwen3 Coder 30B (64k)`, or ` in 19 runs across 6 projects`.
+    /// ` summarized by Qwen3 Coder 30B`, or ` in 19 runs across 6 projects`.
     made_by: String,
     /// ` · 173 newer not yet`.
     waiting: String,
@@ -127,6 +127,9 @@ impl Headline {
 /// `No actions in the last 7 days · r changes the period`.
 fn empty_words(map: &BehaviorMap) -> String {
     let request = map.request;
+    if matches!(map.placing, Placing::Summaries { .. }) && map.unsummarized > 0 {
+        return format!("Summaries · none of {} summarized yet", map.unsummarized);
+    }
     let place = match (request.scope, map.here.as_deref()) {
         (Scope::ThisProject, Some(here)) => format!(" in {here}"),
         _ => String::new(),
@@ -283,7 +286,7 @@ mod tests {
         map.projects = (0..6).map(|n| format!("project-{n}")).collect();
         if summaries {
             map.placing = Placing::Summaries {
-                by: "Qwen3 Coder 30B (64k)".to_owned(),
+                by: "Sample Coder 30B (64k)".to_owned(),
             };
             map.unsummarized = 173;
         }
@@ -294,7 +297,7 @@ mod tests {
     fn summaries_name_their_summarizer_as_the_legend_does() {
         assert_eq!(
             headline_in(&map(OverviewPeriod::All, true), BESIDE),
-            " Summaries · 650 of 823 summarized by Qwen3 Coder 30B (64k) · 173 newer not yet"
+            " Summaries · 650 of 823 summarized by Sample Coder 30B (64k) · 173 newer not yet"
         );
     }
 

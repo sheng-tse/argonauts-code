@@ -209,6 +209,7 @@ fn planned(title: &str, owned: &[&str], how: Way) -> TaskSpec {
             how,
             asked_by_you: true,
             steps: None,
+            why: None,
         }),
     }
 }

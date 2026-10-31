@@ -476,6 +476,7 @@ fn judge(ctx: &Ctx, conversation: &mut ConversationState, folder: &Path) -> Opti
         fork: false,
         excerpt: None,
         notes: Vec::new(),
+        verdict_first: None,
         shell: None,
         fast: false,
         workdir: folder.to_path_buf(),

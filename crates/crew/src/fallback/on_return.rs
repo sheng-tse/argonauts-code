@@ -34,7 +34,6 @@ use crate::engine::host::Host;
 use crate::engine::job_fallback;
 use crate::fallback::{assign, rewind, rules, upgrade};
 use crate::review::Verdict;
-use crate::roles::display_name;
 use crate::sessions::labels;
 use crate::state::RunState;
 use crate::state::tasks::TaskEntry;
@@ -108,14 +107,14 @@ impl Choice {
 /// task whose own model is still out waits for that model.
 pub async fn agent_back(host: &Host, agent_id: &AgentId) -> EngineResult<()> {
     reopen_merge(host, agent_id)?;
-    let who = DisplayNames::default().cli(&agent_id.0);
+    let who = host.names().cli(&agent_id.0);
     originals_back(host, &who, |original| original.agent_id() == *agent_id).await
 }
 
 /// One model is back while its CLI went on working: the same for the tasks that fell back
 /// from that model, wherever they went, another model of its own CLI included.
 pub async fn model_back(host: &Host, model: &ModelRef) -> EngineResult<()> {
-    let who = DisplayNames::default().worker(model);
+    let who = host.names().worker(model);
     originals_back(host, &who, |original| original == model).await
 }
 
@@ -172,7 +171,7 @@ fn reopen_merge(host: &Host, agent_id: &AgentId) -> EngineResult<()> {
         Some(id) => approvals::withdraw(
             host,
             &id,
-            &format!("{} is back", DisplayNames::default().cli(&agent_id.0)),
+            &format!("{} is back", host.names().cli(&agent_id.0)),
         ),
         None => Ok(()),
     }
@@ -424,15 +423,16 @@ fn say_in_the_view(host: &Host, task: &TaskId, original: &ModelRef) -> EngineRes
     let Some(step) = step else {
         return Ok(());
     };
-    job_fallback::say_in_the_view(host, &step.workflow, back_in_the_view(original, &label))
+    let back = back_in_the_view(host.names(), original, &label);
+    job_fallback::say_in_the_view(host, &step.workflow, back)
 }
 
 /// What a workflow's view says under its header once a task is its first worker's again, such
 /// as `Opus 5.5 on Claude Code is back · build:due-flag carries on with it`.
-fn back_in_the_view(original: &ModelRef, task: &str) -> String {
+fn back_in_the_view(names: &DisplayNames, original: &ModelRef, task: &str) -> String {
     format!(
         "{} is back · {task} carries on with it",
-        display_name(original)
+        names.worker(original)
     )
 }
 
@@ -531,7 +531,7 @@ pub(crate) async fn request(
         kind: ApprovalKind::OriginalReturned,
         title: format!(
             "{} is back · {}",
-            DisplayNames::default().cli(&back.original.agent_id().0),
+            host.names().cli(&back.original.agent_id().0),
             host.read(|state| crate::sessions::labels::task_label(state, task))
         ),
         task: Some(task.clone()),
@@ -616,10 +616,10 @@ mod tests {
     fn a_return_reads_in_the_view_as_the_fallback_did() {
         let opus: ModelRef = "claude-code/opus".parse().expect("a model");
         assert_eq!(
-            back_in_the_view(&opus, "build:due-flag"),
+            back_in_the_view(&DisplayNames::default(), &opus, "build:due-flag"),
             format!(
                 "{} is back · build:due-flag carries on with it",
-                display_name(&opus)
+                DisplayNames::default().worker(&opus)
             )
         );
     }

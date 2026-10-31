@@ -428,8 +428,8 @@ enum Source {
 impl Source {
     fn cli(self) -> &'static str {
         match self {
-            Source::Claude => "claude-code",
-            Source::Codex => "codex",
+            Source::Claude => crate::overview::recount::CLAUDE_CODE,
+            Source::Codex => crate::overview::recount::CODEX,
         }
     }
 }

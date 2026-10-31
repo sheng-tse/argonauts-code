@@ -122,8 +122,8 @@ fn key_row(buf: &Buffer) -> u16 {
 fn the_context_tab_opens_folded_as_its_picture_draws_it() {
     let picture = Picture::load("context_cc");
     let buf = panel(&example::after_the_run(), false, &[]);
-    assert_eq!(buf.area.height, 41, "the panel is as tall as its picture");
-    assert_rows(&picture, &buf, 2..43, 0);
+    assert_eq!(buf.area.height, 40, "the panel is as tall as its picture");
+    assert_rows(&picture, &buf, 2..42, 0);
 }
 
 /// `/context all`: each list a line a server, a group or an agent.
@@ -132,7 +132,7 @@ fn every_list_opens_as_its_picture_draws_it() {
     let picture = Picture::load("context_cc");
     let buf = panel(&example::after_the_run(), true, &[]);
     // Under the main session's block and its auto-compact window.
-    assert_rows(&picture, &buf, 46..64, 20);
+    assert_rows(&picture, &buf, 45..62, 20);
 }
 
 /// Enter on build:per-api-key: its own block, with its tries and tie-breakers, and the one
@@ -145,8 +145,8 @@ fn an_agents_own_block_matches_its_picture() {
     let mut keys = vec![KeyCode::Down; 9];
     keys.push(KeyCode::Enter);
     let buf = panel(&example::after_the_run(), true, &keys);
-    assert_rows(&picture, &buf, 67..80, 4);
-    assert_rows(&picture, &buf, 81..82, key_row(&buf));
+    assert_rows(&picture, &buf, 65..78, 4);
+    assert_rows(&picture, &buf, 79..80, key_row(&buf));
 }
 
 /// A request that went straight to a run: no main session's block, and the crew says where
@@ -155,7 +155,7 @@ fn an_agents_own_block_matches_its_picture() {
 fn a_run_with_no_conversation_session_matches_its_picture() {
     let picture = Picture::load("context_cc");
     let buf = panel(&example::straight_to_a_run(), false, &[]);
-    assert_rows(&picture, &buf, 85..92, 4);
+    assert_rows(&picture, &buf, 83..90, 4);
 }
 
 /// Where the terminal draws logos: the main session's block, every list, and an agent's own

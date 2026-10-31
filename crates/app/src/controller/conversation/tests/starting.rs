@@ -209,6 +209,28 @@ async fn the_screen_hears_whether_the_main_cli_estimates_how_full_it_is() {
     }
 }
 
+/// Left on its CLI's default or named by an alias, with no list read, the main session's start
+/// has the window of the model it runs, from the shipped catalog.
+#[tokio::test]
+async fn a_main_on_its_clis_default_has_its_window_before_any_list() {
+    for (main, window) in [
+        ("claude-code", 1_000_000),
+        ("claude-code/opus", 1_000_000),
+        ("codex", 872_000),
+        ("antigravity-cli", 1_048_576),
+    ] {
+        let mut driver = driver_on(main).await;
+        let told = driver
+            .until(|event| matches!(event, AppEvent::MainStart { .. }))
+            .await;
+        let AppEvent::MainStart { start, .. } = told else {
+            unreachable!()
+        };
+        assert_eq!(start.window, Some(window), "{main}");
+        driver.exit().await;
+    }
+}
+
 /// On a very first run, Argonauts Code's own tools and the lines about them go where Claude
 /// Code's own /context counts them, beside what was recorded.
 #[tokio::test]

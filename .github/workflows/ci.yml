@@ -112,8 +112,8 @@ jobs:
     if: needs.changes.outputs.rust == 'true'
     runs-on: ${{ matrix.os }}
     # Room for all three tries of a test that hangs, 13 minutes each (.config/nextest.toml),
-    # and for the build and the steps after them.
-    timeout-minutes: 75
+    # for the build and the steps after them, and for the drawings step's own limit.
+    timeout-minutes: 130
     permissions:
       contents: read
     strategy:
@@ -129,6 +129,8 @@ jobs:
           # a new crate is tested without anyone listing it here.
           - shard: scenarios
             packages: -p argonauts-scenarios
+            # The drawings runner has a step of its own, on the release build.
+            filter: not test(=app_drawings::every_drawing_matches_the_app)
           - shard: crew
             packages: -p argonauts-crew
           - shard: app
@@ -160,12 +162,13 @@ jobs:
       - name: cargo nextest
         env:
           PACKAGES: ${{ matrix.packages }}
+          FILTER: ${{ matrix.filter || 'all()' }}
           # Shared runners stall now and then, macOS ones the most, so the tests' waits may take
           # this many times as long before they fail. A wait still ends once its state is there.
           ARGONAUTS_TEST_DEADLINE_SCALE: ${{ startsWith(matrix.os, 'macos') && '4' || '2' }}
         run: |
           read -ra packages <<< "$PACKAGES"
-          cargo nextest run --locked --profile ci --no-fail-fast "${packages[@]}"
+          cargo nextest run --locked --profile ci --no-fail-fast "${packages[@]}" -E "$FILTER"
       - name: Failed and flaky tests
         if: ${{ !cancelled() }}
         env:
@@ -173,6 +176,24 @@ jobs:
         run: |
           python3 -I .github/scripts/junit_report.py --title "$TITLE" \
             --summary "$GITHUB_STEP_SUMMARY" target/nextest/ci/junit.xml
+      # Every approved drawing on the real app, in a terminal of the size it was drawn for, as
+      # the release build draws it (approved/MANIFEST.toml says how they are compared). It runs
+      # once the shard's other tests are done, so nothing else slows the app between a key and
+      # its frame. Each drawing unlike the app is reported as it is found, so a step stopped by
+      # its limit still names them. The limit holds a cold release build, about 14 minutes on
+      # three cores, and every drawing: some 2 minutes when all match, and a scaled wait on each
+      # one unlike the app, 15 minutes for 17 of them at a scale of 2.
+      - name: The approved drawings on the release build
+        if: ${{ !cancelled() && matrix.shard == 'scenarios' }}
+        timeout-minutes: 60
+        env:
+          ARGONAUTS_TEST_DEADLINE_SCALE: ${{ startsWith(matrix.os, 'macos') && '4' || '2' }}
+        run: |
+          cargo build --locked --release -p argonauts-code -p argonauts-testkit --bins
+          ARGONAUTS_BIN="$PWD/target/release/argonauts" \
+            ARGONAUTS_FAKE_CLI_BIN="$PWD/target/release/argonauts-fake-cli" \
+            cargo test --locked -p argonauts-scenarios --test it -- --exact --nocapture \
+            app_drawings::every_drawing_matches_the_app
       # nextest runs no doctests.
       - name: cargo test --doc
         if: ${{ !cancelled() }}
@@ -184,11 +205,16 @@ jobs:
       # The world must cost under a percent of a core while it moves, on every level alike and
       # with a row lit: each test times the panel's whole work, drawing and packing included, by
       # its thread's own CPU. Drawn on threads as the app draws it, the world must draw a frame
-      # only when something arrived, and a key must reach the screen in time. So they run one
-      # at a time on an optimized build, once, on the shard that holds the screen's crate, and
-      # the step fails unless all eight ran. GitHub's macOS runners are virtual machines about
-      # half as fast as the Macs these limits were set on, so here a failure shows on the step
-      # without failing the job; run on a Mac, the limits hold.
+      # only when something arrived, and a key must reach the screen in time. Each second is
+      # judged as the reference Mac would have spent it, by a fixed yardstick timed on the same
+      # thread right after it, so GitHub's slower virtual Macs are judged by the same limits,
+      # and a machine over three times slower than the reference fails instead of passing
+      # unjudged. The real binary must also keep up with 300 events a second; as the one test
+      # that bounds the wall clock, it runs only here. So they run one at a time on an
+      # optimized build, once, on the shard that holds the screen's crate, and the step fails
+      # unless all nine ran. Until a macOS run here prints a pace under three with all nine
+      # passing, no run has timed GitHub's Macs against the reference, so the step may fail
+      # without failing the job.
       - name: The world's motion cost
         if: matrix.os == 'macos-15' && matrix.shard == 'rest'
         continue-on-error: true
@@ -206,6 +232,10 @@ jobs:
             app::map_picture::tests::world_cost_tests::a_key_reaches_the_screen_in_time \
             | tee "$RUNNER_TEMP/motion.log"
           grep -q 'test result: ok. 8 passed' "$RUNNER_TEMP/motion.log"
+          cargo test --locked --release -p argonauts-tui --test it -- --ignored --exact \
+            pty_live::renders_300_events_per_second_at_120_columns \
+            | tee "$RUNNER_TEMP/events.log"
+          grep -q 'test result: ok. 1 passed' "$RUNNER_TEMP/events.log"
 
   # One check for every shard, so the branch rules can require the tests: a matrix that was
   # skipped reports under its unexpanded name, which a required check would wait on forever.

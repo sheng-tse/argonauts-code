@@ -5,9 +5,14 @@
 
 use std::time::Duration;
 
-use argonauts_core::app::{ConversationEvent, SignedOut, TurnReply};
+use argonauts_core::RunId;
+use argonauts_core::app::{AppEvent, ConversationEvent, SignedOut, TurnReply};
+use argonauts_core::base::log::NoteLevel;
 use argonauts_core::base::names::{ModelRef, TurnId};
 use argonauts_core::input::{ParsedInput, parse_input_with};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::council::{CouncilEventKind, Speaker};
+use argonauts_core::runs::events::run::{RunLifecycle, RunMode};
 use argonauts_core::runs::events::session::CliWorkflowRun;
 use argonauts_core::settings::protocol::CaptainKind;
 use argonauts_core::settings::ui::VerbTheme;
@@ -17,7 +22,7 @@ use crate::base::format::WallClock;
 use crate::base::text::sanitize_line;
 use crate::bottom::working::verbs::VerbStyle;
 use crate::bridge::{plugin_output, tools};
-use crate::cells::cell::history::CellId;
+use crate::cells::cell::history::{CellId, History};
 use crate::cells::cell::{
     AssistantMessage, Cell, CollapsedGroup, Notice, ResultLine, Tone, ToolCall, ToolItem, ToolKind,
     ToolState, Trailing, TurnEnd, UserMessage, WorkflowResult,
@@ -36,6 +41,7 @@ pub type ToolKinds = fn(agent_id: &str, name: &str, input: &serde_json::Value) -
 pub struct ConversationTurns {
     open: Option<OpenTurn>,
     kinds: ToolKinds,
+    to_the_talk: Option<ToTheTalk>,
 }
 
 impl Default for ConversationTurns {
@@ -43,8 +49,24 @@ impl Default for ConversationTurns {
         Self {
             open: None,
             kinds: tools::kind_of,
+            to_the_talk: None,
         }
     }
+}
+
+/// Your message for a change the crew took, live until the talk that opens with it shows it,
+/// and what the main agent did and said as it handed the change over.
+#[derive(Debug)]
+struct ToTheTalk {
+    turn: TurnId,
+    message: CellId,
+    /// The rows the turn drew under your message: the words of each part and the calls between
+    /// them, in order. They left the screen with the reply.
+    rows: Vec<Cell>,
+    /// The reply's words after those rows.
+    said: String,
+    /// The run the change started, once it started.
+    run: Option<RunId>,
 }
 
 #[derive(Debug)]
@@ -83,6 +105,17 @@ struct OpenTurn {
     starts: Vec<String>,
     /// A start turned down, held until the turn ends: a later start that works drops it.
     refused: Option<ToolCall>,
+    /// Your message, live while a change the turn finds may open a workflow's talk, which shows
+    /// your message itself. It prints before anything else of the turn does, or with a reply
+    /// that isn't such a change.
+    held: Option<CellId>,
+    /// The words so far, live under the held message: rows printed now would land above it.
+    words: Option<CellId>,
+    /// While your message is held, the rows of the turn that are through, in order: the words
+    /// of each part and the calls between them. They wait here, off the screen, since the live
+    /// region has room for only a few rows, and print after your message, or leave with it for
+    /// the talk. The working line counts their calls meanwhile.
+    under: Vec<Cell>,
 }
 
 impl ConversationTurns {
@@ -106,6 +139,7 @@ impl ConversationTurns {
                 text,
                 worker,
                 continues,
+                opens_a_talk,
                 ..
             } => {
                 // A failure from before your next message no longer takes `r`. A turn that
@@ -114,7 +148,7 @@ impl ConversationTurns {
                 if !*continues {
                     cx.model.raw_failure = None;
                 }
-                self.start(turn, text, worker, *continues, cx);
+                self.start(turn, text, worker, *continues, *opens_a_talk, cx);
             }
             ConversationEvent::Agent { turn, event } => {
                 if let Some(open) = self.open.as_mut().filter(|open| open.turn == *turn) {
@@ -202,6 +236,72 @@ impl ConversationTurns {
         }
     }
 
+    /// Your message for a change the crew took stays live until the talk shows it, and then
+    /// goes, kept for Ctrl+O with what the main agent said. A run that fails to start, waits or
+    /// ends first, or a new turn, prints both, so what you wrote stays on screen.
+    pub fn on_the_way_to_the_talk(&mut self, event: &AppEvent, cx: &mut Cx<'_>) {
+        let Some(waiting) = self.to_the_talk.as_mut() else {
+            return;
+        };
+        let ours = |run: &RunId| waiting.run.as_ref().is_none_or(|started| started == run);
+        let shown =
+            match event {
+                AppEvent::Run { event } => match &event.kind {
+                    RunEventKind::Run(RunLifecycle::Started(started))
+                        if started.conversation_turn.as_ref() == Some(&waiting.turn) =>
+                    {
+                        waiting.run = Some(event.run_id.clone());
+                        return;
+                    }
+                    RunEventKind::Council(council)
+                        if matches!(&council.kind, CouncilEventKind::Message(message)
+                        if message.from == Speaker::You)
+                            && ours(&event.run_id) =>
+                    {
+                        true
+                    }
+                    RunEventKind::Run(
+                        RunLifecycle::Finished { .. } | RunLifecycle::Waiting { .. },
+                    ) if ours(&event.run_id) => false,
+                    _ => return,
+                },
+                AppEvent::Notice {
+                    level: NoteLevel::Error,
+                    ..
+                }
+                | AppEvent::Conversation {
+                    event: ConversationEvent::TurnStarted { .. },
+                } => false,
+                _ => return,
+            };
+        let Some(waiting) = self.to_the_talk.take() else {
+            return;
+        };
+        let history = &mut cx.model.history;
+        let said = Some(waiting.said)
+            .filter(|said| !said.trim().is_empty())
+            .map(AssistantMessage::new);
+        if shown {
+            if let Some(message) = history.remove_active(waiting.message) {
+                history.keep(message);
+            }
+            for row in waiting.rows {
+                history.keep(row);
+            }
+            if let Some(said) = said {
+                history.keep(said);
+            }
+        } else {
+            history.finish_active(waiting.message);
+            for row in waiting.rows {
+                history.push(row);
+            }
+            if let Some(said) = said {
+                history.push(said);
+            }
+        }
+    }
+
     fn take(&mut self, turn: &TurnId) -> Option<OpenTurn> {
         if self.open.as_ref().is_some_and(|open| open.turn == *turn) {
             self.open.take()
@@ -211,12 +311,14 @@ impl ConversationTurns {
     }
 
     /// `continues`: the turn goes on from the one before, which showed your message already.
+    /// `opens_a_talk`: a change it finds opens a workflow's talk, which shows your message.
     fn start(
         &mut self,
         turn: &TurnId,
         text: &str,
         worker: &ModelRef,
         continues: bool,
+        opens_a_talk: bool,
         cx: &mut Cx<'_>,
     ) {
         // A turn that never heard its end leaves what it had in scrollback.
@@ -233,9 +335,12 @@ impl ConversationTurns {
             .with_pictures(cx.model.bottom.composer.picture_numbers_in(text))
             .running_a_command(runs_a_command);
         let replaying = cx.history_only();
+        let mut held = None;
         if !continues {
             if replaying {
                 cx.model.history.keep(message);
+            } else if opens_a_talk {
+                held = hold(message, cx);
             } else {
                 echo(message, cx);
             }
@@ -257,6 +362,9 @@ impl ConversationTurns {
             plain: Vec::new(),
             starts: Vec::new(),
             refused: None,
+            held,
+            words: None,
+            under: Vec::new(),
         });
     }
 
@@ -273,6 +381,17 @@ impl ConversationTurns {
             | TurnReply::Change { markdown, .. }
             | TurnReply::Unclear { markdown, .. } => markdown.as_str(),
         };
+        // The talk the change opens starts from your message and says what happens next, so
+        // both stay for Ctrl+O alone.
+        let to_the_crew = matches!(reply, TurnReply::Change { captain_or_crew, .. }
+            if captain_or_crew.mode == RunMode::Crew);
+        if to_the_crew && open.held.is_some() {
+            settle_tools(&mut open, ToolState::Stopped, cx);
+            self.to_the_talk = hand_over(&mut open, markdown, cx);
+            keep_own(&mut open, Some(ToolState::Stopped), cx);
+            return;
+        }
+        let_go(&mut open, cx);
         settle_tools(&mut open, ToolState::Stopped, cx);
         // What already printed above the calls isn't printed again.
         let rest = after_parts(markdown, &open.parts);
@@ -320,31 +439,92 @@ impl ConversationTurns {
 /// from elsewhere, gets its line here.
 fn echo(message: UserMessage, cx: &mut Cx<'_>) {
     let history = &mut cx.model.history;
-    let pending = history
+    if let Some(id) = started_echo(&message, history) {
+        history.finish_active(id);
+    } else if !printed_last(history) {
+        history.push(message);
+    }
+}
+
+/// The turn's `❯` line as `echo` draws it, kept live rather than printed. `None` when a line of
+/// your message printed already.
+fn hold(message: UserMessage, cx: &mut Cx<'_>) -> Option<CellId> {
+    let history = &mut cx.model.history;
+    started_echo(&message, history)
+        .or_else(|| (!printed_last(history)).then(|| history.push_active(message)))
+}
+
+/// The composer's grey echo, turned bright with the keywords of the CLI that took the turn.
+fn started_echo(message: &UserMessage, history: &mut History) -> Option<CellId> {
+    let id = history
         .active_cells()
         .find(|(_, cell)| matches!(cell, Cell::User(message) if message.pending))
-        .map(|(id, _)| id);
-    if let Some(id) = pending {
-        if let Some(echoed) = history.active_mut(id).and_then(Cell::as_user_mut) {
-            echoed.keywords = message.keywords;
-            echoed.start();
-        }
-        history.finish_active(id);
-        return;
+        .map(|(id, _)| id)?;
+    if let Some(echoed) = history.active_mut(id).and_then(Cell::as_user_mut) {
+        echoed.keywords = message.keywords.clone();
+        echoed.start();
     }
+    Some(id)
+}
+
+/// Whether the last line printed, or waiting to, is one of your messages.
+fn printed_last(history: &History) -> bool {
     let last = history
         .held_cells()
         .last()
         .or_else(|| history.cells().last());
-    if !matches!(last, Some(Cell::User(_))) {
-        history.push(message);
+    matches!(last, Some(Cell::User(_)))
+}
+
+/// Your message, held while a change might open a talk, prints with what the turn drew under
+/// it, in the order it came. The words of the part still going on go on as the answer's
+/// stream, so the reply adds only the rest.
+fn let_go(open: &mut OpenTurn, cx: &mut Cx<'_>) {
+    let Some(id) = open.held.take() else {
+        return;
+    };
+    held_calls_note(None, cx);
+    let history = &mut cx.model.history;
+    history.finish_active(id);
+    for row in std::mem::take(&mut open.under) {
+        history.push(row);
     }
+    let words = open
+        .words
+        .take()
+        .and_then(|words| history.remove_active(words));
+    if let Some(Cell::Assistant(words)) = words {
+        let stream = history.start_stream();
+        if let Some(stamp) = words.stamp {
+            history.stamp_stream(stream, stamp);
+        }
+        history.push_stream(stream, &words.markdown);
+        open.stream = Some(stream);
+    }
+}
+
+/// A change for the talk takes your held message and the rows under it off the screen: the
+/// talk opens with your message, and Ctrl+O keeps the rows after it.
+fn hand_over(open: &mut OpenTurn, markdown: &str, cx: &mut Cx<'_>) -> Option<ToTheTalk> {
+    let message = open.held.take()?;
+    held_calls_note(None, cx);
+    if let Some(words) = open.words.take() {
+        cx.model.history.remove_active(words);
+    }
+    Some(ToTheTalk {
+        turn: open.turn.clone(),
+        message,
+        rows: std::mem::take(&mut open.under),
+        said: after_parts(markdown, &open.parts).to_owned(),
+        run: None,
+    })
 }
 
 /// Your message the model read mid-turn shows where it read it, after what ran before, as
 /// Claude Code's send now shows it.
 fn joined(open: &mut OpenTurn, text: &str, cx: &mut Cx<'_>) {
     end_stream(open, cx);
+    let_go(open, cx);
     print_done(open, cx);
     let message = UserMessage::new(text)
         .with_keywords(cx.keywords_of(&open.worker))
@@ -536,6 +716,7 @@ fn agent_event(
             if let Some(line) = line {
                 if !open.replaying {
                     end_stream(open, cx);
+                    let_go(open, cx);
                     print_done(open, cx);
                 }
                 emit(cx, Cell::Custom(Box::new(line)));
@@ -546,6 +727,7 @@ fn agent_event(
                 return;
             }
             end_stream(open, cx);
+            let_go(open, cx);
             print_done(open, cx);
             emit(cx, workflow_row(workflow));
         }
@@ -561,7 +743,11 @@ fn agent_event(
 /// printed yet it goes; rows that printed stay, and the reply leaves out what they said.
 fn retried(open: &mut OpenTurn, cx: &mut Cx<'_>) {
     open.retried = true;
+    if let Some(words) = open.words.take() {
+        cx.model.history.remove_active(words);
+    }
     let dropped = open.replaying
+        || open.held.is_some()
         || open
             .stream
             .is_some_and(|id| cx.model.history.drop_unprinted_stream(id));
@@ -591,6 +777,7 @@ fn interrupted(open: &mut OpenTurn, cx: &mut Cx<'_>) {
         }
     } else {
         end_stream(open, cx);
+        let_go(open, cx);
     }
     emit(
         cx,
@@ -641,6 +828,10 @@ fn show(open: &mut OpenTurn, upto: usize, clock: &WallClock, cx: &mut Cx<'_>) {
     if upto <= open.shown {
         return;
     }
+    if open.held.is_some() {
+        preview(open, upto, clock, cx);
+        return;
+    }
     let history = &mut cx.model.history;
     let id = match open.stream {
         Some(id) => id,
@@ -655,18 +846,39 @@ fn show(open: &mut OpenTurn, upto: usize, clock: &WallClock, cx: &mut Cx<'_>) {
     open.shown = upto;
 }
 
+/// The answer's text up to byte `upto`, live under your held message.
+fn preview(open: &mut OpenTurn, upto: usize, clock: &WallClock, cx: &mut Cx<'_>) {
+    let history = &mut cx.model.history;
+    let more = &open.text[open.shown..upto];
+    match open.words.and_then(|id| history.active_mut(id)) {
+        Some(Cell::Assistant(words)) => words.markdown.push_str(more),
+        _ => {
+            let words = AssistantMessage::new(more).with_stamp(stamp(&open.worker, clock));
+            open.words = Some(history.push_active(words));
+        }
+    }
+    open.shown = upto;
+}
+
 /// Ends the part of the answer streaming now, so a call goes under it. Text held back as a
-/// possible closing JSON object wasn't the close after all, so it shows.
+/// possible closing JSON object wasn't the close after all, so it shows. Under your held
+/// message the part's words stay live with it.
 fn end_stream(open: &mut OpenTurn, cx: &mut Cx<'_>) {
     if open.replaying {
         return;
     }
-    if open.shown < open.text.len()
-        && let Some(id) = open.stream
-    {
-        cx.model.history.push_stream(id, &open.text[open.shown..]);
-    }
-    if let Some(id) = open.stream.take() {
+    let rest = &open.text[open.shown..];
+    if open.held.is_some() {
+        if let Some(words) = open.words.take() {
+            if let Some(Cell::Assistant(said)) = cx.model.history.active_mut(words) {
+                said.markdown.push_str(rest);
+            }
+            set_aside(open, words, cx);
+        }
+    } else if let Some(id) = open.stream.take() {
+        if !rest.is_empty() {
+            cx.model.history.push_stream(id, rest);
+        }
         cx.model.history.finish_stream(id);
     }
     if !open.text.trim().is_empty() {
@@ -742,9 +954,8 @@ fn print_done(open: &mut OpenTurn, cx: &mut Cx<'_>) {
     if quiet(cx) {
         return;
     }
-    let history = &mut cx.model.history;
     while let Some(&id) = open.calls.first() {
-        let done = match history.active(id) {
+        let done = match cx.model.history.active(id) {
             Some(Cell::Tool(call)) => !call.is_running(),
             Some(Cell::Group(group)) => !group.is_running() && open.calls.len() > 1,
             _ => true,
@@ -752,9 +963,43 @@ fn print_done(open: &mut OpenTurn, cx: &mut Cx<'_>) {
         if !done {
             break;
         }
-        history.finish_active(id);
         open.calls.remove(0);
+        // Under your held message a call waits with it.
+        if open.held.is_some() {
+            set_aside(open, id, cx);
+        } else {
+            cx.model.history.finish_active(id);
+        }
     }
+}
+
+/// Takes a row of the turn that's through off the screen while your message is held, to print
+/// after it later, and counts its calls on the working line.
+fn set_aside(open: &mut OpenTurn, id: CellId, cx: &mut Cx<'_>) {
+    if let Some(row) = cx.model.history.remove_active(id) {
+        open.under.push(row);
+    }
+    let calls = open
+        .under
+        .iter()
+        .map(|row| match row {
+            Cell::Tool(_) => 1,
+            Cell::Group(group) => group.calls.len(),
+            _ => 0,
+        })
+        .sum();
+    held_calls_note(Some(calls), cx);
+}
+
+/// The row under the working line while your message is held: how many calls the turn made so
+/// far, which show once its answer comes. `None` clears it.
+fn held_calls_note(calls: Option<usize>, cx: &mut Cx<'_>) {
+    let Some(line) = cx.model.bottom.working.as_mut() else {
+        return;
+    };
+    line.note = calls
+        .filter(|calls| *calls > 0)
+        .map(|calls| format!("{} so far", steps::plural(calls, "tool call", "tool calls")));
 }
 
 /// The call with `key` the model is still writing, among the live calls.
@@ -814,10 +1059,12 @@ fn drop_writing(open: &mut OpenTurn, key: &str, cx: &mut Cx<'_>) {
 }
 
 /// Prints the calls once text follows them or the turn ends, marking any still running as
-/// `state`. At `quiet` they go without a trace, and a call the model never finished writing
-/// goes at any verbosity.
+/// `state`, or sets them aside under your held message. At `quiet` they go without a trace,
+/// and a call the model never finished writing goes at any verbosity.
 fn settle_tools(open: &mut OpenTurn, state: ToolState, cx: &mut Cx<'_>) {
     let quiet = quiet(cx);
+    let held = open.held.is_some();
+    let mut aside = Vec::new();
     let history = &mut cx.model.history;
     for id in std::mem::take(&mut open.calls) {
         let unwritten = match history.active_mut(id) {
@@ -843,7 +1090,14 @@ fn settle_tools(open: &mut OpenTurn, state: ToolState, cx: &mut Cx<'_>) {
                 _ => call.stop(),
             }
         }
-        history.finish_active(id);
+        if held {
+            aside.push(id);
+        } else {
+            history.finish_active(id);
+        }
+    }
+    for id in aside {
+        set_aside(open, id, cx);
     }
 }
 
@@ -948,6 +1202,7 @@ fn end_parts(open: &mut OpenTurn, state: ToolState, cx: &mut Cx<'_>) {
         return;
     }
     end_stream(open, cx);
+    let_go(open, cx);
     keep_own(open, Some(state), cx);
     say_refused(open, cx);
 }

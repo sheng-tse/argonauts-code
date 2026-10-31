@@ -422,7 +422,7 @@ impl ConfigTab {
             (Control::Picks(pick), _, setting) => {
                 let value = setting.map(|setting| setting.value).unwrap_or_default();
                 self.picking = Some(Picking::new(pick, &value, list::vim(state)));
-                ViewOutcome::Request(ViewRequest::DeepOffer)
+                ViewOutcome::Request(ViewRequest::DeepOffer { start: None })
             }
             // `/mods <card> bottom-line` puts the card on the line or takes it off.
             (Control::OnTheLine(card), ..) => {

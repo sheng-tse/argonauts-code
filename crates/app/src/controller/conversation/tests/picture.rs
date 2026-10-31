@@ -6,7 +6,7 @@ use argonauts_core::look::pictures::Picture;
 use argonauts_core::runs::events::session::InputPartKind;
 use argonauts_testkit::{FakeSession, Hold};
 
-use crate::controller::base::test_support::TestDriver;
+use crate::controller::base::test_support::{CliOptions, TestDriver, on_the_default_workflow};
 
 fn turn_ended(event: &AppEvent) -> bool {
     matches!(
@@ -79,7 +79,7 @@ fn with_picture(text: &str, number: u32, path: &std::path::Path) -> UiCommand {
 
 #[tokio::test]
 async fn messages_typed_while_a_turn_runs_each_keep_their_own_pictures() {
-    let mut driver = TestDriver::start().await;
+    let mut driver = TestDriver::start_with(on_the_default_workflow(CliOptions::default())).await;
     driver.directory.taking_tools("claude-code");
     let first = driver.repo.root().join("first.png");
     let second = driver.repo.root().join("second.png");

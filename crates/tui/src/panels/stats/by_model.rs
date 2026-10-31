@@ -4,7 +4,8 @@
 use std::collections::BTreeMap;
 
 use argonauts_core::behaviors::crew_stats::StatsRole;
-use argonauts_core::look::logos::logo_for;
+use argonauts_core::look::display_names::{on_cli, run_by_several};
+use argonauts_core::look::logos::model_logo;
 use argonauts_core::settings::stats::StatsMeasure;
 use ratatui::text::Span;
 
@@ -73,7 +74,7 @@ impl Stats<'_> {
                 Part {
                     counted: Counted::model(cli, model),
                     fill: model_fill(kit, cli, model),
-                    logo: Some(logo_for(&cli.agent, model.model.as_deref())),
+                    logo: Some(model_logo(&cli.agent, model.model.as_deref())),
                     group,
                     folds: model.place >= OWN_TEXTURES,
                     rank: model.place,
@@ -166,6 +167,9 @@ impl Stats<'_> {
         drawn.push(vec![kit.dim(titles)]);
 
         let models: Vec<(&Cli, &Model)> = self.crew.models().collect();
+        let shared = run_by_several(
+            (models.iter()).map(|(cli, model)| (cli.agent.as_str(), model.name.as_str())),
+        );
         let top = self.crew.fullest(StatsMeasure::Tasks, |part| {
             Some((part.agent.clone(), part.model.clone()))
         });
@@ -176,8 +180,11 @@ impl Stats<'_> {
             } else {
                 Span::raw("  ")
             }];
-            let logo = logo_for(&cli.agent, model.model.as_deref());
-            let label = ModelLabel::named(&logo, &model.name, kit.theme, NoPicture::Dot);
+            let logo = model_logo(&cli.agent, model.model.as_deref());
+            let mut label = ModelLabel::named(&logo, &model.name, kit.theme, NoPicture::Dot);
+            if shared.contains(model.name.as_str()) {
+                label.name = on_cli(&label.name, &cli.name);
+            }
             row.extend(label.logo);
             let fill = model_fill(kit, cli, model);
             let swatch = draw::swatch(kit, fill);
@@ -236,7 +243,7 @@ impl Stats<'_> {
         let style = model_style(kit, cli, model);
         let tokens = vec![kit.strong(self.tokens(model.tokens())), kit.dim(" tok")];
         // The logo of whoever serves the model, where the terminal draws it, before its swatch.
-        let logo = logo_for(&cli.agent, model.model.as_deref());
+        let logo = model_logo(&cli.agent, model.model.as_deref());
         let label = ModelLabel::named(&logo, &model.name, kit.theme, NoPicture::Nothing);
         let mut title = label.logo;
         title.extend(draw::swatch(kit, model_fill(kit, cli, model)));

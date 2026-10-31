@@ -75,7 +75,6 @@ fn slash_commands_a_real_one_is_bold_and_an_unknown_one_says_so() {
             picture,
             rows,
             &theme(),
-            &[],
         );
     }
 }

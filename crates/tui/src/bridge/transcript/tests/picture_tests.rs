@@ -62,6 +62,7 @@ fn a_message_that_waited_or_joined_has_a_row_for_each_of_its_pictures() {
             uncommitted: vec![],
             settings_sha256: None,
             continues: false,
+            opens_a_talk: false,
         },
     );
     send(

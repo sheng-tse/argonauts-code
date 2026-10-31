@@ -75,7 +75,6 @@ fn the_work_group_says_how_each_workflow_stands() {
         ),
         WORK_ROWS,
         &theme,
-        &[],
     );
 }
 

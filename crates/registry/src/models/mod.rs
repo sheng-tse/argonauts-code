@@ -21,6 +21,7 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 use argonauts_core::ReportedModel;
 use argonauts_core::agents::confine::Confine;
+use argonauts_core::base::clock;
 use argonauts_core::base::future::BoxFuture;
 use argonauts_core::base::names::ModelRef;
 use argonauts_core::base::paths::Paths;
@@ -397,7 +398,7 @@ impl FileRegistry {
             None => return,
             Some(Ok(models)) => {
                 self.replace_listed(cli, models);
-                self.mark_listed(cli, Some(OffsetDateTime::now_utc()), false);
+                self.mark_listed(cli, Some(clock::now_utc()), false);
             }
             Some(Err(why)) => {
                 self.note_skipped(discovery::listing_failed(cli, &why));
@@ -691,7 +692,7 @@ impl ModelRegistry for FileRegistry {
             if !self.settings.registry.discover {
                 return Vec::new();
             }
-            let now = OffsetDateTime::now_utc();
+            let now = clock::now_utc();
             let claude = async {
                 match self.claude_due(now) {
                     Some(source) => Some(source.list(&self.settings).await),
@@ -748,7 +749,7 @@ impl ModelRegistry for FileRegistry {
                 None => self.claude.is_some(),
             };
             let claude_on = agent_enabled(&self.settings, "claude-code");
-            let refreshed = OffsetDateTime::now_utc();
+            let refreshed = clock::now_utc();
             let (models, kept_claude) = {
                 let mut discovered = self
                     .discovered

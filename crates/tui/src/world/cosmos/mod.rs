@@ -7,7 +7,9 @@
 
 mod disc;
 mod galaxy;
+mod glow;
 mod link;
+mod logo_shape;
 mod model;
 mod motion;
 mod paint;
@@ -23,7 +25,7 @@ mod zoom;
 pub use link::star_actions;
 pub use model::{
     Binary, Body, Climate, Comet, Maker, Meteor, Month, Moon, Planet, Star, StarAction, StarKind,
-    Stream, System, Universe, maker_logo, maker_rgb, served_logo,
+    Stream, System, Universe, maker_logo, maker_rgb, model_logo,
 };
 pub use scenes::{Cosmos, Level, SkyClusters, View};
 pub use shapes::home_radius;

@@ -9,7 +9,7 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 
-use super::{ROWS, WIDTH};
+use super::WIDTH;
 
 /// The kitty protocol's payload comes in chunks of at most this many base64 bytes.
 const CHUNK: usize = 4096;
@@ -77,10 +77,11 @@ impl Graphics {
     }
 }
 
-/// The escapes that draw `png` in the mascot's cells from the cursor, leaving the cursor where
-/// it was. `id` names it for the kitty protocol, so it can be swapped or taken away later.
-pub fn draw(graphics: Graphics, png: &[u8], id: u32) -> Vec<u8> {
-    draw_over(graphics, png, id, (WIDTH, ROWS))
+/// The escapes that draw `png` in the mascot's cells from the cursor, `rows` tall, leaving the
+/// cursor where it was. `id` names it for the kitty protocol, so it can be swapped or taken
+/// away later.
+pub fn draw(graphics: Graphics, png: &[u8], id: u32, rows: usize) -> Vec<u8> {
+    draw_over(graphics, png, id, (WIDTH, rows))
 }
 
 /// Like [`draw`], over `cells`, columns by rows, such as a map's.
@@ -110,10 +111,10 @@ pub fn hide(id: u32) -> Vec<u8> {
     format!("\x1b_Ga=d,d=i,q=2,i={id}\x1b\\").into_bytes()
 }
 
-/// Shows the picture stored under `id` in the mascot's cells from the cursor, and takes the
-/// one under `before` off the screen, keeping it for its next turn.
-pub fn show(id: u32, before: Option<u32>) -> Vec<u8> {
-    let mut out = format!("\x1b_Ga=p,q=2,C=1,c={WIDTH},r={ROWS},i={id}\x1b\\");
+/// Shows the picture stored under `id` in the mascot's cells from the cursor, `rows` tall, and
+/// takes the one under `before` off the screen, keeping it for its next turn.
+pub fn show(id: u32, before: Option<u32>, rows: usize) -> Vec<u8> {
+    let mut out = format!("\x1b_Ga=p,q=2,C=1,c={WIDTH},r={rows},i={id}\x1b\\");
     if let Some(before) = before.filter(|before| *before != id) {
         out.push_str(&format!("\x1b_Ga=d,d=i,q=2,i={before}\x1b\\"));
     }
@@ -354,7 +355,7 @@ mod tests {
     #[test]
     fn a_kitty_picture_goes_in_chunks_into_nine_by_three_cells_and_leaves_the_cursor() {
         let png = vec![7u8; 5000];
-        let sent = String::from_utf8(draw(Graphics::Kitty, &png, 42)).unwrap();
+        let sent = String::from_utf8(draw(Graphics::Kitty, &png, 42, 3)).unwrap();
         let parts: Vec<&str> = sent
             .split("\x1b\\")
             .filter(|part| !part.is_empty())
@@ -368,7 +369,7 @@ mod tests {
 
     #[test]
     fn an_iterm2_picture_names_its_cells_and_puts_the_cursor_back() {
-        let sent = String::from_utf8(draw(Graphics::Iterm, b"png", 1)).unwrap();
+        let sent = String::from_utf8(draw(Graphics::Iterm, b"png", 1, 3)).unwrap();
         assert_eq!(
             sent,
             "\x1b7\x1b]1337;File=inline=1;size=3;width=9;height=3:cG5n\x07\x1b8"
@@ -378,11 +379,11 @@ mod tests {
     #[test]
     fn a_frame_shows_and_the_one_before_leaves() {
         assert_eq!(
-            String::from_utf8(show(11, Some(10))).unwrap(),
+            String::from_utf8(show(11, Some(10), 3)).unwrap(),
             "\x1b_Ga=p,q=2,C=1,c=9,r=3,i=11\x1b\\\x1b_Ga=d,d=i,q=2,i=10\x1b\\"
         );
         assert_eq!(
-            String::from_utf8(show(11, None)).unwrap(),
+            String::from_utf8(show(11, None, 3)).unwrap(),
             "\x1b_Ga=p,q=2,C=1,c=9,r=3,i=11\x1b\\"
         );
         assert_eq!(

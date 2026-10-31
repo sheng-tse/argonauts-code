@@ -1,67 +1,65 @@
  A sample main session, as Claude Code's /context shows it, then the crew folded the same way                         
                                                                                                                       
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Settings   Overview    Status    Config    Usage    Context    Limits    Stats                                       
- What fills each session's context                                            1 session · 182.5k in context · 7 ended 
-                                                                                                                      
-     Context Usage                                                                                                    
-     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   Opus 5.5                                                               
-     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶   claude-opus-5-5                                                        
-     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   182.5k/1m tokens (18%)                                                 
-     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶                                                                          
-     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   Estimated usage by category                                            
-     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System prompt: 4.4k tokens (0.4%)                                    
-     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System tools: 19.7k tokens (2.0%)                                    
-     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ MCP server instructions: 960 tokens (0.1%)                           
-     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Skills: 6k tokens (0.6%)                                             
-     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝   ⛁ Messages: 151.4k tokens (15.1%)                                      
-                                               ⛶ Free space: 784.5k (78.5%)                                           
-                                               ⛝ Autocompact buffer: 33k tokens (3.3%)                                
-                                                                                                                      
-     Auto-compact window: 1m tokens                                                                                   
-                                                                                                                      
-     MCP tools · /mcp (loaded on-demand)                                                                              
-     └ 237 tools · 0 tokens                                                                                           
-                                                                                                                      
-     Skills · /skills                                                                                                 
-     └ 32 skills · 6k tokens                                                                                          
-                                                                                                                      
-     Crew agents · the last run, Make the rate limiter per API key                                                    
-     └ 7 agents · 126.7k tokens · all ended by 8:33 AM                                                                
-                                                                                                                      
-     /context all to expand                                                                                           
-                                                                                                                      
- ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ 
- │ ◆ context                                                                   182k of 1M · compacts at 967k   18%  │ 
- │    ▎▎▎                ▎                                                                                     ▏    │ 
- │                                                                                                                  │ 
- │ ▌ System prompt             4.4k   0.4%      ▌ System tools   19.7k   2.0%                                       │ 
- │ ▌ MCP server instructions    960   0.1%      ▌ Skills            6k   0.6%                                       │ 
- │ ▌ Messages                  151k  15.1%      ▌ Free space      785k  78.5%                                       │ 
- ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ 
-                                                                                                                      
- tab · ←  →  tabs · ↓  into the list · enter opens one · esc closes                                                   
+ Settings   Overview    Status    Config    Usage    Context    Limits    Stats
+ What fills each session's context                                            1 session · 182.5k in context · 7 ended
+
+     Context Usage
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   Opus 5.5
+     ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛶ ⛶   claude-opus-5-5
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   182.5k/1m tokens (18%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   Estimated usage by category
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System prompt: 4.4k tokens (0.4%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ System tools: 19.7k tokens (2.0%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ MCP server instructions: 318 tokens (<0.1%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Skills: 2.1k tokens (0.2%)
+     ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝ ⛝   ⛁ Messages: 155.9k tokens (15.6%)
+                                               ⛶ Free space: 784.5k (78.5%)
+                                               ⛝ Autocompact buffer: 33k tokens (3.3%)
+
+     Auto-compact window: 1m tokens
+
+     MCP tools · /mcp (loaded on-demand)
+     └ 14 tools · 0 tokens
+
+     Skills · /skills
+     └ 18 skills · 2.1k tokens
+
+     Crew agents · the last run, Make the rate limiter per API key
+     └ 7 agents · 126.7k tokens · all ended by 8:33 AM
+
+     /context all to expand
+
+ ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ ◆ context                                                                   182k of 1M · compacts at 967k   18%  │
+ │    ▎▎▎                ▊                                                                                     ▏    │
+ │                                                                                                                  │
+ │ ▌ System prompt   4.4k  0.4%      ▌ System tools   19.7k   2.0%      ▌ MCP server instructions    318  <0.1%     │
+ │ ▌ Skills          2.1k  0.2%      ▌ Messages        156k  15.6%      ▌ Free space                785k  78.5%     │
+ ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ tab · ←  →  tabs · ↓  into the list · enter opens one · esc closes
                                                                                                                       
  /context all, or Enter on a folded line: each list in full, one line each                                            
                                                                                                                       
-     MCP tools · /mcp (loaded on-demand)                                                                              
-     ├ crm               193 tools · 0 tokens                                                                         
-     ├ weather-forecast  35 tools · 0 tokens                                                                          
-     └ argonauts         9 tools · 0 tokens                                                                           
-                                                                                                                      
-     Skills · /skills                                                                                                 
-     ├ User              1 skill · 110 tokens                                                                         
-     ├ claude.ai sync    11 skills · 3.2k tokens                                                                      
-     └ Built-in          20 skills · 2.7k tokens                                                                      
-                                                                                                                      
-     Crew agents · the last run, Make the rate limiter per API key                                                    
-     ├ plan                         Haiku 5.5 on Claude Code     13.3k/1m (1%) · ended 8:30 AM                        
-     ├ build:cap-bucket-refills     Haiku 5.5 on Claude Code       21k/1m (2%) · ended 8:31 AM                        
-     ├ review:cap-bucket-refills    GPT 6 Luna on Codex        17.6k/872k (2%) · ended 8:31 AM                        
-     ├ build:per-api-key            GPT 6 Luna on Codex        30.5k/872k (3%) · ended 8:33 AM                        
-     ├ review:per-api-key           Haiku 5.5 on Claude Code     14.8k/1m (1%) · ended 8:32 AM                        
-     ├ review:per-api-key-2         Haiku 5.5 on Claude Code     14.9k/1m (1%) · ended 8:33 AM                        
-     └ main:answer                  Haiku 5.5 on Claude Code     14.6k/1m (1%) · ended 8:33 AM                        
+     MCP tools · /mcp (loaded on-demand)
+     ├ argonauts  5 tools · 0 tokens
+     ├ tickets    5 tools · 0 tokens
+     └ warehouse  4 tools · 0 tokens
+
+     Skills · /skills
+     ├ User       4 skills · 448 tokens
+     └ bundled    14 skills · 1.7k tokens
+
+     Crew agents · the last run, Make the rate limiter per API key
+     ├ plan                         Haiku 5.5 on Claude Code     13.3k/1m (1%) · ended 8:30 AM
+     ├ build:cap-bucket-refills     Haiku 5.5 on Claude Code       21k/1m (2%) · ended 8:31 AM
+     ├ review:cap-bucket-refills    GPT 6 Luna on Codex        17.6k/872k (2%) · ended 8:31 AM
+     ├ build:per-api-key            GPT 6 Luna on Codex        30.5k/872k (3%) · ended 8:33 AM
+     ├ review:per-api-key           Haiku 5.5 on Claude Code     14.8k/1m (1%) · ended 8:32 AM
+     ├ review:per-api-key-2         Haiku 5.5 on Claude Code     14.9k/1m (1%) · ended 8:33 AM
+     └ main:answer                  Haiku 5.5 on Claude Code     14.6k/1m (1%) · ended 8:33 AM
                                                                                                                       
  Enter on build:per-api-key: that agent's own block, in the same form                                                 
                                                                                                                       

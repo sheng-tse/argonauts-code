@@ -58,6 +58,10 @@ impl WorldFacts {
     }
 }
 
+/// One agent doing a behavior this many times in a row or more is a run, which raises the
+/// behavior's tornado.
+pub const BEHAVIOR_RUN_LENGTH: usize = 5;
+
 /// One behavior's facts. Its place and its height come from the map's dots.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -98,7 +102,8 @@ pub struct BehaviorFacts {
     pub busiest_hour: Option<Burst>,
     /// The most agents that did it within 5 minutes.
     pub most_agents_in_5_minutes: Option<Burst>,
-    /// Times one agent did it 5 or more times in a row, and the longest such run.
+    /// Times one agent did it [`BEHAVIOR_RUN_LENGTH`] or more times in a row, and the longest
+    /// such run.
     pub runs_in_a_row: u32,
     pub longest_run: u32,
 }
@@ -130,6 +135,15 @@ pub struct Move {
     pub count: u32,
 }
 
+/// Night, for the aurora, runs from this hour to [`NIGHT_TO`] on your clock.
+pub const NIGHT_FROM: u8 = 22;
+pub const NIGHT_TO: u8 = 5;
+
+/// Whether `hour` on your clock falls in the night.
+pub fn at_night(hour: u8) -> bool {
+    !(NIGHT_TO..NIGHT_FROM).contains(&hour)
+}
+
 /// What the crew did as a whole: the ice, the aurora and the sky.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -140,7 +154,7 @@ pub struct CrewFacts {
     pub quiet_days: u32,
     /// Each stretch of 2 or more quiet days in a row: an iceberg each.
     pub quiet_stretches: Vec<QuietStretch>,
-    /// Actions between 10:00 PM and 5:00 AM where you are: the aurora.
+    /// Actions [`at_night`] where you are: the aurora.
     pub night_actions: u32,
     /// The actions of each month before the period, the month just before it first: the sky's
     /// star clusters.
@@ -235,6 +249,10 @@ pub struct NewerModel {
     pub came: u32,
 }
 
+/// An agent of a model doing a behavior this many times in a row or more loops on it, which
+/// puts a ring round the behavior's planet.
+pub const MODEL_LOOP_LENGTH: usize = 4;
+
 /// What one model did of one behavior.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -245,7 +263,7 @@ pub struct ModelBehavior {
     /// Days back to its last action of it.
     pub last_used: u32,
     pub days_in_last_7: u8,
-    /// Times an agent of this model did it 4 or more times in a row.
+    /// Times an agent of this model did it [`MODEL_LOOP_LENGTH`] or more times in a row.
     pub runs_in_a_row: u32,
 }
 

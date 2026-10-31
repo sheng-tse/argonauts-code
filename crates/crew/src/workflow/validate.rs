@@ -912,10 +912,14 @@ impl Check<'_, '_> {
                 (ApprovalKind::Understand, "Understand"),
                 (ApprovalKind::Plan, "plan"),
             ] {
+                // A council's talk takes your request as the goal, so it stands for the
+                // Understand approval.
                 let present = before.iter().any(|earlier| {
-                    earlier.kind == StepKind::Approval
-                        && earlier.approval == Some(needed)
-                        && !earlier.conditional
+                    let approves =
+                        earlier.kind == StepKind::Approval && earlier.approval == Some(needed);
+                    let talks =
+                        earlier.kind == StepKind::Talk && needed == ApprovalKind::Understand;
+                    (approves || talks) && !earlier.conditional
                 });
                 if !present {
                     errors.push((

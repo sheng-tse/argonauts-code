@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use super::block::{Block, INDENT, Part};
 use super::lists;
 use super::words::cc_style;
-use crate::base::format::{self, Figures};
+use crate::base::format::{self, Figures, UNKNOWN};
 use crate::base::kit::context::{BeforeCount, Estimate};
 use crate::base::kit::logo::{ModelLabel, NoPicture};
 use crate::base::kit::{ContextCard, ContextPart, Drawn, Kit, Limit, LimitKind};
@@ -38,7 +38,8 @@ pub(crate) struct Started<'a> {
     pub start: &'a StartingCount,
     pub row: Option<&'a ContextRow>,
     pub stage: Stage,
-    pub window: u64,
+    /// `None` while no list gives it, when every figure that needs it shows `–`.
+    pub window: Option<u64>,
     /// The CLI's name, such as `Codex`.
     pub cli: String,
     /// The window is the CLI's own figure, not our list's.
@@ -47,9 +48,17 @@ pub(crate) struct Started<'a> {
     pub now: OffsetDateTime,
 }
 
+/// The window the main session counts in before its CLI counts it by category: the one its
+/// row says, else our list's for its model.
+pub(super) fn window_of(start: &StartingCount, row: Option<&ContextRow>) -> Option<u64> {
+    row.and_then(|row| row.window)
+        .or(start.window)
+        .filter(|window| *window > 0)
+}
+
 impl<'a> Started<'a> {
-    /// The stage `row` puts `start` in, where its window is known: loading until the CLI
-    /// first says how full the session is. A CLI that counts by category is asked only while
+    /// The stage `row` puts `start` in: loading until the CLI first says how full the
+    /// session is. A CLI that counts by category is asked only while
     /// a turn runs and something shows the context, so between turns its row has a fill and
     /// no count, and draws filled. A resumed conversation's row stands as its record left it
     /// until a turn runs.
@@ -59,11 +68,8 @@ impl<'a> Started<'a> {
         names: &DisplayNames,
         cli_window: bool,
         now: OffsetDateTime,
-    ) -> Option<Self> {
-        let window = row
-            .and_then(|row| row.window)
-            .or(start.window)
-            .filter(|window| *window > 0)?;
+    ) -> Self {
+        let window = window_of(start, row);
         let stage = match row {
             None => Stage::Before,
             Some(row) if row.recorded.is_some() && row.used > 0 => Stage::Recorded,
@@ -71,7 +77,7 @@ impl<'a> Started<'a> {
             Some(row) if row.used == 0 => Stage::Loading,
             Some(_) => Stage::Filled,
         };
-        Some(Self {
+        Self {
             start,
             row,
             stage,
@@ -79,7 +85,7 @@ impl<'a> Started<'a> {
             cli: names.cli(&start.agent),
             cli_window,
             now,
-        })
+        }
     }
 
     /// The row says how full the session is, beyond the start.
@@ -215,11 +221,20 @@ impl<'a> Started<'a> {
         let from_last = !self.said() && self.start.from == StartedFrom::LastSession;
         let label = ModelLabel::of(names, &worker, kit.theme, NoPicture::Nothing);
         let logo = label.whose.clone();
+        let shown = label
+            .beside_picture()
+            .or_else(|| names.model(agent, model))
+            .unwrap_or_else(|| self.cli.clone());
+        let mut notes = self.notes();
+        if self.window.is_none() {
+            // The note has no logo beside it, so it gives the model's whole name.
+            let whole = names.model(agent, model).unwrap_or_else(|| shown.clone());
+            notes.push(format!(
+                "No list gives {whole}'s window yet, so it shows {UNKNOWN}."
+            ));
+        }
         Block {
-            model: label
-                .beside_picture()
-                .or_else(|| names.model(agent, model))
-                .or_else(|| Some(self.cli.clone())),
+            model: Some(shown),
             model_id: self
                 .start
                 .model
@@ -231,11 +246,13 @@ impl<'a> Started<'a> {
             percent: None,
             heading: "Estimated usage by category".to_owned(),
             parts,
-            free: self.window.saturating_sub(used).saturating_sub(buffer),
+            free: self.window.map_or(0, |window| {
+                window.saturating_sub(used).saturating_sub(buffer)
+            }),
             buffer,
             grid: None,
             usage: None,
-            notes: self.notes(),
+            notes,
             parts_ours: true,
             used_ours: self.used_ours(),
             used_tail: if from_last {
@@ -312,11 +329,14 @@ impl<'a> Started<'a> {
         });
         ContextCard {
             used: Some(self.used()),
-            window: Some(self.window),
-            limit: (buffer > 0 && buffer < self.window).then(|| Limit {
-                at: self.window - buffer,
-                kind: LimitKind::Compacts,
-            }),
+            window: self.window,
+            limit: self
+                .window
+                .filter(|&window| buffer > 0 && buffer < window)
+                .map(|window| Limit {
+                    at: window - buffer,
+                    kind: LimitKind::Compacts,
+                }),
             used_estimated: self.used_ours(),
             before,
             ..ContextCard::with_parts(parts, true)

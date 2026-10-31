@@ -146,7 +146,7 @@ pub fn shade(pad: &mut Pad, (x, y): (f64, f64), radius: f64) {
 /// How brightly the storm flashes at a moment, 0 between its flashes; held still, a lasting
 /// glow, so the meaning reads.
 pub fn flash(flashes: &Flashes, moment: Moment) -> f64 {
-    let Moment::At(_) = moment else {
+    let Moment::At { .. } = moment else {
         return 0.75;
     };
     flashes.at(moment.time(LIGHTNING)).0

@@ -7,6 +7,8 @@
 //! Each server says the window it holds a model to where it can (see [`served`]), and an
 //! OpenCode model on such a server is held to the server's window as well as OpenCode's own.
 
+#[cfg(test)]
+mod capped_twins;
 mod claude;
 mod http;
 mod ollama;
@@ -764,7 +766,8 @@ mod tests {
         let read =
             |name: &str| std::fs::read_to_string(format!("{FIXTURES}/ollama/{name}")).unwrap();
         let (tags, show, ps) = (read("tags.json"), read("show.json"), read(ps));
-        let show: serde_json::Value = serde_json::from_str(&show).unwrap();
+        let tags = capped_twins::tags(&tags);
+        let show = capped_twins::show(&serde_json::from_str(&show).unwrap());
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { return };
@@ -824,19 +827,23 @@ mod tests {
     }
 
     /// A fake `opencode` 2.0.32 that answers `model.list` and `model.default` on a private
-    /// server with the recorded answers, and fails anything else. Its server writes the folder
-    /// it was started in to `asked-from` in `dir`.
+    /// server with the recorded answers, the list with the made-up capped tags, and fails
+    /// anything else. Its server writes the folder it was started in to `asked-from` in `dir`.
     fn fake_opencode(dir: &Path) -> PathBuf {
         let path = dir.join("opencode");
         let asked_from = dir.join("asked-from");
         let asked_from = asked_from.display();
+        let recorded = std::fs::read_to_string(format!("{FIXTURES}/opencode/model-list.json"));
+        let model_list = dir.join("model-list.json");
+        std::fs::write(&model_list, capped_twins::model_list(&recorded.unwrap())).unwrap();
+        let model_list = model_list.display();
         // The calls name the repo after the first four words.
         let script = format!(
             "#!/bin/sh\ncase \"$1 $2 $3 $4\" in\n\
              '--version   ') echo 2.0.32 ;;\n\
              'serve --stdio --port 0') pwd -P > '{asked_from}'; \
              echo '{{\"url\":\"http://127.0.0.1:9\"}}'; cat > /dev/null ;;\n\
-             'api --server http://127.0.0.1:9 model.list') cat '{FIXTURES}/opencode/model-list.json' ;;\n\
+             'api --server http://127.0.0.1:9 model.list') cat '{model_list}' ;;\n\
              'api --server http://127.0.0.1:9 model.default') \
              cat '{FIXTURES}/opencode/model-default.json' ;;\n\
              *) echo \"unexpected: $*\" >&2; exit 2 ;;\nesac\n"
@@ -941,7 +948,7 @@ mod tests {
         );
 
         assert_eq!(
-            windows("ollama/qwen3-coder:30b-64k"),
+            windows("ollama/sample-coder:30b-64k"),
             (Some(262_144), Some(65_536), Some(65_536))
         );
         assert_eq!(
@@ -949,7 +956,7 @@ mod tests {
             (Some(262_144), None, None)
         );
         assert_eq!(
-            windows("ollama/gemma3:12b-32k"),
+            windows("ollama/sample-gemma:12b-32k"),
             (Some(131_072), Some(32_768), Some(32_768))
         );
         assert_eq!(windows("ollama/gemma2:9b"), (Some(8_192), None, None));
@@ -958,11 +965,11 @@ mod tests {
 
         // OpenCode says 131,072 for the 32k tag; the tag holds it to 32,768.
         assert_eq!(
-            windows("opencode/ollama/gemma3:12b-32k"),
+            windows("opencode/ollama/sample-gemma:12b-32k"),
             (Some(131_072), Some(32_768), Some(32_768))
         );
         assert_eq!(
-            windows("opencode/ollama/qwen3-coder:30b-64k"),
+            windows("opencode/ollama/sample-coder:30b-64k"),
             (Some(65_536), Some(65_536), Some(65_536))
         );
         // No cap anywhere: the most it takes shows, and a session waits for the loaded size.

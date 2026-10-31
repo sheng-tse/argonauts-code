@@ -192,6 +192,7 @@ fn say_in_the_view(
     };
     // Named by the models they run, so a bare CLI that runs the stopped model reads as it.
     let line = job_fallback::task_in_the_view(
+        host.names(),
         &roles::runs(host, from),
         &roles::runs(host, to),
         ended.as_ref(),

@@ -160,7 +160,8 @@ async fn settle(host: &Host, call: &StepCall) -> EngineResult<Option<StepDone>> 
                             .answers
                             .as_ref()
                             .and_then(Answerer::model)
-                            .filter(|_| autopilot),
+                            .filter(|_| autopilot)
+                            .map(|picked| host.names().worker(picked)),
                         assumed.len(),
                         yours.len(),
                     ),

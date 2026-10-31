@@ -5,7 +5,7 @@
 
 use argonauts_core::Spend;
 use argonauts_core::behaviors::crew_stats::StatsRole;
-use argonauts_core::look::logos::logo_for;
+use argonauts_core::look::logos::model_logo;
 use argonauts_core::runs::api::UsagePeriod;
 use argonauts_core::settings::stats::StatsMeasure;
 use ratatui::text::Span;
@@ -78,7 +78,7 @@ impl Stats<'_> {
     /// rows name it, and at the right its tokens, its spend and its sessions.
     fn model_title(&self, kit: &Kit<'_>, cli: &Cli, model: &Model, inner: usize) -> Row {
         let roles: Vec<&str> = model.filled().into_iter().map(StatsRole::as_str).collect();
-        let logo = logo_for(&cli.agent, model.model.as_deref());
+        let logo = model_logo(&cli.agent, model.model.as_deref());
         let label = ModelLabel::named(&logo, &model.name, kit.theme, NoPicture::Dot);
         let mut left = label.logo;
         let swatch = draw::swatch(kit, model_fill(kit, cli, model));

@@ -54,7 +54,7 @@ pub enum TelemetryAction {
 /// `argonauts telemetry show|on|off`: what it says back, in colour on a terminal.
 pub async fn telemetry(action: TelemetryAction, overrides: Vec<String>) -> anyhow::Result<String> {
     let paths = Paths::from_env().context("finding your Argonauts Code folder")?;
-    let now = OffsetDateTime::now_utc();
+    let now = argonauts_core::base::clock::now_utc();
     match action {
         TelemetryAction::Show => {
             let settings = crate::commands::current_settings(None, overrides)?;
@@ -137,7 +137,7 @@ pub(crate) fn send_when_due(paths: &Paths, settings: &Settings, found: Found) {
             &settings,
             &found,
             &sender,
-            OffsetDateTime::now_utc(),
+            argonauts_core::base::clock::now_utc(),
         )
         .await;
     });
@@ -148,8 +148,9 @@ pub(crate) fn send_when_due(paths: &Paths, settings: &Settings, found: Found) {
 pub(crate) async fn send_after_run(env: &AppEnv, settings: &Settings) {
     let due = Sender::built_in().is_ok()
         && may_send(&env.paths, settings, &|name| std::env::var(name).ok())
-        && State::load(&state_file(&env.paths))
-            .is_some_and(|state| state.due(OffsetDateTime::now_utc()) == Due::NextStart);
+        && State::load(&state_file(&env.paths)).is_some_and(|state| {
+            state.due(argonauts_core::base::clock::now_utc()) == Due::NextStart
+        });
     if !due {
         return;
     }

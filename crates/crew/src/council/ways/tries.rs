@@ -22,7 +22,7 @@ use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::{Ask, Host};
 use crate::merge::branch::task_branch;
 use crate::prompts;
-use crate::roles::{self, display_name};
+use crate::roles;
 use crate::task;
 use crate::task::checks::{self, CheckVerdict};
 use crate::task::pipeline::{self, Until};
@@ -221,7 +221,7 @@ async fn picked(
     title: &str,
 ) -> EngineResult<(usize, TaskId)> {
     let first = passed[0].clone();
-    let by = display_name(&checker.model);
+    let by = host.names().worker(&checker.model);
     let (chosen, why) = match pick_of(host, task, at, role, &checker.model, passed).await? {
         Ok(pick) => pick,
         Err(why) => {
@@ -241,7 +241,7 @@ async fn picked(
             host,
             task,
             NoteLevel::Info,
-            checker::same_maker_line(&checker.model),
+            checker::same_maker_line(host.names(), &checker.model),
         )?;
     }
     Ok(chosen)
@@ -521,6 +521,7 @@ mod tests {
                 },
                 asked_by_you: true,
                 steps: None,
+                why: None,
             }),
         };
         let id = try_id(&spec.id, 2).unwrap();

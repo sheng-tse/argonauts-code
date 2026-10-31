@@ -1,4 +1,5 @@
-//! Every file here is made up in a temporary folder. No test reads a real session file.
+//! Every file here is made up in a temporary folder or recorded with made-up content. No test
+//! reads a real session file.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
@@ -7,6 +8,7 @@ use std::path::{Path, PathBuf};
 use time::macros::datetime;
 
 use super::*;
+use crate::overview::recount::{self, Folders};
 
 /// What a made-up answer says, which must never reach the records.
 const SAID: &str = "the secret plan for the launch";
@@ -117,8 +119,53 @@ impl World {
             seen.borrow_mut().push((done, of));
         })
         .unwrap();
+        self.assert_counted_again();
         seen.into_inner()
     }
+
+    /// The second count, by plainer rules, agrees with the import to the token on every day.
+    fn assert_counted_again(&self) {
+        let folders = Folders {
+            claude: Some(&self.claude),
+            codex: Some(&self.codex),
+            zstd: None,
+        };
+        assert_counts_agree(&self.store, &folders);
+    }
+}
+
+fn assert_counts_agree(store: &Store, folders: &Folders) {
+    let again = recount::recount(folders, &[]);
+    let counted: BTreeMap<String, recount::Days> = doctor::counted(&store.records(), &[])
+        .into_iter()
+        .map(|(cli, counted)| (cli, counted.days))
+        .filter(|(_, days)| !days.is_empty())
+        .collect();
+    assert_eq!(
+        counted, again.clis,
+        "the import and the second count are different"
+    );
+}
+
+#[test]
+fn the_recorded_session_folders_count_the_same_both_ways() {
+    let adapters = Path::new(env!("CARGO_MANIFEST_DIR")).join("../adapters");
+    let claude = adapters.join("claude-code/session-store");
+    let codex = adapters.join("codex/session-store");
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::at(&dir.path().join("imported"));
+    let locations = Locations {
+        claude: Some(claude.clone()),
+        codex: Some(codex.clone()),
+        zstd: None,
+    };
+    import(&store, &locations, &|_, _| {}).unwrap();
+    let folders = Folders {
+        claude: Some(&claude),
+        codex: Some(&codex),
+        zstd: None,
+    };
+    assert_counts_agree(&store, &folders);
 }
 
 #[test]

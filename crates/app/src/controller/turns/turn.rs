@@ -525,7 +525,8 @@ impl TurnStep {
         self.kept_out() || matches!(self, Self::Review { .. })
     }
 
-    fn prompt(&self, text: &str) -> InputPart {
+    /// `verdict_first`: the workflow you chose, which takes every change, for an estimate.
+    fn prompt(&self, text: &str, verdict_first: Option<&str>) -> InputPart {
         let (label, prompt) = match self {
             Self::Estimate {
                 uncommitted_note,
@@ -539,6 +540,7 @@ impl TurnStep {
                         uncommitted_note: uncommitted_note.clone(),
                     },
                     *read_instructions,
+                    verdict_first,
                 ),
             ),
             Self::Ask { run_status } => (
@@ -649,6 +651,9 @@ pub(crate) struct Launch<'a> {
     pub excerpt: Option<InputPart>,
     /// After the step's prompt, such as how to write the answer.
     pub notes: Vec<InputPart>,
+    /// A workflow you chose takes every change, so the estimate asks for the verdict before any
+    /// reading, and leaves reading and planning a change to the workflow it names.
+    pub verdict_first: Option<String>,
     /// The `!` commands you ran since the main agent's last turn, ahead of your message.
     pub shell: Option<InputPart>,
     /// `/fast`: the lowest effort the model takes, in place of the one set.
@@ -926,7 +931,11 @@ pub(crate) fn session_spec(
     let endpoint = launch.handle.kind() == RunnerKind::Endpoint;
     let mut prompt: Vec<InputPart> = launch.excerpt.iter().cloned().collect();
     prompt.extend(launch.shell.iter().cloned());
-    prompt.push(launch.step.prompt(launch.text));
+    prompt.push(
+        launch
+            .step
+            .prompt(launch.text, launch.verdict_first.as_deref()),
+    );
     prompt.extend(launch.pictures.iter().map(picture_part));
     if launch.step.takes_mentions() {
         let root = &launch.workdir;
@@ -1193,7 +1202,7 @@ mod tests {
         });
         assert!(!worth_a_fallback(&repeated));
         let names = DisplayNames::default();
-        let qwen: ModelRef = "opencode/ollama/qwen3-coder:30b-64k".parse().unwrap();
+        let qwen: ModelRef = "opencode/ollama/qwen3-coder:30b".parse().unwrap();
         let name = names
             .model("opencode", qwen.model.as_deref())
             .expect("a model name");
@@ -1422,6 +1431,7 @@ mod tests {
             fork: false,
             excerpt: None,
             notes: Vec::new(),
+            verdict_first: None,
             shell: None,
             fast: false,
             workdir: ctx.env.repo_root.clone(),

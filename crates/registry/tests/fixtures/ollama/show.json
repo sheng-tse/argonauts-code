@@ -68,44 +68,6 @@
   "modified_at": "2026-08-17T00:06:11.365413046Z",
   "parameters": "temperature                    1\ntop_k                          64\ntop_p                          0.95\nstop                           \"<end_of_turn>\""
  },
- "gemma3:12b-32k": {
-  "capabilities": [
-   "completion",
-   "vision"
-  ],
-  "details": {
-   "format": "gguf",
-   "parameter_size": "12.2B",
-   "parent_model": "gemma3:12b",
-   "quantization_level": "Q4_K_M"
-  },
-  "model_info": {
-   "gemma3.attention.head_count": 16,
-   "gemma3.attention.head_count_kv": 8,
-   "gemma3.attention.key_length": 256,
-   "gemma3.attention.sliding_window": 1024,
-   "gemma3.attention.value_length": 256,
-   "gemma3.block_count": 48,
-   "gemma3.context_length": 131072,
-   "gemma3.embedding_length": 3840,
-   "gemma3.feed_forward_length": 15360,
-   "gemma3.mm.tokens_per_image": 256,
-   "gemma3.vision.attention.head_count": 16,
-   "gemma3.vision.attention.layer_norm_epsilon": 1e-06,
-   "gemma3.vision.block_count": 27,
-   "gemma3.vision.embedding_length": 1152,
-   "gemma3.vision.feed_forward_length": 4304,
-   "gemma3.vision.image_size": 896,
-   "gemma3.vision.num_channels": 3,
-   "gemma3.vision.patch_size": 14,
-   "general.architecture": "gemma3",
-   "general.file_type": 15,
-   "general.parameter_count": 12187079280,
-   "general.quantization_version": 2
-  },
-  "modified_at": "2026-10-19T00:23:04.433991031Z",
-  "parameters": "stop                           \"<end_of_turn>\"\ntemperature                    1\ntop_k                          64\ntop_p                          0.95\nnum_ctx                        32768"
- },
  "gemma4:e2b": {
   "capabilities": [
    "completion",
@@ -242,46 +204,5 @@
   },
   "modified_at": "2026-10-19T00:22:12.460867772Z",
   "parameters": "top_p                          0.8\nrepeat_penalty                 1.05\nstop                           \"<|im_start|>\"\nstop                           \"<|im_end|>\"\nstop                           \"<|endoftext|>\"\ntemperature                    0.7\ntop_k                          20"
- },
- "qwen3-coder:30b-64k": {
-  "capabilities": [
-   "completion",
-   "tools"
-  ],
-  "details": {
-   "format": "gguf",
-   "parameter_size": "30.5B",
-   "parent_model": "qwen3-coder:30b",
-   "quantization_level": "Q4_K_M"
-  },
-  "model_info": {
-   "general.architecture": "qwen3moe",
-   "general.basename": "Qwen3-Coder",
-   "general.file_type": 15,
-   "general.finetune": "Instruct",
-   "general.license": "apache-2.0",
-   "general.license.link": "https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct/blob/main/LICENSE",
-   "general.parameter_count": 30532122624,
-   "general.quantization_version": 2,
-   "general.size_label": "30B-A3B",
-   "general.tags": null,
-   "general.type": "model",
-   "qwen3moe.attention.head_count": 32,
-   "qwen3moe.attention.head_count_kv": 4,
-   "qwen3moe.attention.key_length": 128,
-   "qwen3moe.attention.layer_norm_rms_epsilon": 1e-06,
-   "qwen3moe.attention.value_length": 128,
-   "qwen3moe.block_count": 48,
-   "qwen3moe.context_length": 262144,
-   "qwen3moe.embedding_length": 2048,
-   "qwen3moe.expert_count": 128,
-   "qwen3moe.expert_feed_forward_length": 768,
-   "qwen3moe.expert_shared_feed_forward_length": 0,
-   "qwen3moe.expert_used_count": 8,
-   "qwen3moe.feed_forward_length": 5472,
-   "qwen3moe.rope.freq_base": 10000000
-  },
-  "modified_at": "2026-10-19T00:23:04.348610749Z",
-  "parameters": "repeat_penalty                 1.05\nstop                           \"<|im_start|>\"\nstop                           \"<|im_end|>\"\nstop                           \"<|endoftext|>\"\ntemperature                    0.7\ntop_k                          20\ntop_p                          0.8\nnum_ctx                        65536"
  }
 }

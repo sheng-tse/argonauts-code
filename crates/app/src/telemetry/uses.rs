@@ -8,11 +8,12 @@ use std::io::{self, Write as _};
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 
+use argonauts_core::base::clock;
 use argonauts_core::input::SlashCommand;
 use argonauts_core::runs::api::day_format;
 use argonauts_core::{Paths, create_private_dir_all};
 use serde::{Deserialize, Serialize};
-use time::{Date, OffsetDateTime};
+use time::Date;
 
 use crate::controller::Ctx;
 use crate::usage::usage_ledger::local_day;
@@ -101,7 +102,7 @@ pub(crate) struct UseLine {
 /// an error.
 pub(crate) fn used(paths: &Paths, used: Use) {
     let line = UseLine {
-        day: local_day(OffsetDateTime::now_utc()),
+        day: local_day(clock::now_utc()),
         used,
     };
     if let Err(err) = append(&dir(paths), &line) {

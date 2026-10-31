@@ -21,7 +21,7 @@ text
   ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼     Untinted  About the same, or too few
   ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼
   ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  ↑  3 more above
-  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  ●  ￼￼ Opus 5.5                 63
+  ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  ●  ￼￼ Opus 5.5            63
   ￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼￼  ↓  7 more below
 
   Lit: ran the test suite · 41 actions, 3 of them Opus 5.5's
@@ -38,51 +38,53 @@ text
    r to cycle dates · s this project · d summaries · ↑  ↓  behavior · enter actions · h  l  model · esc back
 paint
 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-.bbbbbbbb..cddddddddc...eeeeee....eeeeee....eeeee....eeeeeee....eeeeee....eeeee.....fff.ffff..gggg.g.gggg..gggg.gg.gggg
+.bbbbbbbb..cddddddddc...eeeeee....eeeeee....eeeee....eeeeeee....eeeeee....eeeee.....fff.ffff..eeee.e.eeee..eeee.ee.eeee
 
-..gggggggg....gggggg...cdddddddddc...........cddcdddddc...gg.ggg....gg.gggg....gg.gggggggg....gg.ggggggg....gg.ggggggg
+..eeeeeeee....eeeeee...cdddddddddc...........ghhghhhhhg...ee.eee....ee.eeee....ee.eeeeeeee....ee.eeeeeee....ee.eeeeeee
 
-..f.fff.g.g.gggggg.g.g.gggggggg.....................................................................ffffff.g.ggggggggg
+..f.fff.i.e.eeeeee.i.e.eeeeeeee.....................................................................ffffff.i.eeeeeeeee
 
-..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..ggggggggg.ii.eeee.eee
-..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..gggg.ggg.ggggg.gg.ggg.ggggg
-..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..ggg.ggggg.gg.gggg.ggggg.gggg.ggggg.gggg
-..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..jj.eeee.eeee.gg.gg.ggggg.gg.gggg
-..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..kk.eeee......ggggg.gg.gg
-..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..ll.eeee......gggg.gg.gggg
-..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..mm.eeee.eeee.gggg.gg.gggg
-..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..nn.eeeeeeee..ggggg.ggg.ggggg.gg.ggg.ggg
-..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh
-..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..g..g.gggg.ggggg
-..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..o..ii.eeee.eee.................gg
-..hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh..g..g.gggg.ggggg
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..iiiiiiiii.kk.eeee.eee
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..iiii.iii.iiiii.ii.iii.iiiii
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..iii.iiiii.ii.iiii.iiiii.iiii.iiiii.iiii
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..ll.eeee.eeee.ii.ii.iiiii.ii.iiii
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..mm.eeee......iiiii.ii.ii
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..nn.eeee......iiii.ii.iiii
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..oo.eeee.eeee.iiii.ii.iiii
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..pp.eeeeeeee..iiiii.iii.iiiii.ii.iii.iii
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..i..i.iiii.iiiii
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..q..kk.eeee.eee............ii
+..jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj..i..i.iiii.iiiii
 
-..gggg.bbb.bbb.bbbb.bbbbb.g.gg.gggggggg.g.gg.gggg.gggg.ggggg
+..iiii.bbb.bbb.bbbb.bbbbb.i.ii.iiiiiiii.i.ii.iiii.iiii.iiiii
 
-..ggggg.ggg.g.ggg.ggggggg.gg.gg.gggg.ggg.gg.ggggggggggggg.gggggg.gg.gggggggg
-..bbbbbbbbbbb.bb.bbbb.bbb.g.gg.gggggggg.ggg.gggggg.ggg
-..g..g.gggg.ggggg
-....eeeeeeee.eeee.ee.eeeeeee................................b..ggggggg...gggggg..gg...gggggg
-....eeeeeee.eee.eeeeee.ee.eeee..............................b...gggggg...gggggg..gg...gggggg
-....eeee.e.eeeeee.eeee.....................................bb..ggggggg...gggggg..gg..ggggggg
-....eeeeee.eeeee............................................b...gggggg...gggggg..gg...gggggg
-..a.aaa.aaa.aaaa.aaaaa......................................b...gggggg...gggggg..gg...gggggg
+..iiiii.iii.i.iii.iiiiiii.ii.ii.iiii.iii.ii.iiiiiiiiiiiii.iiiiii.ii.iiiiiiii
+..bbbbbbbbbbb.bb.bbbb.bbb.i.ii.iiiiiiii.iii.iiiiii.iii
+..i..i.iiii.iiiii
+....eeeeeeee.eeee.ee.eeeeeee................................b..iiiiiii...iiiiii..ii...iiiiii
+....eeeeeee.eee.eeeeee.ee.eeee..............................b...iiiiii...iiiiii..ii...iiiiii
+....eeee.e.eeeeee.eeee.....................................bb..iiiiiii...iiiiii..ii..iiiiiii
+....eeeeee.eeeee............................................b...iiiiii...iiiiii..ii...iiiiii
+..a.aaa.aaa.aaaa.aaaaa......................................b...iiiiii...iiiiii..ii...iiiiii
 
-...g.gg.ggggg.ggggg.g.g.gggg.ggggggg.g.g.ggggggggg.g.g..g..gggggggg.g.ggggg.ggggggg.g.g..g..ggggg.g.ggg.gggg
+...i.ii.iiiii.iiiii.i.i.iiii.iiiiiii.i.i.iiiiiiiii.i.i..i..iiiiiiii.i.iiiii.iiiiiii.i.i..i..iiiii.i.iii.iiii
 key
 . blank
-a fg=#b1b9f9  ; Code, Question, BarFill, CatMcp
+a fg=#b1b9f9  ; Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp
 b fg=#c8d3f5 bold  ; the terminal's own
-c bg=#373737  ; UserBand
-d fg=#c8d3f5 bg=#373737 bold  ; the terminal's own, on UserBand
+c bg=#b1b9f9  ; Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp
+d fg=#14161f bg=#b1b9f9 bold  ; BadgeText, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp, on Code, on Question, on BarFill, on CatMcp
 e fg=#c8d3f5  ; the terminal's own
-f fg=#b1b9f9 bold  ; Code, Question, BarFill, CatMcp
-g fg=#999999  ; Dim, ModeSupervised, SyntaxComment
-h picture=label-map
-i logo=claudecode
-j bg=#b44a4e
-k bg=#8c5a4c
-l bg=#4a627c
-m bg=#3e5a9a
-n bg=#4e5e48
-o fg=#f7a07f  ; CliClaude
+f fg=#b1b9f9 bold  ; Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp, Code, Question, BarFill, CatMcp
+g bg=#fb923c  ; AgentOrange
+h fg=#14161f bg=#fb923c bold  ; BadgeText, on AgentOrange
+i fg=#999999  ; Dim, ModeSupervised, SyntaxComment
+j picture=000001
+k logo=claude
+l bg=#b44a4e
+m bg=#8c5a4c
+n bg=#4a627c
+o bg=#3e5a9a
+p bg=#4e5e48
+q fg=#f7a07f  ; CliClaude

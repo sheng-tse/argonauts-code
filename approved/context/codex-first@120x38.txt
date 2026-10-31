@@ -62,8 +62,8 @@ key
 a fg=#b1b9f9  ; Code, Question, BarFill, CatMcp
 b fg=#c8d3f5 bold  ; the terminal's own
 c fg=#c8d3f5  ; the terminal's own
-d bg=#b1b9f9  ; Code, Question, BarFill, CatMcp
-e fg=#14161f bg=#b1b9f9 bold  ; BadgeText, on Code, on Question, on BarFill, on CatMcp
+d bg=#fb923c  ; AgentOrange
+e fg=#14161f bg=#fb923c bold  ; BadgeText, on AgentOrange
 f fg=#999999  ; Dim, ModeSupervised, SyntaxComment
 g fg=#888888  ; Rule
 h fg=#d77757

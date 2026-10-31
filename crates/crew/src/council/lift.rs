@@ -38,7 +38,7 @@ pub fn review(host: &Host) -> EngineResult<()> {
             .collect()
     });
     let maker = |model: &ModelRef| roles::provider(host, model);
-    let names = DisplayNames::default();
+    let names = host.names();
     for council in councils {
         let Some(seating) = &council.seating else {
             continue;
@@ -69,7 +69,7 @@ pub fn review(host: &Host) -> EngineResult<()> {
         )?;
         let told = hidden_line(hidden, guesses_hidden)
             .into_iter()
-            .chain(lines(seating, &lift, &names));
+            .chain(lines(seating, &lift, names));
         for text in told {
             let note = Note {
                 level: NoteLevel::Info,

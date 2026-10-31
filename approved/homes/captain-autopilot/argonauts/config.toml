@@ -1,0 +1,15 @@
+# Set up with Captain, every approval on Autopilot and vim keys. agents.json holds each CLI's
+# plan usage as read at a time still to come, so the app never asks the fake CLIs, which have no
+# usage to give, to read it again, and never shows its age.
+workflow = "captain"
+
+[crew]
+main = "claude-code"
+worker = ["claude-code", "codex", "antigravity-cli", "opencode"]
+reviewer = ["claude-code", "codex", "antigravity-cli", "opencode"]
+judge = ["claude-code", "codex", "antigravity-cli", "opencode"]
+[approvals]
+autopilot = true
+
+[ui]
+keys = "vim"

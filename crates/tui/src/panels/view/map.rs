@@ -144,4 +144,8 @@ impl MapView for OverviewView {
     fn drag(&mut self, to: MapPoint) -> bool {
         self.behaviors_map_shown() && self.home.behaviors.drag(to)
     }
+
+    fn take_failure(&self) -> Option<String> {
+        self.home.behaviors.take_picture_failure()
+    }
 }

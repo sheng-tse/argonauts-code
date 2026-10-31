@@ -12,8 +12,9 @@
 //! against the runs in line, count the frames, and time how long a key takes to reach the
 //! screen.
 //!
-//! The timed runs judge the thread's own CPU on performance cores, or the wall clock, so they run
-//! one at a time on an optimized build:
+//! The timed runs judge the thread's own CPU on performance cores, each second as the reference
+//! Mac would have spent it by the yardstick timed after it (`testing::timing::yardstick`), or
+//! the wall clock, so they run one at a time on an optimized build:
 //! `cargo test --release -p argonauts-tui --lib -- --ignored --test-threads=1 world_cost`.
 
 use std::time::{Duration, Instant};
@@ -29,10 +30,11 @@ use super::super::*;
 use crate::app::model::ViewModel;
 use crate::base::theme::{Glyphs, Theme};
 use crate::frame::state::AppState;
-use crate::panels::stats::behaviors::{ASSUMED_CELL, crews, sample};
+use crate::panels::stats::behaviors::{ASSUMED_CELL, Level, Zoom, crews, sample};
 use crate::panels::{OverviewView, Tab, UsageWatch};
 use crate::terminal::InlineTerminal;
 use crate::testing::timing::cpu_time::{Spent, Stopwatch};
+use crate::testing::timing::yardstick;
 use crate::world::Picture;
 use crate::world::map::fields::crews::Key;
 
@@ -74,16 +76,19 @@ const WINDOWS_FOR_A_GLOBE: [Window; 3] = [USUAL, WIDE, BIG];
 /// The keys from the map that light the list's first row: a group compared, then down into
 /// its behaviors.
 const LIGHT_A_ROW: [KeyCode; 2] = [KeyCode::Right, KeyCode::Down];
-/// How many times a second the pointer moves while it sweeps the map: as often as the motion
-/// steps.
+/// How many times a second the pointer moves, and a key goes down or up the list, while the pointer
+/// sweeps the map.
 const MOVES_A_SECOND: u32 = 8;
 /// How long a run draws before it is judged: a minute to draw what the world keeps, a planet's
 /// whole first turn among it.
 const FIRST_TURN: u64 = 61;
-/// How much more the world on threads may send a step than in line, in hundredths: the two
-/// runs judge different steps, whose parts move by different amounts, about 1% apart over 10 s.
-/// A picture sent again is caught on its own.
+/// How much more the world on threads may send a step than in line, in hundredths. Both runs
+/// cover whole cycles, so their steps move by the same amounts on average. A picture sent again
+/// is caught on its own.
 const MORE_A_STEP: u128 = 5;
+/// Seconds in which every loop of the world comes round, so a run over whole cycles sends what
+/// the motion sends on average, wherever in its loops it started.
+const CYCLE: u64 = 30;
 
 /// What the hands do while a run is judged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -322,7 +327,7 @@ impl Panel {
     fn step_at(&self, now: Instant) -> Option<u128> {
         let map = &self.ui.map;
         let mut steps = map.steps?;
-        Some(steps.index(now, map.sources.step(now)))
+        Some(steps.index(now, map.sources.step(now, map.rate())))
     }
 
     /// As [`Panel::run`] with nothing moving but the world: the bytes sent, and how many of the
@@ -474,10 +479,12 @@ impl Live {
         self.run_until(panel, |done| done.len() as u64 >= seconds)
     }
 
-    /// As [`Live::run`], until `seconds` of the seconds ran on performance cores.
-    fn judged_run(&mut self, panel: &mut Panel, seconds: usize) -> Drew {
+    /// As [`Live::run`], until `seconds` of the seconds ran on performance cores and then on to
+    /// the end of a whole number of cycles.
+    fn judged_cycles(&mut self, panel: &mut Panel, seconds: usize) -> Drew {
         self.run_until(panel, |done| {
             crate::testing::timing::cpu_time::measured(done, seconds)
+                && (done.len() as u64).is_multiple_of(CYCLE)
         })
     }
 
@@ -486,6 +493,10 @@ impl Live {
         let first = panel.step_at(Instant::now());
         let mut last_drawn = None;
         while !done(&drew.cpu) {
+            // Someone at the keys, as far as the map's clock can tell, so a run longer than two
+            // minutes isn't held still for want of input; nothing reaches the screen.
+            let idle = Event::Key(KeyEvent::new(KeyCode::Null, KeyModifiers::NONE));
+            panel.ui.notice_for_map(&idle, Instant::now());
             let end = Instant::now() + Duration::from_secs(1);
             let watch = Stopwatch::start();
             let (mut frames, mut arrivals) = (0, 0);
@@ -512,10 +523,33 @@ impl Live {
         drew
     }
 
-    /// How long `key` takes to reach the screen: from the key until a frame has sent the scene
-    /// it changed, with none of its pictures still being packed.
+    /// How long `key` takes to reach the screen, as the reference Mac would have taken it: from
+    /// the key until a frame has sent the scene it changed, with none of its pictures still
+    /// being packed, divided by the pace of the yardstick timed on the screen's thread right
+    /// after. A machine too slow to compare with the reference fails.
     fn key_to_screen(&mut self, panel: &mut Panel, key: KeyCode) -> Duration {
         let before = panel.scene().map(|scene| deliver::look(&scene));
+        self.key_until(panel, key, Duration::ZERO, |shown| {
+            shown.map(deliver::look) != before
+        })
+    }
+
+    /// As [`Live::key_to_screen`], until the level `key` goes into holds still on the screen
+    /// after the zoom into it, which takes `zoom` of the wall clock and isn't counted.
+    fn key_past_zoom(&mut self, panel: &mut Panel, key: KeyCode, zoom: Duration) -> Duration {
+        let before = panel.scene().map(|scene| deliver::look(&scene));
+        self.key_until(panel, key, zoom, |shown| {
+            shown.is_some_and(|scene| !scene.moves && Some(deliver::look(scene)) != before)
+        })
+    }
+
+    fn key_until(
+        &mut self,
+        panel: &mut Panel,
+        key: KeyCode,
+        uncounted: Duration,
+        reached: impl Fn(Option<&Scene>) -> bool,
+    ) -> Duration {
         panel.at = Instant::now();
         let pressed = panel.at;
         panel.keys(&[key]);
@@ -527,9 +561,16 @@ impl Live {
             );
             panel.at = Instant::now();
             panel.frame();
-            let shown = panel.scene().map(|scene| deliver::look(&scene));
-            if shown != before && !panel.ui.map.stage.is_packing() {
-                return pressed.elapsed();
+            if reached(panel.scene().as_deref()) && !panel.ui.map.stage.is_packing() {
+                let took = pressed.elapsed().saturating_sub(uncounted);
+                let pace = yardstick::pace(yardstick::measure());
+                assert!(
+                    pace > 0.0 && pace <= yardstick::SLOWEST,
+                    "{key:?}: the yardstick took {pace:.2} times as long as on the reference \
+                     Mac, too slow to judge against limits set there"
+                );
+                eprintln!("{key:?} reached the screen in {took:?} here, at {pace:.2} the pace");
+                return took.div_f64(pace);
             }
         }
     }
@@ -690,7 +731,7 @@ fn the_world_on_threads_draws_a_frame_only_when_something_arrived() {
         for key in [Key::R, Key::T] {
             let mut panel = Panel::open(key, window);
             panel.run(FIRST_TURN, Hands::Off);
-            in_line.push(panel.steps(10));
+            in_line.push(panel.steps(CYCLE));
         }
     }
     let mut in_line = in_line.into_iter();
@@ -700,7 +741,7 @@ fn the_world_on_threads_draws_a_frame_only_when_something_arrived() {
             let mut panel = Panel::on_threads(key, window, false);
             let mut live = Live::new();
             live.run(&mut panel, FIRST_TURN);
-            let drew = live.judged_run(&mut panel, 10);
+            let drew = live.judged_cycles(&mut panel, 10);
             let what = format!("the world on threads, crew {key:?} at {:?}", window.size);
             let frames: u32 = drew.frames.iter().sum();
             let arrivals: u32 = drew.arrivals.iter().sum();
@@ -737,9 +778,9 @@ fn the_world_on_threads_draws_a_frame_only_when_something_arrived() {
     }
 }
 
-/// With the world drawn and packed on threads, a key reaches the screen within two steps of the
-/// motion when it only lights a row, and inside half a second when it asks for a new look of
-/// the map or goes to the planet.
+/// With the world drawn and packed on threads, a key reaches the screen, as the reference Mac
+/// would have taken it, within two steps of the motion when it only lights a row, and inside
+/// half a second when it asks for a new look of the map or goes to the planet.
 #[test]
 #[ignore = "timed: run alone on an optimized build"]
 fn a_key_reaches_the_screen_in_time() {
@@ -755,9 +796,18 @@ fn a_key_reaches_the_screen_in_time() {
             let next = live.key_to_screen(&mut panel, KeyCode::Down);
             live.run(&mut panel, 1);
             let planet = live.key_to_screen(&mut panel, KeyCode::Char('2'));
+            live.run(&mut panel, 1);
+            live.key_to_screen(&mut panel, KeyCode::Char('3'));
+            panel.keys(&[KeyCode::Right]);
+            // Time for the picked galaxy to be drawn ahead while the universe shows.
+            live.run(&mut panel, 3);
+            let rate = panel.ui.map.rate();
+            let zoom = Zoom::new(Level::Universe, Level::Galaxy(0), panel.at, rate).lasts();
+            let galaxy = live.key_past_zoom(&mut panel, KeyCode::Enter, zoom);
             eprintln!(
-                "crew {key:?} at {:?}: a new look in {look:?}, a lit row in {lit:?}, the next \
-                 row in {next:?}, the planet in {planet:?}",
+                "crew {key:?} at {:?}, as on the reference Mac: a new look in {look:?}, a lit \
+                 row in {lit:?}, the next row in {next:?}, the planet in {planet:?}, the \
+                 picked galaxy {galaxy:?} after its zoom of {zoom:?}",
                 window.size
             );
             assert!(look < Duration::from_millis(500), "a new look: {look:?}");
@@ -766,6 +816,10 @@ fn a_key_reaches_the_screen_in_time() {
             assert!(
                 planet < Duration::from_millis(500),
                 "the planet: {planet:?}"
+            );
+            assert!(
+                galaxy < Duration::from_millis(250),
+                "the picked galaxy: {galaxy:?}"
             );
         }
     }

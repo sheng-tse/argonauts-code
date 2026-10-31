@@ -77,7 +77,7 @@ pub(super) fn title(kit: &Kit<'_>, title: &str, hint: &str) -> Vec<Span<'static>
     ]
 }
 
-/// `└ 237 tools · 0 tokens`.
+/// `└ 14 tools · 0 tokens`.
 pub(super) fn folded(kit: &Kit<'_>, whole: &str) -> Vec<Span<'static>> {
     vec![
         Span::raw(" ".repeat(INDENT)),
@@ -94,7 +94,7 @@ pub(super) fn branch(at: usize, of: usize) -> &'static str {
     }
 }
 
-/// `193 tools · 0 tokens`.
+/// `9 tools · 2.1k tokens`.
 fn holds(n: usize, noun: &str, tokens: u64) -> String {
     format!(
         "{} \u{b7} {} tokens",

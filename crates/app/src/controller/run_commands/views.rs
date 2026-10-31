@@ -178,7 +178,7 @@ pub(crate) async fn view(ctx: &mut Ctx, runs: &mut RunsState, view: ViewRequest)
         ViewRequest::RepoFiles => anyhow::bail!("the repo's files aren't a run's"),
         ViewRequest::Learning { .. } => anyhow::bail!("the Learning pickers aren't run views"),
         ViewRequest::Issues => anyhow::bail!("the issue list isn't a run's"),
-        ViewRequest::DeepOffer => anyhow::bail!("the questions of Summaries aren't a run's"),
+        ViewRequest::DeepOffer { .. } => anyhow::bail!("the questions of Summaries aren't a run's"),
         ViewRequest::SeatKey { .. } => anyhow::bail!("a seat's key isn't a run's view"),
     }
     Ok(Vec::new())
@@ -335,7 +335,7 @@ fn local_servers(settings: &Settings, rows: &[ContextRow]) -> Vec<String> {
 }
 
 /// What holds `worker`'s window to its size, from the registry. A CLI's model routed to a
-/// server, as OpenCode's `ollama/qwen3-coder:30b-64k`, has the most the model takes and the
+/// server, as OpenCode's `ollama/qwen3-coder:30b`, has the most the model takes and the
 /// server's cap from the server's own entry for it, and the CLI's figure from the CLI's.
 pub(crate) fn window_figures(registry: &dyn ModelRegistry, worker: &ModelRef) -> WindowFigures {
     let own = registry.get(worker);
@@ -671,17 +671,9 @@ mod window_tests {
     #[test]
     fn a_routed_model_s_window_has_each_figure_that_holds_it() {
         let registry = StaticRegistry::default();
-        registry.add(entry(
-            "ollama/qwen3-coder:30b-64k",
-            Some(262_144),
-            Some(65_536),
-        ));
-        registry.add(entry(
-            "opencode/ollama/qwen3-coder:30b-64k",
-            None,
-            Some(65_536),
-        ));
-        let worker: ModelRef = "opencode/ollama/qwen3-coder:30b-64k".parse().unwrap();
+        registry.add(entry("ollama/qwen3-coder:30b", Some(262_144), Some(65_536)));
+        registry.add(entry("opencode/ollama/qwen3-coder:30b", None, Some(65_536)));
+        let worker: ModelRef = "opencode/ollama/qwen3-coder:30b".parse().unwrap();
         assert_eq!(
             window_figures(&registry, &worker),
             WindowFigures {
@@ -694,8 +686,8 @@ mod window_tests {
             }
         );
         // A model straight on its server has no CLI between.
-        let gemma: ModelRef = "ollama/gemma3:12b-32k".parse().unwrap();
-        registry.add(entry("ollama/gemma3:12b-32k", Some(131_072), Some(32_768)));
+        let gemma: ModelRef = "ollama/gemma3:12b".parse().unwrap();
+        registry.add(entry("ollama/gemma3:12b", Some(131_072), Some(32_768)));
         let figures = window_figures(&registry, &gemma);
         assert_eq!(figures.cli, None);
         assert_eq!(figures.server.map(|cap| cap.tokens), Some(32_768));
@@ -729,8 +721,8 @@ mod window_tests {
         };
         let mut settings = Settings::default();
         let rows = [
-            row("opencode/ollama/qwen3-coder:30b-64k"),
-            row("ollama/gemma3:12b-32k"),
+            row("opencode/ollama/qwen3-coder:30b"),
+            row("ollama/gemma3:12b"),
             row("opencode/openrouter/qwen3-coder"),
             row("claude-code/claude-haiku-5-5"),
         ];

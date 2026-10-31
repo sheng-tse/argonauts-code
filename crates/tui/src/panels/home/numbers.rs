@@ -14,18 +14,26 @@ use ratatui::text::Span;
 use time::Duration;
 
 use super::facts::{fun_fact, worth_knowing};
-use super::look::{big, days, dollars, duration, hour_word, model_word, share, short_date};
+use super::look::{Unit, big, days, dollars, duration, hour_word, model_word, share, short_date};
 use crate::base::format::{self, UNKNOWN, thousands};
 use crate::base::kit::legend::{self, BEFORE_NUMBERS, BEFORE_SHARE, BETWEEN_WORDS, Entry};
 use crate::base::kit::{Drawn, Kit, fit, ljust};
 use crate::base::text::{str_width, truncate_spans};
 use crate::base::theme::Role;
 use crate::panels::stats::draw;
+use crate::panels::view::subtabs::chosen_word;
 
-/// The app's own count, the longest of Tokens' labels, and what stands after it where
-/// Claude Code's own count is shown too.
-const OURS: &str = "Argonauts Code";
-const ADDS: &str = "+ workflow agents";
+/// What a CLI's count holds, after its value: the CLI's own files where they were imported,
+/// else only what ran through the app.
+const OWN_FILES: &str = "from its own files";
+const RAN_HERE: &str = "only what ran here";
+/// The CLIs' counts added up.
+const ALL_CLIS: &str = "All CLIs";
+/// The CLI whose own count `claude_stats` is.
+const STATS_CLI: &str = "claude-code";
+/// Tokens' labels at their widest before the Days group moves: a 13-cell name and a number's
+/// room.
+const NAMES_MOST: usize = 16;
 /// In a group the label's column and the value's, and the second group's column.
 const LABEL: usize = 13;
 const VALUE: usize = 10;
@@ -60,15 +68,10 @@ const PAYERS: [(Billing, &str, Role); 3] = [
     (Billing::Paid, "Paid", Role::AgentPurple),
 ];
 
-/// Tokens' column of labels: the longest, the app's own name, and a number's room.
-fn names_column() -> usize {
-    str_width(OURS) + BEFORE_NUMBERS
-}
-
 /// The first group's column, the widest: its labels are names and its notes words, with a
 /// column of words' room after them.
 fn tokens_column() -> usize {
-    names_column() + VALUE + str_width(ADDS) + BETWEEN_WORDS
+    NAMES_MOST + VALUE + str_width(RAN_HERE) + BETWEEN_WORDS
 }
 
 /// From this width the groups stand side by side: two columns, then the third's label, its
@@ -218,22 +221,54 @@ impl Numbers<'_> {
         drawn
     }
 
+    /// Each CLI with tokens, the most first, saying what its count holds; where there are
+    /// several, all of them added up; then what they're worth. The counts share the total's
+    /// unit, so they line up and add up.
+    fn tokens(&self) -> Vec<Fact> {
+        let data = self.data;
+        let total = data.total.total();
+        let unit = Unit::for_largest(total);
+        let clis = data.by_cli();
+        let mut facts: Vec<Fact> = clis
+            .iter()
+            .map(|(agent, tokens)| {
+                Fact::new(
+                    self.names.cli(agent),
+                    unit.write(*tokens),
+                    self.holds(agent),
+                )
+            })
+            .collect();
+        if clis.len() != 1 {
+            let note = match clis.len() {
+                0 => String::new(),
+                n => format!("the {} added up", count_word(n)),
+            };
+            facts.push(Fact::new(ALL_CLIS, unit.write(total), note));
+        }
+        facts.push(Fact::new("API value", dollars(data.api_value), ""));
+        facts
+    }
+
+    /// What `agent`'s count holds: what Claude Code's /stats says beside its count, the CLI's
+    /// own files where they were imported, else what ran through the app.
+    fn holds(&self, agent: &str) -> String {
+        let imported = self
+            .data
+            .sources
+            .iter()
+            .any(|source| source.agent == agent && source.imported);
+        match self.data.claude_stats {
+            Some(own) if agent == STATS_CLI => own_note(&own, self.data),
+            _ if imported => OWN_FILES.to_owned(),
+            _ => RAN_HERE.to_owned(),
+        }
+    }
+
     fn facts(&self) -> [Group; 3] {
         let data = self.data;
-        let own = data.claude_stats;
-        let mut tokens = Vec::new();
-        if let Some(own) = own {
-            let counted = own_note(&own, data);
-            tokens.push(Fact::new(
-                self.names.cli("claude-code"),
-                big(own.tokens),
-                counted,
-            ));
-        }
-        // What /stats leaves out is said only beside its count.
-        let adds = own.map_or("", |_| ADDS);
-        tokens.push(Fact::new(OURS, big(data.total.total()), adds));
-        tokens.push(Fact::new("API value", dollars(data.api_value), ""));
+        let tokens = self.tokens();
+        let names = tokens.iter().map(|fact| str_width(&fact.label)).max();
 
         let peak_hour = data
             .hours
@@ -278,7 +313,7 @@ impl Numbers<'_> {
         [
             Group {
                 title: "Tokens",
-                labels: names_column(),
+                labels: names.unwrap_or(0) + BEFORE_NUMBERS,
                 facts: tokens,
             },
             Group {
@@ -467,14 +502,25 @@ impl Numbers<'_> {
     }
 }
 
-/// What stands after Claude Code's own count: that it is /stats', or the day /stats last
+/// What stands after Claude Code's count: what its own /stats says, and the day /stats last
 /// counted when that was before yesterday.
 fn own_note(own: &OwnCount, data: &OverviewData) -> String {
     if own.through + Duration::days(1) >= data.today {
-        "as /stats counts".to_owned()
+        format!("/stats says {}", big(own.tokens))
     } else {
-        format!("/stats to {}", short_date(own.through))
+        format!("/stats to {}: {}", short_date(own.through), big(own.tokens))
     }
+}
+
+/// `two` to `twelve`, and digits past them.
+fn count_word(count: usize) -> String {
+    const WORDS: [&str; 11] = [
+        "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
+    ];
+    count
+        .checked_sub(2)
+        .and_then(|at| WORDS.get(at))
+        .map_or_else(|| count.to_string(), |word| (*word).to_owned())
 }
 
 /// The parts as one thin bar, each its share of the cells.
@@ -520,7 +566,8 @@ fn under_one_another(
     rows
 }
 
-/// `All time · Last 7 days · Last 30 days`, the one shown bold in the accent.
+/// `All time · Last 7 days · Last 30 days`, the one shown bold in lavender, since `r` changes
+/// it and the arrows never do.
 pub fn periods(kit: &Kit<'_>, shown: OverviewPeriod) -> Drawn {
     let mut row = Vec::new();
     for (at, period) in OverviewPeriod::ALL.into_iter().enumerate() {
@@ -528,9 +575,9 @@ pub fn periods(kit: &Kit<'_>, shown: OverviewPeriod) -> Drawn {
             row.push(kit.dim(" · "));
         }
         row.push(if period == shown {
-            Span::styled(period.title(), kit.bold(Role::Question))
+            chosen_word(kit, period.title(), false)
         } else {
-            kit.dim(period.title())
+            Span::raw(period.title())
         });
     }
     let mut drawn = Drawn::new();

@@ -24,9 +24,10 @@ env:
   RUST_TOOLCHAIN: "1.95.0"
   RUNS: "10"
   PACKAGES: -p argonauts-scenarios -p argonauts-tui -p argonauts-testkit
-  # Every scenario test, the screen's pty tests, and the pty driver's own.
+  # Every scenario test but the drawings runner, which CI runs alone on the release build, the
+  # screen's pty tests, and the pty driver's own.
   TESTS: >-
-    package(argonauts-scenarios)
+    (package(argonauts-scenarios) & not test(=app_drawings::every_drawing_matches_the_app))
     | (package(argonauts-tui) & binary(it) & test(/^pty_/))
     | (package(argonauts-testkit) & binary(it) & test(/^pty::/))
 

@@ -80,6 +80,9 @@ pub struct Reader {
     /// A start of a workflow Argonauts Code turned down, said once its speaker's turn ends, by
     /// the speaker's stream: a later start in the same turn that works drops it, as on screen.
     refused_starts: BTreeMap<String, Vec<String>>,
+    /// What the last header said. A start sends the header before the CLI checks and again
+    /// with what they found, so a later header says only what's new.
+    header_said: Vec<String>,
 }
 
 impl Reader {
@@ -101,6 +104,7 @@ impl Reader {
             take_over: None,
             offer: None,
             refused_starts: BTreeMap::new(),
+            header_said: Vec::new(),
         }
     }
 
@@ -124,6 +128,10 @@ impl Reader {
             return said;
         }
         let mut lines = lines_for(event, &self.state);
+        if let AppEvent::Welcome { .. } = event {
+            let before = std::mem::replace(&mut self.header_said, lines.clone());
+            lines.retain(|line| !before.contains(line));
+        }
         if let AppEvent::View { data } = event {
             self.offer = Offer::for_view(data, &self.state.names);
             lines.extend(self.offer.as_ref().map(|offer| offer.hint().to_owned()));

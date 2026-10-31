@@ -72,10 +72,7 @@ impl LandMark {
                 } else {
                     format!("{low} to {high}")
                 };
-                format!(
-                    "Plateau · {quoted} · {count} actions, {weeks} in every week of the period: \
-                     a steady habit"
-                )
+                format!("Plateau · {quoted} · {count} actions, {weeks} every week: a steady habit")
             }
             LandKind::Basin { from, total } => format!(
                 "Basin · agents came to {quoted} from {} other behaviors, {total} times",

@@ -17,6 +17,7 @@
 
 use argonauts_core::TaskId;
 use argonauts_core::base::names::{DecisionId, ModelRef, RoleName};
+use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::runs::events::plan::{DesignDecision, LimitPlan, TaskGraph};
 use argonauts_core::runs::events::task::{TaskKind, TaskSpec, TaskWay, Way};
 use argonauts_core::settings::Settings;
@@ -133,6 +134,7 @@ pub fn parse(note: &str) -> Result<Vec<Edit>, String> {
 /// Applies the edits and checks the result like a proposal. A way must be one `offer` holds.
 /// `Err` is the reason to reopen the approval with.
 pub fn apply(
+    names: &DisplayNames,
     graph: &TaskGraph,
     limit: &LimitPlan,
     edits: &[Edit],
@@ -184,6 +186,7 @@ pub fn apply(
                     how: way.clone(),
                     asked_by_you: true,
                     steps: None,
+                    why: None,
                 });
                 if !changed_ways.iter().any(|(changed, _)| changed == task) {
                     changed_ways.push((task.clone(), had));
@@ -222,8 +225,8 @@ pub fn apply(
     }
     follow_reviewers(&mut tasks, &reviewers, &workers);
     let mut broken = graph::rules(&tasks, settings);
-    broken.extend(conflicts(&tasks, settings, provider));
-    broken.extend(same_maker_checks(&tasks, settings, provider));
+    broken.extend(conflicts(names, &tasks, settings, provider));
+    broken.extend(same_maker_checks(names, &tasks, settings, provider));
     broken.extend(
         changed_ways
             .iter()
@@ -310,6 +313,7 @@ pub fn way_lines(edited: &Edited) -> Vec<String> {
 /// for each reviewer of a task that is its worker's maker while another maker could check.
 /// With one maker set up, a fresh session of it checks, marked Same maker.
 pub fn same_maker_checks(
+    names: &DisplayNames,
     tasks: &[TaskSpec],
     settings: &Settings,
     provider: &dyn Fn(&ModelRef) -> String,
@@ -327,8 +331,10 @@ pub fn same_maker_checks(
         }
         for reviewer in task.reviewers.iter().filter(|r| provider(r) == maker) {
             broken.push(format!(
-                "{reviewer} is the same maker as {worker}, {}'s worker, and another maker is \
-                 set up to check it.",
+                "{} is the same maker as {}, {}'s worker, and another maker is set up to check \
+                 it.",
+                names.worker(reviewer),
+                names.worker(worker),
                 task.id
             ));
         }
@@ -337,6 +343,7 @@ pub fn same_maker_checks(
 }
 
 fn conflicts(
+    names: &DisplayNames,
     tasks: &[TaskSpec],
     settings: &Settings,
     provider: &dyn Fn(&ModelRef) -> String,
@@ -346,16 +353,18 @@ fn conflicts(
     for task in tasks {
         let Some(worker) = &task.worker else { continue };
         for reviewer in &task.reviewers {
-            if let Some(reason) =
-                roles::conflict(RoleName::Reviewer, reviewer, Some(worker), provider)
-            {
-                broken.push(format!("{reason} ({}).", task.id));
+            let own = roles::conflict(RoleName::Reviewer, reviewer, Some(worker), provider);
+            if let Some(what) = own {
+                let who = names.worker(reviewer);
+                broken.push(format!("{who} can't {what} ({}).", task.id));
             } else if !council
                 && settings.review.other_provider
                 && provider(reviewer) == provider(worker)
             {
                 broken.push(format!(
-                    "{reviewer} is in the same provider as {worker}, {}'s worker.",
+                    "{} is in the same provider as {}, {}'s worker.",
+                    names.worker(reviewer),
+                    names.worker(worker),
                     task.id
                 ));
             }
@@ -367,7 +376,7 @@ fn conflicts(
         {
             broken.push(format!(
                 "{} can't write the acceptance tests for its own task {for_task}.",
-                roles::display_name(worker)
+                names.worker(worker)
             ));
         }
     }
@@ -531,6 +540,7 @@ mod tests {
         let offer = offer(&settings);
         let try_edit = |note: &str| {
             apply(
+                &DisplayNames::default(),
                 &graph,
                 &limit,
                 &parse(note).unwrap(),
@@ -650,6 +660,7 @@ mod tests {
             how: Way::OwnSession,
             asked_by_you: false,
             steps: None,
+            why: None,
         });
         settings.workflow = "orchestrator".to_owned();
         settings.crew.ways.workflows =
@@ -657,6 +668,7 @@ mod tests {
         let offer = offer(&settings);
         let try_edit = |graph: &TaskGraph, note: &str| {
             apply(
+                &DisplayNames::default(),
                 graph,
                 &limit,
                 &parse(note).unwrap(),
@@ -673,6 +685,7 @@ mod tests {
                 how: Way::Agents { count: 2 },
                 asked_by_you: true,
                 steps: None,
+                why: None,
             })
         );
         assert_eq!(edited.ways, [(TaskId::numbered(1), Some(Way::OwnSession))]);
@@ -724,23 +737,65 @@ mod tests {
         settings.review.other_provider = false;
         let note = parse("task-001 reviewers claude-code/sonnet").unwrap();
         let orchestrated = offer(&settings);
-        let edited = apply(&graph, &limit, &note, &settings, &provider, &orchestrated);
+        let edited = apply(
+            &DisplayNames::default(),
+            &graph,
+            &limit,
+            &note,
+            &settings,
+            &provider,
+            &orchestrated,
+        );
         assert!(edited.is_ok(), "{edited:?}");
+        settings.review.other_provider = true;
+        let reason = apply(
+            &DisplayNames::default(),
+            &graph,
+            &limit,
+            &note,
+            &settings,
+            &provider,
+            &orchestrated,
+        )
+        .unwrap_err();
+        assert_eq!(
+            reason,
+            "Sonnet on Claude Code is in the same provider as Opus on Claude Code, task-001's \
+             worker."
+        );
+        settings.review.other_provider = false;
 
         settings.workflow = "council".to_owned();
         let council = offer(&settings);
-        let reason = apply(&graph, &limit, &note, &settings, &provider, &council).unwrap_err();
+        let reason = apply(
+            &DisplayNames::default(),
+            &graph,
+            &limit,
+            &note,
+            &settings,
+            &provider,
+            &council,
+        )
+        .unwrap_err();
         assert_eq!(
             reason,
-            "claude-code/sonnet is the same maker as claude-code/opus, task-001's worker, and \
-             another maker is set up to check it."
+            "Sonnet on Claude Code is the same maker as Opus on Claude Code, task-001's worker, \
+             and another maker is set up to check it."
         );
 
         // With one maker set up, a fresh session of the same maker checks, even where reviews
         // otherwise come from another provider.
         settings.review.other_provider = true;
         settings.crew = vec![worker("claude-code/opus"), worker("claude-code/sonnet")].into();
-        let edited = apply(&graph, &limit, &note, &settings, &provider, &council);
+        let edited = apply(
+            &DisplayNames::default(),
+            &graph,
+            &limit,
+            &note,
+            &settings,
+            &provider,
+            &council,
+        );
         assert!(edited.is_ok(), "{edited:?}");
     }
 }

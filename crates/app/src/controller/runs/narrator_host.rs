@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Context;
+use argonauts_core::base::clock;
 use argonauts_core::base::layout::run_files;
 use argonauts_core::runs::events::RunEvent;
 use argonauts_core::safety::policy::{
@@ -14,7 +15,6 @@ use argonauts_core::safety::policy::{
 };
 use argonauts_core::settings::ui::NarratorMode;
 use argonauts_core::{RunId, Spend};
-use time::OffsetDateTime;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 
@@ -106,7 +106,7 @@ impl NarratorHost {
         let model = self.narrator.status().model;
         tokio::spawn(async move {
             let line = call.await.unwrap_or_else(|err| NarratorLine {
-                ts: OffsetDateTime::now_utc(),
+                ts: clock::now_utc(),
                 run: Some(run.clone()),
                 kind: NarratorLineKind::Notice,
                 text: format!("The narrator couldn't {what}: {err}."),
@@ -177,6 +177,7 @@ fn forward_lines(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use time::OffsetDateTime;
 
     #[test]
     fn lines_append_to_the_journal_and_a_failure_reports_once() {

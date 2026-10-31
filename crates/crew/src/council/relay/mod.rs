@@ -86,7 +86,7 @@ pub struct Relay {
     seating: Seating,
     letters: BTreeMap<SeatId, Letters>,
     lexicon: Lexicon,
-    names: DisplayNames,
+    pub(crate) names: DisplayNames,
 }
 
 impl Relay {

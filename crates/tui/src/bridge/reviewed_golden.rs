@@ -327,7 +327,6 @@ fn checks_a_reviewer_and_a_sign_off_read_as_drawn() {
         PICTURE,
         COLOURS,
         &theme,
-        &[],
     );
     let rows = &printed;
     let success = theme.style(Role::Success).fg;

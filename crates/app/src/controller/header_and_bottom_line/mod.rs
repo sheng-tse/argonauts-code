@@ -10,6 +10,7 @@ use std::time::SystemTime;
 use argonauts_core::RunId;
 use argonauts_core::Spend;
 use argonauts_core::app::{HeaderAndBottomLine, LineFacts, PlanUsageChip, UltraColour};
+use argonauts_core::base::clock;
 use argonauts_core::base::names::{AgentId, ModelRef};
 use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::models::limits::{HealthBoard, PlanUsageBoard, PlanUsageReading};
@@ -52,7 +53,7 @@ pub(crate) fn header_and_bottom_line(
     read_stale(
         &ctx.services.plan_usage,
         &settings.crew.members(),
-        OffsetDateTime::now_utc(),
+        clock::now_utc(),
         &ASKED,
     );
     let (main_agent, main_effort) = header_agent(ctx);
@@ -61,7 +62,7 @@ pub(crate) fn header_and_bottom_line(
         settings.ultracode,
         main_effort.as_deref(),
     );
-    let mut line = line_facts(&ctx.env, OffsetDateTime::now_utc());
+    let mut line = line_facts(&ctx.env, clock::now_utc());
     line.main_effort = main_effort;
     line.saves_to = settings.save_changes_to;
     line.runs_keep_awake = ctx.awake.runs_keep_awake(&settings.awake);
@@ -359,7 +360,7 @@ pub(crate) fn read_stale_at_start(ctx: &Ctx) {
     };
     let plan_usage = Arc::clone(&ctx.services.plan_usage);
     let crew = ctx.settings().crew.members();
-    let agent_ids: Vec<AgentId> = stale(plan_usage.as_ref(), &crew, OffsetDateTime::now_utc())
+    let agent_ids: Vec<AgentId> = stale(plan_usage.as_ref(), &crew, clock::now_utc())
         .into_iter()
         .filter(|worker| ctx.services.workers.get(worker).is_ok())
         .map(|worker| worker.agent_id())
@@ -429,7 +430,7 @@ pub(crate) fn plan_usage_chips(
             continue;
         }
         // The CLI's own live reading of the account signed in now, as the Usage tab shows it.
-        let now = OffsetDateTime::now_utc();
+        let now = clock::now_utc();
         let live = current_live(plan_usage, &agent_id, now);
         let windows: Vec<PlanUsageReading> = live
             .iter()
@@ -517,7 +518,7 @@ mod tests {
     #[tokio::test]
     async fn an_old_reading_is_read_again_and_a_fresh_one_is_left() {
         let counting = Arc::new(Counting::default());
-        let now = OffsetDateTime::now_utc();
+        let now = clock::now_utc();
         let live = |agent_id: &str, read_at: OffsetDateTime| {
             let mut live = argonauts_core::models::plan_usage::LiveUsage::new(
                 AgentId(agent_id.to_owned()),
@@ -568,7 +569,7 @@ mod tests {
     #[test]
     fn a_reading_that_names_no_account_is_read_again_before_it_fades() {
         let board = Counting::default();
-        let now = OffsetDateTime::now_utc();
+        let now = clock::now_utc();
         let unnamed = argonauts_core::models::plan_usage::LiveUsage::new(
             AgentId("antigravity-cli".to_owned()),
             argonauts_core::models::limits::PlanUsageSource::AppServer,
@@ -605,7 +606,7 @@ mod tests {
                 self.0.live(agent_id)
             }
             fn doubted_at(&self, _: &AgentId) -> Option<OffsetDateTime> {
-                Some(OffsetDateTime::now_utc())
+                Some(clock::now_utc())
             }
             fn probe(
                 &self,
@@ -615,7 +616,7 @@ mod tests {
             }
         }
         let board = Doubted(MemoryPlanUsageBoard::default());
-        let now = OffsetDateTime::now_utc();
+        let now = clock::now_utc();
         let mut named = argonauts_core::models::plan_usage::LiveUsage::new(
             AgentId("codex".to_owned()),
             PlanUsageSource::AppServer,
@@ -689,7 +690,7 @@ mod tests {
     fn the_bottom_lines_file_picks_its_parts_and_what_they_need() {
         let (parts, _) = TestCtx::new(CliOptions::default());
         let env = &parts.ctx.env;
-        let now = OffsetDateTime::now_utc();
+        let now = clock::now_utc();
         let shipped = line_facts(env, now);
         assert_eq!(shipped.settings, BottomLineSettings::default());
         assert_eq!((shipped.branch, shipped.spend_days.len()), (None, 0));
@@ -748,7 +749,7 @@ mod tests {
     fn the_most_used_clis_are_counted_over_30_days_once() {
         let (parts, _) = TestCtx::new(CliOptions::default());
         let env = &parts.ctx.env;
-        let now = OffsetDateTime::now_utc();
+        let now = clock::now_utc();
         let ledger = UsageLedger::new(&env.paths);
         let turn = crate::usage::usage_ledger::TurnNote::default();
         let spend = |output_tokens| Spend {
@@ -817,7 +818,7 @@ mod tests {
         let mut live = argonauts_core::models::plan_usage::LiveUsage::new(
             AgentId("codex".to_owned()),
             argonauts_core::models::limits::PlanUsageSource::AppServer,
-            OffsetDateTime::now_utc(),
+            clock::now_utc(),
         );
         live.account = Some("me@example.com".to_owned());
         live.windows = vec![

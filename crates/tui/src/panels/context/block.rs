@@ -9,7 +9,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
 use super::words::{self, cc_style};
-use crate::base::format::{self, Figures};
+use crate::base::format::{self, Figures, UNKNOWN};
 use crate::base::kit::context::claude_code_free;
 use crate::base::kit::logo::logo_before;
 use crate::base::kit::{Drawn, Kit};
@@ -42,7 +42,9 @@ pub(super) struct Block<'a> {
     /// Whoever serves the model, whose logo goes before its name where one draws.
     pub logo: Option<Logo>,
     pub used: u64,
-    pub window: u64,
+    /// `None` while no list gives it: each figure that needs it shows `–`, and the grid is
+    /// empty.
+    pub window: Option<u64>,
     /// `used` of the window in whole percent, where the CLI said it.
     pub percent: Option<u64>,
     /// The line over the parts: `Estimated usage by category`.
@@ -65,11 +67,14 @@ pub(super) struct Block<'a> {
 
 /// The block's rows, starting at the grid's first.
 pub(super) fn rows(kit: &Kit<'_>, block: &Block<'_>, width: usize) -> Drawn {
-    let window = block.window.max(1);
-    let percent = match block.percent {
-        Some(percent) => Figures::Table.share(percent, 100),
-        None => Figures::Table.share(block.used, window),
+    let window = block.window.map(|window| window.max(1));
+    let percent = match (block.percent, window) {
+        (Some(percent), _) => Figures::Table.share(percent, 100),
+        (None, Some(window)) => Figures::Table.share(block.used, window),
+        (None, None) => UNKNOWN.to_owned(),
     };
+    let share =
+        |tokens: u64| window.map_or_else(|| UNKNOWN.to_owned(), |w| words::share(tokens, w));
     let mut right: Vec<Vec<Span<'static>>> = Vec::new();
     let mut model = block
         .logo
@@ -80,11 +85,14 @@ pub(super) fn rows(kit: &Kit<'_>, block: &Block<'_>, width: usize) -> Drawn {
     right.push(model);
     right.push(vec![kit.dim(block.model_id.unwrap_or_default().to_owned())]);
     let (ours, used_ours) = (mark(block.parts_ours), mark(block.used_ours));
-    let count = |tokens: u64| beside(tokens, block.window);
-    let window_words = if binary(block.window) {
-        format::window(block.window)
-    } else {
-        format::context_tokens(block.window)
+    let count = |tokens: u64| match block.window {
+        Some(window) => beside(tokens, window),
+        None => format::context_tokens(tokens),
+    };
+    let window_words = match block.window {
+        Some(window) if binary(window) => format::window(window),
+        Some(window) => format::context_tokens(window),
+        None => UNKNOWN.to_owned(),
     };
     right.push(vec![kit.dim(format!(
         "{used_ours}{}/{window_words} tokens ({percent}){}",
@@ -104,18 +112,17 @@ pub(super) fn rows(kit: &Kit<'_>, block: &Block<'_>, width: usize) -> Drawn {
             kit.dim(format!(
                 "{ours}{} tokens ({})",
                 count(part.tokens),
-                words::share(part.tokens, window)
+                share(part.tokens)
             )),
         ]);
     }
     right.push(vec![
         Span::styled(format!("{} ", glyphs.free), claude_code_free(kit, false)),
         Span::raw("Free space: "),
-        kit.dim(format!(
-            "{used_ours}{} ({})",
-            count(block.free),
-            words::share(block.free, window)
-        )),
+        kit.dim(match window {
+            Some(_) => format!("{used_ours}{} ({})", count(block.free), share(block.free)),
+            None => format!("{UNKNOWN} ({UNKNOWN})"),
+        }),
     ]);
     if block.buffer > 0 {
         right.push(vec![
@@ -124,7 +131,7 @@ pub(super) fn rows(kit: &Kit<'_>, block: &Block<'_>, width: usize) -> Drawn {
             kit.dim(format!(
                 "{used_ours}{} tokens ({})",
                 count(block.buffer),
-                words::share(block.buffer, window)
+                share(block.buffer)
             )),
         ]);
     }
@@ -252,9 +259,15 @@ fn drawn_grid(
 fn worked_out_grid(kit: &Kit<'_>, block: &Block<'_>) -> Vec<Vec<Span<'static>>> {
     let glyphs = Glyphs::for_kit(kit);
     let total = ACROSS * DOWN;
-    let cell = block.window.max(1) as f64 / total as f64;
+    let cell = block.window.unwrap_or_default().max(1) as f64 / total as f64;
     let mut cells: Vec<(&'static str, Style)> = Vec::with_capacity(total);
-    for part in &block.parts {
+    // With no window there's no share to fill, so every cell stays free.
+    let filling = if block.window.is_some() {
+        &block.parts[..]
+    } else {
+        &[]
+    };
+    for part in filling {
         let exact = part.tokens as f64 / cell;
         let n = (exact.round() as usize).max(1);
         cells.extend((0..n).map(|at| {
@@ -267,7 +280,10 @@ fn worked_out_grid(kit: &Kit<'_>, block: &Block<'_>) -> Vec<Vec<Span<'static>>> 
             (glyph, part.style)
         }));
     }
-    let held = (block.buffer as f64 / cell).round() as usize;
+    let held = match block.window {
+        Some(_) => (block.buffer as f64 / cell).round() as usize,
+        None => 0,
+    };
     cells.truncate(total.saturating_sub(held));
     let free = total.saturating_sub(cells.len() + held);
     cells.extend(std::iter::repeat_n(
@@ -368,7 +384,7 @@ mod tests {
             model_id: Some("claude-opus-5-5"),
             logo: None,
             used,
-            window: 1_000_000,
+            window: Some(1_000_000),
             percent: None,
             heading: "Estimated usage by category".to_owned(),
             parts: parts
@@ -439,16 +455,16 @@ mod tests {
     /// no line of it is cut at 80 columns.
     #[test]
     fn a_column_too_wide_to_sit_beside_the_grid_goes_under_it_whole() {
-        let block = block(&[("MCP server instructions", 960)], 33_000);
+        let block = block(&[("MCP server instructions", 318)], 33_000);
         let beside = shown(&block, 118);
         assert!(
-            beside[5].ends_with("\u{26C1} MCP server instructions: 960 tokens (0.1%)"),
+            beside[5].ends_with("\u{26C1} MCP server instructions: 318 tokens (<0.1%)"),
             "{beside:#?}"
         );
         let rows = shown(&block, 80);
         assert!(rows.iter().all(|row| str_width(row) <= 80), "{rows:#?}");
         for whole in [
-            "\u{26C1} MCP server instructions: 960 tokens (0.1%)",
+            "\u{26C1} MCP server instructions: 318 tokens (<0.1%)",
             "\u{26DD} Autocompact buffer: 33k tokens (3.3%)",
         ] {
             assert!(rows.iter().any(|row| row.trim() == whole), "{rows:#?}");

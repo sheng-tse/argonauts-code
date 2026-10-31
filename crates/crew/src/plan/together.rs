@@ -24,7 +24,6 @@ use crate::engine::job_fallback::{self, Job};
 use crate::fallback::{judge, rules};
 use crate::plan::{context, drafts};
 use crate::prompts::plan::PICK_DRAFT;
-use crate::roles::display_name;
 use crate::workflow::StepAt;
 
 /// What the judge scores each draft on.
@@ -102,7 +101,7 @@ pub(super) async fn drafts(
             Ok(answered) => written.push(answered),
             Err(EngineError::Interrupted) => return Err(EngineError::Interrupted),
             Err(error) => {
-                let name = display_name(taker);
+                let name = host.names().worker(taker);
                 context::warn(host, None, format!("{name}'s draft failed: {error}"))?;
                 failed.get_or_insert(error);
             }
@@ -165,7 +164,7 @@ pub(super) async fn pick(
         Err(error) => {
             let why = format!(
                 "the judge, {}, couldn't answer ({error})",
-                display_name(&judge)
+                host.names().worker(&judge)
             );
             return keep_first(host, written, &why);
         }
@@ -184,8 +183,8 @@ pub(super) async fn pick(
     };
     let text = format!(
         "The judge, {}, picked {}'s draft out of {} · {}",
-        display_name(&judge),
-        display_name(&written[at].worker),
+        host.names().worker(&judge),
+        host.names().worker(&written[at].worker),
         written.len(),
         rationale.trim()
     );
@@ -224,7 +223,7 @@ fn keep_first(
     let first = written.swap_remove(0);
     let text = format!(
         "{}'s draft came first and is kept, since {why}",
-        display_name(&first.worker)
+        host.names().worker(&first.worker)
     );
     note(host, NoteLevel::Warn, text)?;
     Ok(first)
@@ -244,7 +243,7 @@ fn say_who_drafts(
     if more.iter().any(|taker| asked_before(host, at, taker)) {
         return Ok(());
     }
-    let names: Vec<String> = already.into_iter().chain(more).map(display_name).collect();
+    let names = host.names().workers(already.into_iter().chain(more));
     let who = match names.as_slice() {
         [] | [_] => return Ok(()),
         [one, other] => format!("{one} and {other} both draft"),
@@ -252,7 +251,7 @@ fn say_who_drafts(
     };
     let text = format!(
         "{who} the plan in place of {} · the judge picks the best · /fallback changes this",
-        display_name(drafting_agent)
+        host.names().worker(drafting_agent)
     );
     note(host, NoteLevel::Info, text)
 }

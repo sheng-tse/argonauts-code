@@ -2603,7 +2603,7 @@ async fn the_config_tab_names_what_the_behaviors_maps_auto_came_to() {
     store
         .save_layout(&Layout {
             maker: MapMaker {
-                summarizer: "ollama/qwen3-coder:30b-64k".to_owned(),
+                summarizer: "ollama/qwen3-coder:30b".to_owned(),
                 prompt: PROMPT_VERSION.to_owned(),
                 embedder: "ollama/nomic-embed-text".to_owned(),
             },

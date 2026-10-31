@@ -8,8 +8,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use argonauts_core::agents::session_runner::{Access, SessionLimits, SessionRunner, SessionSpec};
+use argonauts_core::base::clock;
 use argonauts_core::base::names::{ModelRef, SessionKey};
 use argonauts_core::base::paths::create_private_dir_all;
+use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::runs::asking::AskReply;
 use argonauts_core::runs::events::session::InputPartKind;
 use argonauts_core::settings::Settings;
@@ -19,7 +21,6 @@ use argonauts_core::workflows::steps::{StepError, StepRequest, StepRunner};
 use argonauts_crew::roles::candidates;
 use argonauts_crew::sessions::spec::{SpecInput, build};
 use argonauts_crew::workflow::claude_codes::{asked_of, review_of, said, verdict_schema};
-use time::OffsetDateTime;
 use tokio::sync::oneshot;
 
 use crate::controller::Ctx;
@@ -73,6 +74,7 @@ pub(crate) fn answer(ctx: &Ctx, asked: Asked, reply: oneshot::Sender<AskReply>) 
         return;
     };
     let settings = settings.clone();
+    let names = ctx.names.names();
     let steps = Arc::clone(&ctx.services.steps);
     let places = Places {
         sessions: ctx.env.conversation_dir().join("asks"),
@@ -85,7 +87,7 @@ pub(crate) fn answer(ctx: &Ctx, asked: Asked, reply: oneshot::Sender<AskReply>) 
         repo: ctx.env.repo_root.clone(),
     };
     tokio::spawn(async move {
-        let text = match ask(&settings, steps, handle, &model, &asked, &places).await {
+        let text = match ask(&settings, &names, steps, handle, &model, &asked, &places).await {
             Ok(text) => AskReply::text(text),
             Err(err) => AskReply {
                 text: format!("Argonauts Code couldn't ask them: {err:#}"),
@@ -109,6 +111,7 @@ struct Places {
 
 async fn ask(
     settings: &Settings,
+    names: &DisplayNames,
     steps: Arc<dyn StepRunner>,
     handle: Arc<dyn SessionRunner>,
     model: &ModelRef,
@@ -139,7 +142,7 @@ async fn ask(
         Err(_) => None,
     };
     if let Some(end) = end {
-        let now = OffsetDateTime::now_utc();
+        let now = clock::now_utc();
         let turn = TurnNote {
             conversation: None,
             took: end.duration_ms / 1000,
@@ -153,7 +156,7 @@ async fn ask(
             .ledger
             .turn_ended(&places.repo, model, &end.spend, turn, now);
     }
-    Ok(said(model, &review_of(&ran?.value)))
+    Ok(said(names, model, &review_of(&ran?.value)))
 }
 
 /// A read-only session of the asked model in the main session's folder, asked as a review or a

@@ -186,8 +186,9 @@ mod tests {
     const PS_EMPTY: &str = include_str!("../../../tests/fixtures/ollama/ps-empty.json");
     const PS_LOADED: &str = include_str!("../../../tests/fixtures/ollama/ps-loaded.json");
 
+    /// What `ollama show` answers for `tag`, the recorded tags and the made-up capped ones.
     fn shown(tag: &str) -> Shown {
-        let all: Value = serde_json::from_str(SHOW).unwrap();
+        let all = super::super::capped_twins::show(&serde_json::from_str(SHOW).unwrap());
         parse_show(&all[tag].to_string()).unwrap()
     }
 
@@ -196,8 +197,6 @@ mod tests {
         assert_eq!(
             parse_tags(TAGS).unwrap(),
             [
-                "gemma3:12b-32k",
-                "qwen3-coder:30b-64k",
                 "qwen3-coder:30b",
                 "gemma3:12b",
                 "gemma2:9b",
@@ -207,7 +206,8 @@ mod tests {
         );
     }
 
-    /// The numbers `ollama show` gives on the machine these were recorded on.
+    /// The numbers `ollama show` gives on the machine these were recorded on, and for a tag
+    /// made from one with `num_ctx` set.
     #[test]
     fn a_tags_most_tokens_and_cap_come_from_show() {
         let facts = |tag| {
@@ -215,14 +215,15 @@ mod tests {
             (shown.most, shown.cap, shown.tools, shown.thinking)
         };
         assert_eq!(
-            facts("qwen3-coder:30b-64k"),
+            facts("sample-coder:30b-64k"),
             (Some(262_144), Some(65_536), true, false)
         );
         assert_eq!(facts("qwen3-coder:30b"), (Some(262_144), None, true, false));
         assert_eq!(
-            facts("gemma3:12b-32k"),
+            facts("sample-gemma:12b-32k"),
             (Some(131_072), Some(32_768), false, false)
         );
+        assert_eq!(facts("gemma3:12b"), (Some(131_072), None, false, false));
         assert_eq!(facts("gemma2:9b"), (Some(8_192), None, false, false));
         assert_eq!(facts("gemma4:e2b"), (Some(131_072), None, true, true));
         assert_eq!(facts("llama3.2:latest"), (Some(131_072), None, true, false));
@@ -233,8 +234,8 @@ mod tests {
         let capped = entry(
             "ollama",
             true,
-            "gemma3:12b-32k",
-            Some(&shown("gemma3:12b-32k")),
+            "sample-gemma:12b-32k",
+            Some(&shown("sample-gemma:12b-32k")),
             None,
         )
         .unwrap();

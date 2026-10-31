@@ -1,6 +1,7 @@
-//! Which logo goes before a CLI's or a model's name: always whoever serves the model. The screen
-//! draws it in cells or as a picture; where no logo file exists it draws the serving agent's
-//! colour dot.
+//! Which logo goes before a CLI's or a model's name. A CLI has an icon and a maker or a model
+//! line has a logo: a row that names a CLI or a session shows whoever serves the model, and a
+//! row that names a model shows its line's logo. The screen draws it in cells or as a picture;
+//! where no logo file exists it draws the serving agent's colour dot.
 
 use serde::{Deserialize, Serialize};
 
@@ -42,10 +43,13 @@ pub enum LogoMark {
     Mistral,
     Meta,
     OpenRouter,
+    Claude,
+    Gemini,
+    Gemma,
 }
 
 impl LogoMark {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 14] = [
         Self::ClaudeCode,
         Self::Codex,
         Self::Antigravity,
@@ -57,6 +61,9 @@ impl LogoMark {
         Self::Mistral,
         Self::Meta,
         Self::OpenRouter,
+        Self::Claude,
+        Self::Gemini,
+        Self::Gemma,
     ];
 
     /// The stem its picture files are named by, as in `claudecode`.
@@ -73,6 +80,9 @@ impl LogoMark {
             Self::Mistral => "mistral",
             Self::Meta => "meta",
             Self::OpenRouter => "openrouter",
+            Self::Claude => "claude",
+            Self::Gemini => "gemini",
+            Self::Gemma => "gemma",
         }
     }
 
@@ -142,6 +152,23 @@ pub fn logo_for(cli: &str, model: Option<&str>) -> Logo {
     }
 }
 
+/// The logo before a row that names `model` itself rather than a session of it: its line's,
+/// as Claude's starburst before Opus 5.5 or Gemma's before Gemma 4, wherever it runs. A model
+/// whose line has no logo, or a CLI's default that nothing names, shows [`logo_for`]'s.
+pub fn model_logo(cli: &str, model: Option<&str>) -> Logo {
+    let line = model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+        .and_then(line_logo);
+    match line {
+        Some(mark) => Logo {
+            agent: AgentId(cli.trim().to_owned()),
+            mark: Some(mark),
+        },
+        None => logo_for(cli, model),
+    }
+}
+
 const OPENCODE: &str = "opencode";
 
 /// The logos' pictures go out under ids from here, two to a logo: its ink for dark screens, then
@@ -163,6 +190,20 @@ fn behind_opencode(model: &str) -> Option<LogoMark> {
         Some((OPENCODE, _)) => Some(LogoMark::OpenCode),
         Some((provider, _)) if serves_other_makers(provider) => LogoMark::of_agent(provider),
         _ => maker_of(model).and_then(|maker| maker.logo),
+    }
+}
+
+/// The logo of a model's line: Gemma's own, else its maker's.
+fn line_logo(model: &str) -> Option<LogoMark> {
+    let maker = maker_of(model)?;
+    let name = model.trim().to_ascii_lowercase();
+    let name = name.rsplit('/').next().unwrap_or(&name);
+    let gemma = ["gemma", "codegemma"]
+        .iter()
+        .any(|line| name.starts_with(line));
+    match gemma {
+        true => Some(LogoMark::Gemma),
+        false => maker.logo,
     }
 }
 
@@ -220,6 +261,47 @@ mod tests {
         );
     }
 
+    /// A row that names a model shows its line's logo wherever it runs, and a model whose
+    /// line has no logo keeps its server's.
+    #[test]
+    fn a_model_row_shows_its_lines_logo() {
+        for (cli, model, mark) in [
+            (
+                "claude-code",
+                Some("claude-opus-5-5"),
+                Some(LogoMark::Claude),
+            ),
+            (
+                "antigravity-cli",
+                Some("claude-sonnet-4-6"),
+                Some(LogoMark::Claude),
+            ),
+            (
+                "antigravity-cli",
+                Some("gemini-3.8-flash"),
+                Some(LogoMark::Gemini),
+            ),
+            ("codex", Some("gpt-6-luna"), Some(LogoMark::OpenAi)),
+            ("opencode", Some("ollama/gemma3:12b"), Some(LogoMark::Gemma)),
+            (
+                "opencode",
+                Some("ollama/qwen3-coder:30b"),
+                Some(LogoMark::Qwen),
+            ),
+            (
+                "opencode",
+                Some("opencode/big-pickle"),
+                Some(LogoMark::OpenCode),
+            ),
+            ("opencode", Some("lmstudio/olmo-3"), None),
+            ("codex", None, Some(LogoMark::Codex)),
+        ] {
+            let logo = model_logo(cli, model);
+            assert_eq!(logo.mark, mark, "{cli} {model:?}");
+            assert_eq!(logo.agent, AgentId(cli.into()), "{cli} {model:?}");
+        }
+    }
+
     /// A model OpenCode runs shows who stands behind it, and every logo keeps OpenCode's
     /// colour for its dot.
     #[test]
@@ -243,7 +325,7 @@ mod tests {
                 Some(LogoMark::OpenCode),
             ),
             (Some("opencode/big-pickle"), Some(LogoMark::OpenCode)),
-            (Some("anthropic/claude-sonnet-4-6"), None),
+            (Some("anthropic/claude-sonnet-4-6"), Some(LogoMark::Claude)),
             (Some("  "), Some(LogoMark::OpenCode)),
         ] {
             let logo = logo_for("opencode", model);

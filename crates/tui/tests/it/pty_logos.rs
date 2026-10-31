@@ -19,14 +19,14 @@ use argonauts_core::runs::events::council::{
     Seating, Speaker, TextPart,
 };
 use argonauts_core::workflows::workflow::StepRef;
-use argonauts_testkit::screen::{Cell, REAL_SIZES};
+use argonauts_testkit::screen::{Cell, PLACEHOLDER, REAL_SIZES};
 use serde_json::json;
 
 use crate::pty_support;
 use pty_support::*;
 
-/// Eleven logos, four of them in a second ink for light screens.
-const LOGO_PICTURES: usize = 15;
+/// Fourteen logos, four of them in a second ink for light screens.
+const LOGO_PICTURES: usize = 18;
 
 const ENTER_ALTERNATE: &str = "\x1b[?1049h";
 const LEAVE_ALTERNATE: &str = "\x1b[?1049l";
@@ -184,6 +184,94 @@ fn the_logos_show_again_after_a_program_you_ran_gives_the_screen_back() {
         "the full screen entered again"
     );
     assert_eq!(placements(&since_last_entry(&raw)), LOGO_PICTURES);
+    assert_eq!(logos_shown(&driver), 3);
+}
+
+/// Ctrl+Z gives the terminal back with a line that says how to return, and coming back enters
+/// the full screen again with every logo. Here no shell keeps jobs, so the stop is dropped and
+/// the app comes straight back, as it does after `fg`.
+#[test]
+fn ctrl_z_gives_the_terminal_back_and_the_logos_show_again_on_return() {
+    let mut driver = ghostty(three_plans(), 40, 177).start();
+    driver.wait_visible(METERS);
+    assert_eq!(logos_shown(&driver), 3);
+
+    driver.press(Key::Ctrl('z'));
+    driver.wait_until("the full screen entered again", |_| {
+        String::from_utf8_lossy(&driver.raw())
+            .matches(ENTER_ALTERNATE)
+            .count()
+            == 2
+    });
+    driver.wait_visible(METERS);
+    let raw = String::from_utf8_lossy(&driver.raw()).into_owned();
+    let left = raw
+        .rfind(LEAVE_ALTERNATE)
+        .expect("the full screen was left");
+    let back = raw
+        .rfind(ENTER_ALTERNATE)
+        .expect("the full screen entered again");
+    assert!(left < back);
+    assert!(
+        raw[left..back].contains("Argonauts Code is suspended. Run fg to bring it back."),
+        "{:?}",
+        &raw[left..back]
+    );
+    assert_eq!(placements(&raw[back..]), LOGO_PICTURES);
+    assert_eq!(logos_shown(&driver), 3);
+}
+
+/// In a shell that keeps jobs, Ctrl+Z stops the app and gives the shell its prompt under the
+/// line that says how to return, and `fg` brings the full screen back with every logo.
+#[test]
+fn ctrl_z_stops_the_app_for_the_shell_and_fg_brings_it_back_with_the_logos() {
+    stop_for_the_shell_and_come_back(ghostty(three_plans(), 40, 177).in_a_job_shell());
+}
+
+/// Started by a parent that waits on it, as npm's launcher starts it, the app is only one
+/// process of the shell's job, so Ctrl+Z stops the parent too, or the shell would never get
+/// its prompt.
+#[test]
+fn ctrl_z_under_a_waiting_parent_gives_the_shell_its_prompt_too() {
+    stop_for_the_shell_and_come_back(
+        ghostty(three_plans(), 38, 120).in_a_job_shell_under_a_waiting_parent(),
+    );
+}
+
+fn stop_for_the_shell_and_come_back(launch: Launch) {
+    let mut driver = launch.start();
+    driver.wait_visible(METERS);
+    assert_eq!(logos_shown(&driver), 3);
+
+    driver.press(Key::Ctrl('z'));
+    let prompt = JOB_PROMPT.trim_end();
+    let stopped = driver.wait_until("the shell's prompt under the suspended line", |screen| {
+        let rows: Vec<&str> = screen
+            .visible
+            .iter()
+            .map(|row| row.trim_end())
+            .filter(|row| !row.is_empty())
+            .collect();
+        rows.last() == Some(&prompt)
+            && rows
+                .iter()
+                .any(|row| row.contains("Argonauts Code is suspended. Run fg to bring it back."))
+    });
+    assert!(
+        !stopped.visible_text().contains("15%"),
+        "the full screen is gone while the app is stopped:\n{}",
+        stopped.visible_text()
+    );
+
+    driver.send("fg\r");
+    driver.wait_until("the full screen entered again", |_| {
+        String::from_utf8_lossy(&driver.raw())
+            .matches(ENTER_ALTERNATE)
+            .count()
+            == 2
+    });
+    driver.wait_visible(METERS);
+    assert_eq!(placements(&since_last_entry(&driver.raw())), LOGO_PICTURES);
     assert_eq!(logos_shown(&driver), 3);
 }
 
@@ -507,7 +595,8 @@ fn council_with_a_model_seated_twice() -> Script {
 /// A logo as its picture draws it: its mark, and its number when its model sits twice.
 type Pictured = (LogoMark, Option<u8>);
 
-/// Each row of the screen shown that draws a logo, as text, with the logos it shows.
+/// Each row of the screen shown that draws a logo, as text, with the logos it shows. Logos are
+/// placeholders; the mascot and the Council's bubbles are pictures placed over their cells.
 fn pictures_by_row(driver: &TestDriver) -> Vec<(String, Vec<Pictured>)> {
     driver.wait_for_pictures();
     driver
@@ -516,6 +605,7 @@ fn pictures_by_row(driver: &TestDriver) -> Vec<(String, Vec<Pictured>)> {
         .filter_map(|row| {
             let mut ids: Vec<u32> = row
                 .iter()
+                .filter(|cell| cell.text.starts_with(PLACEHOLDER))
                 .filter_map(|cell| cell.picture.filter(|picture| picture.shows))
                 .map(|picture| picture.id)
                 .collect();
@@ -523,12 +613,12 @@ fn pictures_by_row(driver: &TestDriver) -> Vec<(String, Vec<Pictured>)> {
             ids.dedup();
             let text: String = row
                 .iter()
-                .filter(|cell| cell.picture.is_none())
+                .filter(|cell| !cell.text.starts_with(PLACEHOLDER))
                 .map(|cell| cell.text.as_str())
                 .collect();
             let logos = ids
                 .into_iter()
-                .map(|id| LogoMark::of_picture(id).unwrap_or_else(|| panic!("picture {id}")))
+                .filter_map(LogoMark::of_picture)
                 .collect::<Vec<_>>();
             (!logos.is_empty()).then(|| (text.trim().to_owned(), logos))
         })

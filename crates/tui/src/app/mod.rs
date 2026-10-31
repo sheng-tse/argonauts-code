@@ -152,6 +152,8 @@ pub enum UiAction {
     Copy(String),
     /// Edit the draft in `$EDITOR` through [`Ui::with_restored`].
     EditDraft,
+    /// Ctrl+Z: give the terminal back to the shell and stop until `fg`.
+    Suspend,
     /// A key for the council talking on this screen: shift+↑ picks its newest message or
     /// task, and while one is picked every key is the picker's.
     CouncilKey(crossterm::event::KeyEvent),
@@ -500,6 +502,7 @@ impl<W: Write> Ui<W> {
                     None
                 };
                 let map = self.place_map(now);
+                self.place_council_pictures(false)?;
                 self.draw_alternate(now, state)?;
                 self.send_placing(placing)?;
                 self.send_map_placing(map)?;
@@ -909,6 +912,7 @@ impl<W: Write> Ui<W> {
 
     fn draw_inline(&mut self, now: Instant, state: Option<&AppState>) -> io::Result<()> {
         self.drain_history(now);
+        let under_text = self.under_text_cell();
         let dock = self.dock_lines(now, state);
         let screen = self.terminal.screen_size();
         let ctx = RenderCtx::new(screen.width, &self.theme, Clock::new(self.started, now))
@@ -935,6 +939,18 @@ impl<W: Write> Ui<W> {
         };
         let (trailing, pinned) = view.lines.split_at(view.trailing.min(view.lines.len()));
         let rows = |lines: &[Line<'_>]| u16::try_from(lines.len()).unwrap_or(u16::MAX);
+        if let Some(cell) = under_text {
+            council::keep_live_pictures(
+                &mut self.council_pictures,
+                &self.model.history,
+                (&view.whole, trailing),
+                &ctx,
+                cell,
+            );
+        }
+        // Printing history, or a region grown taller, scrolls the screen and the pictures on it.
+        let scrolls = !self.terminal.pending_history().is_empty();
+        let before = self.terminal.viewport();
         let map = self.place_map(now);
         self.terminal
             .draw_live(rows(trailing), rows(pinned), |frame| {
@@ -947,7 +963,10 @@ impl<W: Write> Ui<W> {
                     frame.set_cursor(column, row);
                 }
             })?;
-        self.send_map_placing(map)
+        self.send_map_placing(map)?;
+        let viewport = self.terminal.viewport();
+        let shown = rows(trailing).min(viewport.height.saturating_sub(rows(pinned)));
+        self.place_live_council_pictures(viewport.y, shown, scrolls || viewport != before)
     }
 
     fn frame_done(&mut self, now: Instant) {

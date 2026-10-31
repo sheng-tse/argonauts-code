@@ -299,12 +299,12 @@ fn safety_settings_are_never_loosened() {
         // Only Shift+Tab and /approvals turn autopilot on.
         says(InstructionKind::Approvals, "go autopilot", ""),
     ];
-    // A run limit of your own, so $50 would raise it.
-    let mut limited = Settings::default();
+    // A run limit and a check of your own, so $50 would raise it and skipping would drop one.
+    let mut limited = with_checks(&["tests"]);
     limited.limits.spend.spend_per_run = Some(20.0);
     let applied = check(&list, message, &limited, &roster(), None);
     for (says, why) in [
-        ("Skip the tests", "checks.run is a safety setting"),
+        ("Skip the tests", "it would stop tests from running"),
         ("turn the sandbox off", "the sandbox is a safety setting"),
         (
             "spend up to $50",
@@ -321,6 +321,135 @@ fn safety_settings_are_never_loosened() {
     }
     assert!(applied.settings.is_empty(), "{:?}", applied.settings);
     assert!(!applied.supervised);
+}
+
+/// Settings whose checks go by `names`.
+fn with_checks(names: &[&str]) -> Settings {
+    let mut settings = Settings::default();
+    settings.checks.run = names
+        .iter()
+        .map(|name| argonauts_core::settings::protocol::CheckCommand {
+            name: (*name).to_owned(),
+            command: vec!["true".to_owned()],
+        })
+        .collect();
+    settings
+}
+
+/// Words that ask for what your checks already do are met, and the start line says which
+/// checks those are, as it says every instruction it follows.
+#[test]
+fn words_your_checks_already_meet_are_followed() {
+    let message = "Make the limiter per key. Keep the tests passing, and make sure lint is clean.";
+    let list = [
+        says(InstructionKind::Checks, "Keep the tests passing", ""),
+        says(InstructionKind::Checks, "make sure lint is clean", ""),
+    ];
+    let applied = check(
+        &list,
+        message,
+        &with_checks(&["lint", "tests"]),
+        &roster(),
+        None,
+    );
+    for says in ["Keep the tests passing", "make sure lint is clean"] {
+        assert_eq!(followed(&applied, says), "lint and tests must pass");
+    }
+    assert!(applied.settings.is_empty(), "{:?}", applied.settings);
+}
+
+/// Words that would change which checks run are refused, saying what they would have changed.
+#[test]
+fn words_that_change_which_checks_run_are_refused() {
+    let message = "Skip the tests, drop the lint check, and run cargo check instead of the tests.";
+    let list = [
+        says(InstructionKind::Checks, "Skip the tests", ""),
+        says(InstructionKind::Checks, "drop the lint check", ""),
+        says(
+            InstructionKind::Checks,
+            "run cargo check instead of the tests",
+            "",
+        ),
+    ];
+    let applied = check(
+        &list,
+        message,
+        &with_checks(&["lint", "tests"]),
+        &roster(),
+        None,
+    );
+    let safety = ", and checks.run is a safety setting that /config changes";
+    for (says, changes) in [
+        ("Skip the tests", "it would stop tests from running"),
+        ("drop the lint check", "it would stop lint from running"),
+        (
+            "run cargo check instead of the tests",
+            "it would run other checks in place of tests",
+        ),
+    ] {
+        assert_eq!(refused(&applied, says), format!("{changes}{safety}"));
+    }
+    assert!(applied.settings.is_empty(), "{:?}", applied.settings);
+}
+
+/// A refusal names every check set when the words name none of them.
+#[test]
+fn words_that_name_no_check_set_refuse_for_them_all() {
+    let list = [says(InstructionKind::Checks, "skip the checks", "")];
+    let applied = check(
+        &list,
+        "Skip the checks.",
+        &with_checks(&["lint", "tests"]),
+        &roster(),
+        None,
+    );
+    assert_eq!(
+        refused(&applied, "skip the checks"),
+        "it would stop lint and tests from running, and checks.run is a safety setting that \
+         /config changes"
+    );
+}
+
+/// A word that stops or replaces things elsewhere in the words, but doesn't reach a check word
+/// in its own clause, asks for nothing to change.
+#[test]
+fn words_that_only_mention_stopping_near_checks_are_followed() {
+    let phrases = [
+        "make sure no tests fail",
+        "Only merge once the tests pass",
+        "don't stop until the tests pass",
+        "don't skip the tests",
+    ];
+    let list: Vec<Instruction> = phrases
+        .iter()
+        .map(|phrase| says(InstructionKind::Checks, phrase, ""))
+        .collect();
+    let applied = check(
+        &list,
+        &phrases.join(". "),
+        &with_checks(&["lint", "tests"]),
+        &roster(),
+        None,
+    );
+    for phrase in phrases {
+        assert_eq!(followed(&applied, phrase), "lint and tests must pass");
+    }
+}
+
+/// With no checks set, words about checks have nothing to change or meet: the start line says
+/// so and how to set them, and refuses nothing.
+#[test]
+fn words_about_checks_with_none_set_say_so() {
+    let message = "Keep the tests passing.";
+    let list = [says(InstructionKind::Checks, "Keep the tests passing", "")];
+    let applied = run(message, &list);
+    assert_eq!(
+        outcome(&applied, "Keep the tests passing"),
+        InstructionOutcome::Noted {
+            line: super::checks::NONE_SET.to_owned()
+        }
+    );
+    assert!(super::checks::NONE_SET.contains("/config checks.run"));
 }
 
 /// Each of the five tightenings applies, and the real resolver takes what they write.

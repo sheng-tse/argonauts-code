@@ -399,7 +399,7 @@ mod tests {
                 let _ = reader.read_exact(&mut body);
                 let asked: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
                 let parameters = match asked["model"].as_str() {
-                    Some("qwen3-coder:30b-64k") => "num_ctx                        65536",
+                    Some("sample-coder:30b-64k") => "num_ctx                        65536",
                     _ => "temperature 0.7",
                 };
                 let reply = serde_json::json!({ "parameters": parameters, "model_info": {} });
@@ -420,11 +420,14 @@ mod tests {
         let addr = ollama_show_server();
         let client = runtime_api::local_client(PROBE_TIMEOUT).unwrap();
         let tags = [
-            "qwen3-coder:30b-64k".to_owned(),
+            "sample-coder:30b-64k".to_owned(),
             "qwen3-coder:30b".to_owned(),
         ];
         let (windows, sized) = ollama_windows(&client, &format!("http://{addr}/v1"), &tags).await;
-        assert_eq!(windows, [("qwen3-coder:30b-64k".to_owned(), 65_536)].into());
+        assert_eq!(
+            windows,
+            [("sample-coder:30b-64k".to_owned(), 65_536)].into()
+        );
         assert_eq!(sized, ["qwen3-coder:30b"]);
     }
 

@@ -674,12 +674,12 @@ mod tests {
             held: Some(32_768),
             most: Some(32_768),
         };
-        assert_eq!(window.check(32_768, "gemma3:12b-32k"), Ok(()));
+        assert_eq!(window.check(32_768, "sample-gemma:12b-32k"), Ok(()));
         assert_eq!(
-            window.check(41_984, "gemma3:12b-32k"),
+            window.check(41_984, "sample-gemma:12b-32k"),
             Err(EndReason::StartFailed {
                 message: "the brief is about 41k tokens, more than the 32k window of \
-                          gemma3:12b-32k"
+                          sample-gemma:12b-32k"
                     .to_owned()
             })
         );

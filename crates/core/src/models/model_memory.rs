@@ -102,7 +102,7 @@ pub struct Freed {
 }
 
 impl Freed {
-    /// `Freed Qwen3 Coder 30B (64k) from Ollama (25 GB of RAM)`, naming the model as `name`
+    /// `Freed Qwen3 Coder 30B from Ollama (25 GB of RAM)`, naming the model as `name`
     /// says, or by its id.
     pub fn words(&self, name: Option<&str>) -> String {
         let name = name.map_or_else(|| display_name_from_id(&self.model), str::to_owned);
@@ -188,12 +188,12 @@ mod tests {
     fn the_freed_line_names_the_model_its_server_and_the_memory() {
         let qwen = Freed {
             server: ollama(),
-            model: "qwen3-coder:30b-64k".to_owned(),
+            model: "qwen3-coder:30b".to_owned(),
             bytes: Some(25_311_000_000),
         };
         assert_eq!(
-            qwen.words(Some("Qwen3 Coder 30B (64k)")),
-            "Freed Qwen3 Coder 30B (64k) from Ollama (25 GB of RAM)"
+            qwen.words(Some("Qwen3 Coder 30B")),
+            "Freed Qwen3 Coder 30B from Ollama (25 GB of RAM)"
         );
         let llama = Freed {
             model: "llama3.2:latest".to_owned(),

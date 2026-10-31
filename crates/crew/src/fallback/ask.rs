@@ -22,7 +22,6 @@ use crate::engine::error::{EngineError, EngineResult, Stall};
 use crate::engine::host::Host;
 use crate::engine::job_fallback;
 use crate::fallback::{assign, choose, down, rules};
-use crate::roles::display_name;
 use crate::state::RunState;
 use crate::task::machine::Trigger;
 use crate::task::support::newest_worker_session;
@@ -57,7 +56,7 @@ pub(super) async fn per_task(host: &Host, task: &TaskId, plan: FallbackPlan) -> 
             // people read them, not by their ids.
             title: format!(
                 "{} stopped · {}",
-                DisplayNames::default().worker(&plan.stopped),
+                host.names().worker(&plan.stopped),
                 plan.title.trim()
             ),
             task: Some(task.clone()),
@@ -174,7 +173,7 @@ async fn agent_down(host: &Host, task: &TaskId, plan: &FallbackPlan) -> EngineRe
         kind: ApprovalKind::AgentDown,
         title: format!(
             "{} is down · {} waits for it",
-            DisplayNames::default().cli(&agent_id.0),
+            host.names().cli(&agent_id.0),
             plan.title.trim()
         ),
         task: Some(task.clone()),
@@ -263,7 +262,7 @@ pub(super) fn models_out(models: &[ModelHealth]) -> Option<String> {
 /// `/resume` carries the run on.
 async fn stop_the_run(host: &Host, task: &TaskId, plan: &FallbackPlan) -> EngineResult<()> {
     let ended = ended(host, task);
-    let stopped = display_name(&plan.stopped);
+    let stopped = host.names().worker(&plan.stopped);
     let logged_out = says_logged_out(host, task, plan).await;
     let why = ended.as_ref().map_or_else(
         || "it stopped".to_owned(),

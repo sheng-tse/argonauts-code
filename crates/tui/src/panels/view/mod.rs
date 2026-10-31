@@ -212,8 +212,8 @@ pub struct OverviewView {
     now: Option<OffsetDateTime>,
     /// How the Stats tab shows the crew's stats.
     stats: StatsState,
-    /// Stats waits for the period `mods/stats.toml` sets, which comes with the numbers.
-    stats_period_from_file: bool,
+    /// The period Stats opened on, while it waits for the period `mods/stats.toml` sets.
+    stats_opened_on: Option<UsagePeriod>,
     /// The Usage tab's sub-tab: 0 for every CLI, else one CLI's page.
     cli: usize,
     /// How the Overview tab shows every CLI's history.
@@ -304,7 +304,7 @@ impl OverviewView {
             watch,
             now: None,
             stats: StatsState::default(),
-            stats_period_from_file: false,
+            stats_opened_on: None,
             cli: 0,
             home: HomeTab::default(),
             config,
@@ -323,7 +323,7 @@ impl OverviewView {
     /// `/stats` with no period: the tab shows the one `mods/stats.toml` sets, once the
     /// numbers for it come.
     pub fn with_stats_period_from_file(mut self) -> Self {
-        self.stats_period_from_file = true;
+        self.stats_opened_on = Some(self.period);
         self
     }
 
@@ -426,6 +426,18 @@ impl OverviewView {
         }
     }
 
+    /// The open tab, or the sub-tab it shows, has rows the keys move through, so ↓ and Enter
+    /// from the sub-tabs go into them. Overview › Overview's year and figures have none.
+    fn has_rows(&self, ctx: &ViewCtx<'_>) -> bool {
+        match self.tab {
+            Tab::Overview => self.home.has_rows(),
+            Tab::Stats => self
+                .stats
+                .has_rows(self.usage(ctx), &ctx.state.names, self.wall()),
+            _ => true,
+        }
+    }
+
     /// Chooses the sub-tab `by` places along, wrapping, and the cards under it change at once.
     fn step_sub_tab(&mut self, by: isize, ctx: &ViewCtx<'_>) -> ViewOutcome {
         let Some((names, chosen)) = self.sub_tabs(ctx) else {
@@ -458,12 +470,16 @@ impl OverviewView {
         }
     }
 
-    /// The keys go down a row: to the sub-tabs, or into the cards.
+    /// The keys go down a row: to the sub-tabs, or into the cards where they have rows to
+    /// move through.
     fn go_down(&mut self, ctx: &ViewCtx<'_>) -> ViewOutcome {
         let level = match self.level() {
-            Level::Tabs if self.sub_tabs(ctx).is_some() => Level::SubTabs,
-            _ => Level::Cards,
+            Level::Tabs if self.sub_tabs(ctx).is_none() => Level::Cards,
+            level => level.down(self.has_rows(ctx)),
         };
+        if level == self.level() {
+            return ViewOutcome::Consumed;
+        }
         self.set_level(level);
         self.behaviors_from_above();
         // On Limits the keys pick a limit, so its list comes into view.
@@ -491,11 +507,20 @@ impl OverviewView {
         if self.level() == Level::Tabs || self.sub_tabs(ctx).is_none() {
             return self.open(self.tab.step(by));
         }
-        self.step_sub_tab(by, ctx)
+        let outcome = self.step_sub_tab(by, ctx);
+        // From the cards the keys stay in them, unless the new sub-tab has no rows to move
+        // through.
+        if self.level() == Level::Cards && !self.has_rows(ctx) {
+            self.set_level(Level::SubTabs);
+        }
+        outcome
     }
 
     /// Enter on the sub-tabs: into the cards on the first row, which Stats opens in place.
     fn enter_first_row(&mut self, ctx: &ViewCtx<'_>) -> ViewOutcome {
+        if !self.has_rows(ctx) {
+            return ViewOutcome::Consumed;
+        }
         self.set_level(Level::Cards);
         self.behaviors_from_above();
         self.focus = 0;
@@ -655,6 +680,9 @@ impl OverviewView {
         if tab == self.tab {
             return ViewOutcome::Consumed;
         }
+        if self.tab == Tab::Overview {
+            self.home.behaviors.deep.leave();
+        }
         self.tab = tab;
         self.focus = 0;
         self.scroll = 0;
@@ -669,7 +697,7 @@ impl OverviewView {
             // Stats opens on the period the stats mod's file sets, whichever the tab before
             // it showed.
             Tab::Stats => {
-                self.stats_period_from_file = true;
+                self.stats_opened_on = Some(self.period);
                 ViewOutcome::Consumed
             }
             _ => ViewOutcome::Consumed,
@@ -690,6 +718,7 @@ impl OverviewView {
             }
             Tab::Usage | Tab::Limits | Tab::Stats => {
                 self.period = periods::asked(key, self.period)?;
+                self.stats_opened_on = None;
                 ViewRequest::Usage {
                     period: self.period,
                 }

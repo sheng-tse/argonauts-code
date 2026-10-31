@@ -1,0 +1,10 @@
+# gemini-3.6-pro as agy names it, with no window: no list gives one.
+
+[[model]]
+id = "antigravity-cli/gemini-3.6-pro"
+provider = "google"
+name = "Gemini 3.6 Pro"
+kind = "cli"
+access = "subscription"
+tools = true
+cost = { unit = "plan_usage" }

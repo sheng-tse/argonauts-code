@@ -23,11 +23,10 @@ use crate::world::planet::{Planet, Side};
 pub use pointer::Marks;
 
 use crate::world::Scene;
-use crate::world::deliver::worker::{Cancel, Worker};
+use crate::world::deliver::clock::Rate;
+use crate::world::deliver::worker::{self, Cancel, Worker};
 use crate::world::picture_key;
 
-/// How often the world's motion steps, as the terminal shows it.
-const TICK: Duration = Duration::from_millis(125);
 /// How many looks of the map are kept drawn, so going back to one costs nothing.
 const LOOKS_KEPT: usize = 4;
 
@@ -94,6 +93,60 @@ impl Kept {
         self.planet = Some((key, planet));
     }
 
+    /// The world grown from the map `key` names, if it is the one kept.
+    pub fn grown_kept(&self, key: u64) -> Option<Arc<Grown>> {
+        self.grown
+            .as_ref()
+            .filter(|(kept, _)| *kept == key)
+            .map(|(_, grown)| grown.clone())
+    }
+
+    pub fn has_cosmos(&self, key: u64) -> bool {
+        self.cosmos.as_ref().is_some_and(|(kept, _)| *kept == key)
+    }
+
+    /// Keeps `cosmos`, made ahead of being asked for, as the one `key` names.
+    pub fn offer_cosmos(&mut self, key: u64, cosmos: Cosmos) {
+        if !self.has_cosmos(key) {
+            self.cosmos = Some((key, cosmos));
+        }
+    }
+
+    /// A sibling of the universe `key` names, if it is the one kept, to draw a level of it ahead
+    /// without holding these.
+    pub fn cosmos_sibling(&self, key: u64) -> Option<Cosmos> {
+        self.cosmos
+            .as_ref()
+            .filter(|(kept, _)| *kept == key)
+            .map(|(_, cosmos)| cosmos.sibling())
+    }
+
+    /// Keeps what `drawn`, a sibling of the universe `key` names, drew ahead.
+    pub fn adopt_cosmos(&mut self, key: u64, drawn: Cosmos) {
+        if let Some((kept, cosmos)) = &mut self.cosmos
+            && *kept == key
+        {
+            cosmos.adopt(drawn);
+        }
+    }
+
+    pub fn has_look(&self, key: u64) -> bool {
+        self.looks.iter().any(|(kept, _)| *kept == key)
+    }
+
+    /// Keeps `look`, drawn ahead of being asked for, as the one `key` names, behind the look
+    /// last asked for, which keeps its weather's frames.
+    pub fn offer_look(&mut self, key: u64, look: MapLook) {
+        if self.has_look(key) {
+            return;
+        }
+        let at = self.looks.len().saturating_sub(1);
+        self.looks.insert(at, (key, Arc::new(look)));
+        if self.looks.len() > LOOKS_KEPT {
+            self.looks.remove(0);
+        }
+    }
+
     /// The universe `key` names, made now unless it is the one kept.
     pub fn cosmos(&mut self, key: u64, make: impl FnOnce() -> Cosmos) -> &mut Cosmos {
         match self.cosmos.take() {
@@ -155,6 +208,10 @@ pub struct Drawings {
     shown: Mutex<Shown>,
     kept: Arc<Mutex<Kept>>,
     marks: Marks,
+    /// Draws what the levels next to the one shown need, while `worker` is idle.
+    ahead: Worker<()>,
+    /// What `ahead` was last asked to draw.
+    ahead_asked: Mutex<Option<u64>>,
 }
 
 impl std::fmt::Debug for Drawings {
@@ -181,6 +238,8 @@ impl Drawings {
             shown: Mutex::default(),
             kept: Arc::default(),
             marks: Marks::default(),
+            ahead: Worker::off_the_frame(),
+            ahead_asked: Mutex::default(),
         }
     }
 
@@ -218,18 +277,56 @@ impl Drawings {
         self.worker.busy()
     }
 
+    /// What the last drawing to panic said, once: a scene's before one drawn ahead.
+    pub fn take_failure(&self) -> Option<String> {
+        let scene = self.worker.take_failure();
+        let ahead = self.ahead.take_failure();
+        scene.or(ahead)
+    }
+
     /// The world left the screen: every drawing asked for is stopped, and the next look asked
     /// for is drawn afresh.
     pub fn leave(&self) {
         self.worker.stop();
+        self.ahead.stop();
         self.shown().asked = None;
+        *self
+            .ahead_asked
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
         self.marks.forget();
     }
 
-    /// The step of the world's motion at `now`, counted from the first time it was asked.
-    pub fn tick(&self, now: Instant) -> u64 {
-        let steps = self.since_start(now).as_millis() / TICK.as_millis();
-        u64::try_from(steps).unwrap_or(u64::MAX)
+    /// Draws what `key` names ahead of being asked for, such as the planet while the map shows,
+    /// so going there shows at once. It waits while a scene is drawn, and asks once for each
+    /// `key`. The job takes what the jobs draw from only to read and to keep, so a scene asked
+    /// for meanwhile doesn't wait on it. The crate's tests draw in line, where drawing ahead
+    /// would only slow them, so theirs draw nothing ahead unless they asked for threads.
+    pub fn ahead(&self, key: u64, job: impl FnOnce(&Mutex<Kept>, &Cancel) + Send + 'static) {
+        if worker::in_line_here() || self.worker.busy() {
+            return;
+        }
+        {
+            let mut asked = self
+                .ahead_asked
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if *asked == Some(key) {
+                return;
+            }
+            *asked = Some(key);
+        }
+        let kept = self.kept.clone();
+        self.ahead.draw_quietly(key, move |cancel| {
+            job(&kept, cancel);
+            None
+        });
+    }
+
+    /// The step of the world's motion at `now`, stepping at `rate`, counted from the first time
+    /// it was asked.
+    pub fn tick(&self, now: Instant, rate: Rate) -> u64 {
+        rate.steps_in(self.since_start(now))
     }
 
     /// How long the world's motion has run at `now`, from the first time it was asked.

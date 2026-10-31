@@ -21,7 +21,7 @@
 
   Lit: Accept task completion and the 13 actions summarized most like it
 
-  Summaries · 562 summarized by Qwen3 Coder 30B (64k) · last 30 days
+  Summaries · 562 summarized by Qwen3 Coder 30B · last 30 days
   Distinctive to GPT 6 Luna · 6 of its 66 actions, in the model's words ·  new  says more than its label
   ❯  new  Accept task completion
      new  Reject change due to negative input handling failure

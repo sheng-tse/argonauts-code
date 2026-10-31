@@ -9,6 +9,7 @@ use std::path::Path;
 
 use argonauts_core::agents::session_runner::Access;
 use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::runs::events::session::{EndReason, InputPart, InputPartKind, SessionEnd};
 use argonauts_core::runs::events::task::CheckOutcome;
 use argonauts_core::settings::Settings;
@@ -178,7 +179,7 @@ pub async fn resolve_main(
                 None => {
                     return Ok(Err(format!(
                         "{conflict}, and {} couldn't take the merge",
-                        names(&tried)
+                        tried_names(host.names(), &tried)
                     )));
                 }
             }
@@ -279,9 +280,8 @@ pub async fn fix_after_main(
 }
 
 /// `Opus on Claude Code and GPT X on Codex`, the agents that tried a job.
-fn names(tried: &[ModelRef]) -> String {
-    let names: Vec<String> = tried.iter().map(crate::roles::display_name).collect();
-    names.join(" and ")
+fn tried_names(names: &DisplayNames, tried: &[ModelRef]) -> String {
+    names.workers(tried).join(" and ")
 }
 
 fn after_main_parts(host: &Host, target: &str, failed: &[CheckOutcome]) -> Vec<InputPart> {

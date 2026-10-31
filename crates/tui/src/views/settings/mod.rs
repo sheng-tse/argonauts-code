@@ -8,7 +8,7 @@ pub mod all_settings;
 pub mod approvals;
 mod fallback;
 pub mod flow;
-mod memory_rows;
+pub(crate) mod memory_rows;
 mod models;
 mod panel;
 pub mod permissions;
@@ -23,6 +23,7 @@ mod tests;
 
 use argonauts_core::app::model_picker::{MachineMemory, ModelSource};
 use argonauts_core::app::{MissingCli, ModelChoice, SettingRow, UiCommand, ViewData, ViewRequest};
+use argonauts_core::base::clock;
 use argonauts_core::base::names::RoleName;
 use argonauts_core::settings::ui::UiSettings;
 use serde_json::Value;
@@ -68,7 +69,7 @@ pub fn open_for(data: &ViewData, cx: &mut Cx<'_>) {
             sources,
             memory,
         } => {
-            let now = OffsetDateTime::now_utc();
+            let now = clock::now_utc();
             let note = super::super::base::text::words::freshness(*refreshed, *refreshing, now);
             let role = role.filter(|role| *role != RoleName::Main);
             let told = Told {

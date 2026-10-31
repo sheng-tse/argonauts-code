@@ -9,6 +9,8 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use argonauts_core::base::clock;
+
 use crate::store::error::{LearningError, Result};
 
 const SAFE_CONFIG: [&str; 6] = [
@@ -181,7 +183,7 @@ pub fn commit_on_branch(
 /// nobody else's index is touched.
 fn private_index(repo: &Path) -> Result<PathBuf> {
     let git_dir = run(repo, &["rev-parse", "--absolute-git-dir"])?;
-    let nanos = time::OffsetDateTime::now_utc().unix_timestamp_nanos();
+    let nanos = clock::now_utc().unix_timestamp_nanos();
     Ok(PathBuf::from(git_dir).join(format!("argonauts-index-{}-{nanos}", std::process::id())))
 }
 

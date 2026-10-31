@@ -119,9 +119,12 @@ pub(crate) fn offer(
             scope_offer(scope, &covered, auto_local, names)
         })
         .collect();
-    let summarizers = candidates
-        .iter()
-        .take(super::choose::LISTED)
+    // The best local models, then every hosted one; Open models lists the rest.
+    let locals = candidates.iter().filter(|candidate| candidate.local());
+    let hosted = candidates.iter().filter(|candidate| !candidate.local());
+    let summarizers = locals
+        .take(super::choose::LOCAL_LISTED)
+        .chain(hosted)
         .map(|candidate| SummarizerOffer {
             model: candidate.model.clone(),
             name: candidate.name.clone(),
@@ -151,6 +154,7 @@ pub(crate) fn offer(
         made_by: None,
         named: None,
         keyed_embedder: None,
+        open: Default::default(),
     }
 }
 

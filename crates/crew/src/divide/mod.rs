@@ -260,6 +260,7 @@ pub async fn division(host: &Host, call: &StepCall) -> EngineResult<Division> {
                 how,
                 asked_by_you: false,
                 steps: None,
+                why: None,
             });
         }
     }

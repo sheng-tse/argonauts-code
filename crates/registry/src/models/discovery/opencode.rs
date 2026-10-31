@@ -183,8 +183,10 @@ mod tests {
     const MODEL_LIST: &str = include_str!("../../../tests/fixtures/opencode/model-list.json");
     const MODEL_DEFAULT: &str = include_str!("../../../tests/fixtures/opencode/model-default.json");
 
+    /// OpenCode's recorded list, with the made-up capped tags added.
     fn listed() -> Vec<ModelEntry> {
-        let listed = listing::parse_model_list(MODEL_LIST).unwrap();
+        let model_list = super::super::capped_twins::model_list(MODEL_LIST);
+        let listed = listing::parse_model_list(&model_list).unwrap();
         let default = listing::parse_model_default(MODEL_DEFAULT).unwrap();
         entries(&Settings::default(), &listed, default.as_deref())
     }
@@ -252,7 +254,10 @@ mod tests {
             "MiMo-V2.6-Flash Free"
         );
         assert_eq!(label("opencode/glm-5.3-flash-free"), "GLM-5.3-Flash Free");
-        assert_eq!(label("ollama/qwen3-coder:30b-64k"), "Qwen3 Coder 30B (64k)");
+        assert_eq!(
+            label("ollama/sample-coder:30b-64k"),
+            "Sample Coder 30B (64k)"
+        );
         let names = argonauts_core::look::display_names::DisplayNames {
             catalog: catalog.clone(),
             ..Default::default()
@@ -280,17 +285,20 @@ mod tests {
                 .all(|e| e.discovered && e.id.agent == "opencode")
         );
 
-        let qwen = find(&models, "opencode/ollama/qwen3-coder:30b-64k");
-        assert_eq!(qwen.name.as_deref(), Some("Qwen3 Coder 30B (64k)"));
+        let qwen = find(&models, "opencode/ollama/sample-coder:30b-64k");
+        assert_eq!(qwen.name.as_deref(), Some("Sample Coder 30B (64k)"));
         assert_eq!(qwen.context_window, Some(65_536));
         assert_eq!(qwen.window, None, "until its server says");
-        assert_eq!(qwen.provider, "alibaba");
         assert!(qwen.tools);
         assert_eq!(qwen.variants, Some(Vec::new()));
         assert_eq!(qwen.cost.unit, CostUnit::None);
 
+        let stock = find(&models, "opencode/ollama/qwen3-coder:30b");
+        assert_eq!(stock.context_window, Some(262_144));
+        assert_eq!(stock.provider, "alibaba");
+
         // Found by OpenCode itself, so named by the pickers' rule.
-        let gemma = find(&models, "opencode/ollama/gemma3:12b-32k");
+        let gemma = find(&models, "opencode/ollama/sample-gemma:12b-32k");
         assert_eq!(gemma.name, None);
         assert_eq!(gemma.context_window, Some(131_072));
         assert!(!gemma.tools);
@@ -336,14 +344,14 @@ mod tests {
 
     #[test]
     fn opencode_one_lists_ids_alone() {
-        let lines = "ollama/qwen3-coder:30b-64k\nopencode/big-pickle\n\nsome notice here\n";
+        let lines = "ollama/sample-coder:30b-64k\nopencode/big-pickle\n\nsome notice here\n";
         let listed = listing::parse_model_lines(lines);
         let models = entries(&Settings::default(), &listed, None);
         let ids: Vec<String> = models.iter().map(|e| e.id.to_string()).collect();
         assert_eq!(
             ids,
             [
-                "opencode/ollama/qwen3-coder:30b-64k",
+                "opencode/ollama/sample-coder:30b-64k",
                 "opencode/opencode/big-pickle"
             ]
         );

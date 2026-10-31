@@ -80,7 +80,6 @@ fn the_list_is_its_picture() {
         include_str!("../../../tests/golden/views/resume.txt"),
         include_str!("../../../tests/golden/views/resume.html"),
         &theme,
-        &[],
     );
     // The picked row's mark and title take the color every picker gives its selection.
     let picked = theme.style(Role::Question).fg;
@@ -314,7 +313,6 @@ fn the_row_under_the_list_names_the_cli_that_holds_the_conversation() {
         include_str!("../../../tests/golden/views/resume_in_cli.txt"),
         include_str!("../../../tests/golden/views/resume_in_cli.html"),
         &Theme::dark(),
-        &[],
     );
 }
 
@@ -328,7 +326,6 @@ fn a_codex_session_reads_the_same_way() {
         include_str!("../../../tests/golden/views/resume_in_codex.txt"),
         include_str!("../../../tests/golden/views/resume_in_codex.html"),
         &Theme::dark(),
-        &[],
     );
 }
 
@@ -351,7 +348,6 @@ fn a_local_models_session_prints_its_whole_command_and_c_copies_it() {
         include_str!("../../../tests/golden/views/resume_local.txt"),
         include_str!("../../../tests/golden/views/resume_local.html"),
         &Theme::dark(),
-        &[],
     );
     assert!(matches!(view.copy_command(), ViewOutcome::Copy(copied) if copied == command));
     // The conversation's command has no flags to keep, so c copies nothing there.

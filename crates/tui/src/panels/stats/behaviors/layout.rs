@@ -177,6 +177,12 @@ impl BehaviorsTab {
         self.fit.get()
     }
 
+    /// How often the world steps at the map's size.
+    pub fn rate(&self) -> crate::world::deliver::clock::Rate {
+        let fit = self.fit();
+        crate::world::deliver::clock::Rate::for_map(fit.columns, fit.rows)
+    }
+
     /// The most rows the panel gives the tab's blocks. The map is sized from them even while
     /// the panel is shorter for want of rows to fill.
     pub fn size_map_for(&mut self, rows: usize) {
@@ -243,10 +249,9 @@ impl BehaviorsTab {
             return blocks;
         }
         let lit = self.lit();
-        let ringed = self.ringed().or(self.hovered());
         let map_block = match world {
             true => world_block(&look, fit),
-            false => braille::block(&look, &lit, ringed, fit.legend_beside),
+            false => braille::block(&look, self.marks(&lit), fit.legend_beside),
         };
         let used: usize =
             blocks.iter().map(|b| b.height() + 1).sum::<usize>() + map_block.height() + 1;
@@ -282,6 +287,9 @@ impl BehaviorsTab {
                 look.map,
                 look.width.saturating_sub(1),
             ));
+            for line in self.deep.kept_lines(look.kit).unwrap_or_default() {
+                out.push(line.spans);
+            }
         }
         out
     }
@@ -311,7 +319,7 @@ impl BehaviorsTab {
             true => (0..fit.rows)
                 .map(|_| vec![Span::raw(" ".repeat(map_cells))])
                 .collect(),
-            false => braille::map_rows(look, &self.lit(), self.ringed().or(self.hovered())),
+            false => braille::map_rows(look, self.marks(&self.lit())),
         };
         left.push(Vec::new());
         // The words under the map end a column's blanks before the list beside it, which

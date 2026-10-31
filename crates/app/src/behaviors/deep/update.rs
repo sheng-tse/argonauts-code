@@ -1,8 +1,9 @@
 //! An update of Summaries, and opening it. An update prunes what deleted runs left,
 //! summarizes only actions without a summary, embeds only summaries without a vector, and
-//! places only the new dots, the old ones staying where they were. The dots are placed as the
-//! summaries come, a share at a time, so the map fills in while it goes. Opening reads what's
-//! kept and calls no model.
+//! places only the new dots, the old ones staying where they were. A first map is placed as
+//! its summaries come, a share at a time, so it fills in while it goes. A map with dots is
+//! replaced only by a whole new one: its update places once, when every summary came, and a
+//! stopped or failed one leaves it as it was. Opening reads what's kept and calls no model.
 
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -13,13 +14,15 @@ use super::action::{ActionKey, DeepAction, text_key};
 use super::embed::{Embedder, PER_EMBEDDING_REQUEST, word_vectors};
 use super::project::{Frame, ToPlace, project};
 use super::prompt::{PER_REQUEST, PROMPT_VERSION};
+use super::records::Recorded;
 use super::store::{Layout, MapMaker, Placed, Store, VectorLine};
 use super::summaries::{Progress, Summarized, needed, summarize};
 use super::summarize::Summarizer;
+use argonauts_core::behaviors::deep_map::FewerDots;
 use argonauts_core::settings::behaviors::WORD_VECTORS;
 
-/// The fewest texts summarized between two placements, and how many placements an update
-/// makes at most before its last.
+/// The fewest texts summarized between two placements of a first map, and how many
+/// placements it makes at most before its last.
 const PLACE_AFTER_LEAST: usize = 4 * PER_REQUEST;
 const PLACEMENTS: usize = 8;
 
@@ -74,6 +77,10 @@ pub(crate) struct Updated {
     /// Why the embedder wasn't used: a new map was placed by word vectors instead, and a map
     /// an embedding model placed took no new dots.
     pub embedder_failed: Option<String>,
+    /// The folders and logs that couldn't be read, each with why. Their runs' dots stay.
+    pub unread: Vec<String>,
+    /// A whole new map that wasn't swapped in, since it had fewer dots than the map there.
+    pub fewer: Option<FewerDots>,
 }
 
 /// What one placement did.
@@ -83,15 +90,16 @@ struct Placing {
     placed: usize,
     new_places: usize,
     embedder_failed: Option<String>,
+    fewer: Option<FewerDots>,
 }
 
 /// Updates the map from `recorded`, every action recorded, summarizing those of them `wanted`
-/// says. The dots summarized so far are placed after each share of the summaries, `placed`
-/// hearing of it. Stopping keeps every summary it finished and the dots placed so far, and
-/// embeds and places nothing more.
+/// says. A first map's dots are placed after each share of the summaries, `placed` hearing of
+/// it. Stopping or failing keeps every summary it finished, and places nothing more, so a map
+/// that was there stays as it was.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn update(
-    recorded: &[DeepAction],
+    recorded: &Recorded,
     wanted: impl Fn(&DeepAction) -> bool,
     store: &Store,
     summarizer: &dyn Summarizer,
@@ -100,19 +108,28 @@ pub(crate) async fn update(
     progress: &mut (dyn FnMut(Progress) + Send),
     placed: &mut (dyn FnMut() + Send),
 ) -> io::Result<Updated> {
-    let runs: HashSet<(String, String)> = recorded
+    let pruned = store.prune(&recorded.gone(&store.runs()))?;
+    let scope: Vec<DeepAction> = recorded
+        .actions
         .iter()
-        .map(|action| (action.key.repo.clone(), action.key.run.clone()))
+        .filter(|a| wanted(a))
+        .cloned()
         .collect();
-    let pruned = store.prune(&runs)?;
-    let scope: Vec<DeepAction> = recorded.iter().filter(|a| wanted(a)).cloned().collect();
     let summarizer_id = summarizer.id().to_string();
-    let to_send = needed(&scope, store, &summarizer_id).texts.len();
-    let share = to_send.div_ceil(PLACEMENTS).max(PLACE_AFTER_LEAST);
+    let replaces = store
+        .layout()
+        .is_some_and(|layout| !layout.points.is_empty());
+    let share = match replaces {
+        true => None,
+        false => {
+            let to_send = needed(&scope, store, &summarizer_id).texts.len();
+            Some(to_send.div_ceil(PLACEMENTS).max(PLACE_AFTER_LEAST))
+        }
+    };
     let mut summarized: Option<Summarized> = None;
     let mut done = Placing::default();
     loop {
-        let part = summarize(&scope, store, summarizer, stop, progress, Some(share)).await?;
+        let part = summarize(&scope, store, summarizer, stop, progress, share).await?;
         let more = part.paused;
         let total = summarized.get_or_insert_with(|| Summarized {
             already: part.already,
@@ -124,14 +141,18 @@ pub(crate) async fn update(
         total.missing = part.missing;
         total.stopped = part.stopped;
         total.failed = part.failed;
-        if total.stopped {
+        if total.stopped || (replaces && total.failed.is_some()) {
             break;
         }
-        let placing = place(recorded, store, &summarizer_id, &embed_with, stop).await?;
+        let placing = place(&recorded.actions, store, &summarizer_id, &embed_with, stop).await?;
         done.embedded += placing.embedded;
         done.new_places += placing.new_places;
         done.placed = placing.placed;
         done.embedder_failed = done.embedder_failed.or(placing.embedder_failed);
+        if placing.fewer.is_some() {
+            done.fewer = placing.fewer;
+            break;
+        }
         if !more || total.failed.is_some() {
             break;
         }
@@ -149,13 +170,16 @@ pub(crate) async fn update(
         placed: done.placed,
         new_places: done.new_places,
         embedder_failed: done.embedder_failed,
+        unread: recorded.unread.clone(),
+        fewer: done.fewer,
     })
 }
 
 /// Places every summarized action of `recorded` not on the map yet, the others staying where
-/// they were, and keeps the map. A map keeps the embedder that placed it: when that one doesn't
-/// answer, nothing new is placed and the summaries wait for the next update. A new map whose
-/// embedding model doesn't answer is placed by word vectors, and says why.
+/// they were, and keeps the map. A dot whose action wasn't read this time, as when its folder
+/// couldn't be, stays where it was. A map keeps the embedder that placed it: when that one
+/// doesn't answer, nothing new is placed and the summaries wait for the next update. A new map
+/// whose embedding model doesn't answer is placed by word vectors, and says why.
 async fn place(
     recorded: &[DeepAction],
     store: &Store,
@@ -234,6 +258,15 @@ async fn place(
         })
         .collect();
     let new_places = rows.iter().filter(|row| row.old.is_none()).count();
+    // Every dot is where it was, so the map is kept as it is, frame and all.
+    if new_places == 0 && last.is_some() {
+        return Ok(Placing {
+            embedded,
+            placed: store.layout().map_or(0, |layout| layout.points.len()),
+            embedder_failed,
+            ..Placing::default()
+        });
+    }
     let frame: Option<Frame> = last.as_ref().and_then(|layout| layout.frame);
     let watching = stop.clone();
     // The fit is seconds of arithmetic on a big map, kept off the threads that answer you.
@@ -250,32 +283,64 @@ async fn place(
     })
     .await
     .map_err(io::Error::other)?;
+    let on_screen = store.layout().map_or(0, |layout| layout.points.len());
     let Some(placement) = placement else {
         return Ok(Placing {
             embedded,
-            placed: last.as_ref().map_or(0, |layout| layout.points.len()),
+            placed: on_screen,
             ..Placing::default()
         });
     };
+    let mut points: Vec<Placed> = on_map
+        .iter()
+        .zip(placement.places)
+        .map(|((action, _), (x, y))| Placed {
+            action: action.key.clone(),
+            x,
+            y,
+        })
+        .collect();
+    let placed_now: HashSet<&ActionKey> = on_map.iter().map(|(action, _)| &action.key).collect();
+    let unread: Vec<Placed> = last
+        .iter()
+        .flat_map(|layout| &layout.points)
+        .filter(|point| !placed_now.contains(&point.action))
+        .cloned()
+        .collect();
+    points.extend(unread);
     let layout = Layout {
         maker,
         frame: Some(placement.frame),
-        points: on_map
-            .iter()
-            .zip(placement.places)
-            .map(|((action, _), (x, y))| Placed {
-                action: action.key.clone(),
-                x,
-                y,
-            })
-            .collect(),
+        points,
     };
+    // A save never leaves fewer dots than the map has: the dots of runs that are gone left
+    // it before, when the update pruned them.
+    if layout.points.len() < on_screen {
+        return Ok(Placing {
+            embedded,
+            placed: on_screen,
+            embedder_failed,
+            fewer: Some(FewerDots {
+                made: layout.points.len(),
+                shown: on_screen,
+            }),
+            ..Placing::default()
+        });
+    }
+    if layout.points.is_empty() {
+        return Ok(Placing {
+            embedded,
+            embedder_failed,
+            ..Placing::default()
+        });
+    }
     store.save_layout(&layout)?;
     Ok(Placing {
         embedded,
         placed: layout.points.len(),
         new_places,
         embedder_failed,
+        fewer: None,
     })
 }
 
@@ -348,7 +413,7 @@ pub(crate) struct Deep<'a> {
 impl Deep<'_> {
     pub async fn update(
         self,
-        recorded: &[DeepAction],
+        recorded: &Recorded,
         wanted: impl Fn(&DeepAction) -> bool,
         stop: &CancellationToken,
         progress: &mut (dyn FnMut(Progress) + Send),
@@ -407,7 +472,7 @@ mod tests {
             embed_with: embedder.map_or(EmbedWith::Words, EmbedWith::Model),
         };
         deep.update(
-            recorded,
+            &Recorded::from(recorded.to_vec()),
             |_| true,
             &CancellationToken::new(),
             &mut |_| {},
@@ -550,7 +615,7 @@ mod tests {
         );
         assert_eq!(store.layout().unwrap(), before, "the map is as it was");
         let missing = update(
-            &all,
+            &Recorded::from(all.clone()),
             |_| true,
             &store,
             &Echo::new(QWEN),
@@ -581,7 +646,7 @@ mod tests {
         let mut placements = 0;
         let mut sizes = Vec::new();
         let done = update(
-            &all,
+            &Recorded::from(all.clone()),
             |_| true,
             &store,
             &Echo::new(QWEN),
@@ -600,6 +665,89 @@ mod tests {
         assert_eq!((done.placed, done.new_places), (90, 90));
     }
 
+    fn failing(id: &str, from: usize) -> Echo {
+        let mut echo = Echo::new(id);
+        echo.fail_from = Some(from);
+        echo
+    }
+
+    #[tokio::test]
+    async fn a_redo_that_fails_at_once_leaves_the_map_as_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path());
+        let all = recorded();
+        update_with(&all, &store, &Echo::new(QWEN), None).await;
+        let before = store.layout().unwrap();
+        let haiku = failing("claude-code/haiku", 0);
+        let done = update_with(&all, &store, &haiku, None).await;
+        assert!(done.summarized.failed.is_some());
+        assert_eq!((done.new_places, done.placed), (0, 16));
+        assert_eq!(store.layout().unwrap(), before, "the map is as it was");
+        assert_eq!(store.summaries(QWEN, PROMPT_VERSION).by_action.len(), 16);
+    }
+
+    #[tokio::test]
+    async fn a_redo_that_fails_part_way_keeps_its_summaries_for_the_next_try() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path());
+        let all: Vec<DeepAction> = (0..90)
+            .map(|at| shell("run-1", &format!("c{at}"), &format!("step {at}")))
+            .collect();
+        update_with(&all, &store, &Echo::new(QWEN), None).await;
+        let before = store.layout().unwrap();
+        let mut placements = 0;
+        let haiku = failing("claude-code/haiku", 5);
+        let done = update(
+            &Recorded::from(all.clone()),
+            |_| true,
+            &store,
+            &haiku,
+            EmbedWith::Words,
+            &CancellationToken::new(),
+            &mut |_| {},
+            &mut || placements += 1,
+        )
+        .await
+        .unwrap();
+        assert_eq!(done.summarized.written, 50);
+        assert_eq!((placements, done.new_places), (0, 0));
+        assert_eq!(store.layout().unwrap(), before, "no share replaced it");
+        let next = Echo::new("claude-code/haiku");
+        let again = update_with(&all, &store, &next, None).await;
+        assert_eq!(
+            again.summarized.already, 50,
+            "the next try starts where it stopped"
+        );
+        assert_eq!(next.requests(), 4);
+        let map = store.layout().unwrap();
+        assert_eq!(
+            (map.maker.summarizer.as_str(), map.points.len()),
+            ("claude-code/haiku", 90)
+        );
+    }
+
+    #[tokio::test]
+    async fn reading_no_runs_at_all_drops_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path());
+        update_with(&recorded(), &store, &Echo::new(QWEN), None).await;
+        let before = store.layout().unwrap();
+        let refuses = Refuses(QWEN.parse().unwrap());
+        let done = update_with(&[], &store, &refuses, None).await;
+        assert_eq!((done.pruned, done.placed), (0, 16));
+        assert_eq!(store.layout().unwrap(), before);
+        assert_eq!(store.summary_lines().len(), 16);
+    }
+
+    #[tokio::test]
+    async fn a_first_map_that_fails_before_its_first_dots_saves_no_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path());
+        let done = update_with(&recorded(), &store, &failing(QWEN, 0), None).await;
+        assert!(done.summarized.failed.is_some());
+        assert!(store.layout().is_none(), "an empty map is never saved");
+    }
+
     #[tokio::test]
     async fn a_stopped_update_places_nothing_more() {
         let dir = tempfile::tempdir().unwrap();
@@ -607,7 +755,7 @@ mod tests {
         let stop = CancellationToken::new();
         let all = recorded();
         let done = update(
-            &all,
+            &Recorded::from(all.clone()),
             |_| true,
             &store,
             &Echo::new(QWEN),
@@ -628,6 +776,141 @@ mod tests {
         assert!(
             store.layout().is_none(),
             "nothing embedded or placed after the stop"
+        );
+    }
+    /// A run of `project` with one call per command.
+    fn run_on_disk(home: &std::path::Path, project: &str, run: &str, commands: &[&str]) {
+        let dir = home.join("state").join(project).join("runs").join(run);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lines: String = commands
+            .iter()
+            .enumerate()
+            .map(|(at, command)| {
+                let line = serde_json::json!({"seq": at, "ts": "2026-10-17T07:17:01Z",
+                    "run_id": run, "source": "codex", "session": "s-001",
+                    "kind": {"type": "agent", "data": {"type": "tool_started",
+                        "id": format!("t{at}"), "name": "Bash",
+                        "input": {"command": command}, "parent": null}}});
+                format!("{line}\n")
+            })
+            .collect();
+        std::fs::write(dir.join("events.jsonl"), lines).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_project_that_cant_be_read_keeps_its_dots_and_summaries() {
+        use argonauts_core::Paths;
+        use std::os::unix::fs::PermissionsExt as _;
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::new(home.path());
+        run_on_disk(
+            home.path(),
+            "alpha-3f9a1c2b4d5e",
+            "run-1",
+            &["ls", "pwd", "git log"],
+        );
+        run_on_disk(
+            home.path(),
+            "beta-4e8b2d3c5f6a",
+            "run-2",
+            &["pytest", "make", "cargo test"],
+        );
+        let store = Store::new(&paths);
+        let all = super::super::records::recorded(&paths);
+        let first = update(
+            &all,
+            |_| true,
+            &store,
+            &Echo::new(QWEN),
+            EmbedWith::Words,
+            &CancellationToken::new(),
+            &mut |_| {},
+            &mut || {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.placed, 6);
+        let before = store.layout().unwrap();
+        run_on_disk(home.path(), "alpha-3f9a1c2b4d5e", "run-3", &["cargo fmt"]);
+        let beta = home.path().join("state").join("beta-4e8b2d3c5f6a");
+        std::fs::set_permissions(&beta, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let read = super::super::records::recorded(&paths);
+        std::fs::set_permissions(&beta, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(read.actions.len(), 4, "beta's three are left out");
+        let done = update(
+            &read,
+            |_| true,
+            &store,
+            &Echo::new(QWEN),
+            EmbedWith::Words,
+            &CancellationToken::new(),
+            &mut |_| {},
+            &mut || {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(done.pruned, 0, "nothing of beta is dropped");
+        assert_eq!(done.unread.len(), 1, "{:?}", done.unread);
+        assert_eq!((done.new_places, done.placed), (1, 7));
+        let after = store.layout().unwrap();
+        for old in &before.points {
+            let now = after.points.iter().find(|p| p.action == old.action);
+            assert_eq!(
+                now.map(|p| (p.x, p.y)),
+                Some((old.x, old.y)),
+                "{:?}",
+                old.action
+            );
+        }
+        assert_eq!(store.summary_lines().len(), 7);
+        // Once beta's run is really gone, its dots and summaries go with it.
+        std::fs::remove_dir_all(beta.join("runs").join("run-2")).unwrap();
+        let read = super::super::records::recorded(&paths);
+        let done = update(
+            &read,
+            |_| true,
+            &store,
+            &Refuses(QWEN.parse().unwrap()),
+            EmbedWith::Words,
+            &CancellationToken::new(),
+            &mut |_| {},
+            &mut || {},
+        )
+        .await
+        .unwrap();
+        assert_eq!((done.pruned, done.placed), (3, 4));
+    }
+
+    #[tokio::test]
+    async fn a_redo_with_fewer_dots_than_the_map_keeps_it_and_says_why() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path());
+        let all = recorded();
+        update_with(&all, &store, &Echo::new(QWEN), None).await;
+        let before = store.layout().unwrap();
+        let haiku = Echo::new("claude-code/haiku");
+        let done = update(
+            &Recorded::from(all.clone()),
+            |action| action.key.run == "run-1",
+            &store,
+            &haiku,
+            EmbedWith::Words,
+            &CancellationToken::new(),
+            &mut |_| {},
+            &mut || {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(done.fewer, Some(FewerDots { made: 8, shown: 16 }));
+        assert_eq!((done.new_places, done.placed), (0, 16));
+        assert_eq!(store.layout().unwrap(), before, "the map is as it was");
+        assert_eq!(
+            store
+                .summaries("claude-code/haiku", PROMPT_VERSION)
+                .by_action
+                .len(),
+            8,
+            "the new summaries are kept for the next try"
         );
     }
 }

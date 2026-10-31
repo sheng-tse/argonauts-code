@@ -121,7 +121,7 @@ pub struct PickerRow {
     /// can't be used here stands out.
     pub danger: Option<String>,
     /// What the filter matches beside the label and the description, such as a model's id,
-    /// so `qwen3-coder:30b` finds the row named "Qwen3 Coder 30B (64k)".
+    /// so `qwen3-coder:30b` finds the row named "Qwen3 Coder 30B".
     pub also_matches: Option<String>,
     /// Drawn dim in place of the row's position, for rows that go by a number of their own,
     /// such as an issue's `#42`.

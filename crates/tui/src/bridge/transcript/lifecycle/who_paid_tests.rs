@@ -223,7 +223,6 @@ fn a_run_says_who_paid_for_its_tokens_under_its_end_line() {
         include_str!("../../../../tests/golden/transcript/end_line_who_paid.txt"),
         include_str!("../../../../tests/golden/transcript/end_line_who_paid.html"),
         &Screen::theme(),
-        &[],
     );
 }
 

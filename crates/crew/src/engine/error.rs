@@ -3,7 +3,9 @@
 
 use std::fmt;
 
-use argonauts_core::agents::session_runner::RunnerError;
+use argonauts_core::agents::session_runner::{RunnerError, SessionLimits};
+use argonauts_core::base::text::time_as_measure;
+use argonauts_core::models::meter::LimitDimension;
 use argonauts_core::runs::events::agent_status::{JobKeeper, JobWait};
 use argonauts_core::runs::events::run::RunStop;
 use argonauts_core::runs::journal::JournalError;
@@ -27,7 +29,7 @@ pub enum EngineError {
     Git(#[from] GitError),
     #[error("worker: {0}")]
     Runner(#[from] RunnerError),
-    #[error("step: {0}")]
+    #[error("{0}")]
     Step(#[from] StepError),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
@@ -58,6 +60,30 @@ impl EngineError {
             _ => return self.to_string(),
         };
         format!("{plain}\n{self}")
+    }
+}
+
+/// What a session ran into, naming its `worker` and the limit it started with, when the run
+/// still knows it: `Qwen3 Coder 30B ran past its 2-minute limit`.
+pub fn limit_line(
+    worker: &str,
+    dimension: LimitDimension,
+    limits: Option<&SessionLimits>,
+) -> String {
+    match dimension {
+        LimitDimension::Minutes => match limits.and_then(|limits| limits.max_minutes) {
+            Some(minutes) => {
+                let secs = (minutes * 60.0).round().max(1.0) as u64;
+                format!("{worker} ran past its {} limit", time_as_measure(secs))
+            }
+            None => format!("{worker} ran past its time limit"),
+        },
+        LimitDimension::ToolCalls => match limits.and_then(|limits| limits.max_tool_calls) {
+            Some(1) => format!("{worker} used up its one tool call"),
+            Some(calls) => format!("{worker} used up its {calls} tool calls"),
+            None => format!("{worker} used up its tool calls"),
+        },
+        LimitDimension::Spend => format!("{worker} used up its spend limit"),
     }
 }
 
@@ -175,6 +201,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_limit_line_names_the_worker_and_the_limit_in_words() {
+        let limits = SessionLimits {
+            max_minutes: Some(2.0),
+            max_tool_calls: Some(40),
+            ..SessionLimits::default()
+        };
+        let qwen = "Qwen3 Coder 30B";
+        assert_eq!(
+            limit_line(qwen, LimitDimension::Minutes, Some(&limits)),
+            "Qwen3 Coder 30B ran past its 2-minute limit"
+        );
+        assert_eq!(
+            limit_line(qwen, LimitDimension::ToolCalls, Some(&limits)),
+            "Qwen3 Coder 30B used up its 40 tool calls"
+        );
+        assert_eq!(
+            limit_line(qwen, LimitDimension::Minutes, None),
+            "Qwen3 Coder 30B ran past its time limit"
+        );
+        assert_eq!(
+            limit_line(qwen, LimitDimension::Spend, Some(&limits)),
+            "Qwen3 Coder 30B used up its spend limit"
+        );
+    }
+
+    #[test]
     fn a_run_failed_by_an_answer_that_doesnt_fit_says_so_plainly_first() {
         let missed = EngineError::Step(StepError::SchemaMismatch {
             raw: Some("{}".to_owned()),
@@ -188,7 +240,7 @@ mod tests {
         );
         assert_eq!(
             lines.next(),
-            Some("step: output didn't match the schema: \"based_on\" is a required property")
+            Some("output didn't match the schema: \"based_on\" is a required property")
         );
 
         let none = EngineError::Step(StepError::SchemaMismatch {

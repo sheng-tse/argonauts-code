@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use argonauts_core::base::clock;
 use argonauts_core::base::layout::{project_files, user_files};
 use argonauts_core::base::names::ModelRef;
 use argonauts_core::base::text::state_words;
@@ -39,7 +40,7 @@ pub(crate) fn call(ctx: &mut Ctx, conversation: &mut ConversationState, call: Ca
     match Query::read(&call.arguments) {
         Ok(query) => {
             let kept = &conversation.talk.steps_for_conversation;
-            let answer = answer(ctx, kept, &query, OffsetDateTime::now_utc());
+            let answer = answer(ctx, kept, &query, clock::now_utc());
             call.answer(answer);
         }
         Err(problem) => fail(call, problem),
@@ -686,7 +687,7 @@ mod tests {
     #[test]
     fn reviews_say_what_each_model_sent_back_and_why() {
         let test = ctx();
-        let now = OffsetDateTime::now_utc();
+        let now = clock::now_utc();
         write_run(&test, now);
         let said = answer(&test.ctx, &[], &query("reviews", None), now);
         assert!(
@@ -712,7 +713,7 @@ mod tests {
     #[test]
     fn a_model_with_no_reviews_has_no_record() {
         let test = ctx();
-        let now = OffsetDateTime::now_utc();
+        let now = clock::now_utc();
         write_run(&test, now);
         let said = answer(&test.ctx, &[], &query("reviews", Some("astra")), now);
         assert!(
@@ -730,7 +731,7 @@ mod tests {
     #[test]
     fn tasks_and_fallbacks_come_from_the_run_records() {
         let test = ctx();
-        let now = OffsetDateTime::now_utc();
+        let now = clock::now_utc();
         write_run(&test, now);
         let tasks = answer(&test.ctx, &[], &query("tasks", None), now);
         assert!(tasks.contains("2 in 1 run."), "{tasks}");
@@ -755,7 +756,7 @@ mod tests {
     #[test]
     fn tokens_and_spend_come_from_the_usage_ledger() {
         let test = ctx();
-        let now = OffsetDateTime::now_utc();
+        let now = clock::now_utc();
         let none = answer(&test.ctx, &[], &query("spend", None), now);
         assert!(
             none.starts_with("No record of spend in this repository"),
@@ -821,12 +822,7 @@ mod tests {
             .filter(|entry| entry.layer == layer::WORKFLOW && entry.key != "workflow_size")
             .count();
         assert!(from_the_workflow > 0);
-        let said = answer(
-            &test.ctx,
-            &[],
-            &query("setup", None),
-            OffsetDateTime::now_utc(),
-        );
+        let said = answer(&test.ctx, &[], &query("setup", None), clock::now_utc());
         let set_by_the_user = said
             .split_once("Set by the user:")
             .map_or("", |(_, rest)| rest);
@@ -842,12 +838,7 @@ mod tests {
         let roles = test.repo.root().join(".argonauts/roles");
         std::fs::create_dir_all(&roles).unwrap();
         std::fs::write(roles.join("reviewer.md"), "Be strict.").unwrap();
-        let said = answer(
-            &test.ctx,
-            &[],
-            &query("setup", None),
-            OffsetDateTime::now_utc(),
-        );
+        let said = answer(&test.ctx, &[], &query("setup", None), clock::now_utc());
         assert!(said.starts_with("The setup in use here:"), "{said}");
         assert!(said.contains("- workflow = "), "{said}");
         assert!(
@@ -862,12 +853,7 @@ mod tests {
             "[[step]]\nname = \"Benchmark\"\nwhen = \"last\"\n",
         )
         .unwrap();
-        let said = answer(
-            &test.ctx,
-            &[],
-            &query("setup", None),
-            OffsetDateTime::now_utc(),
-        );
+        let said = answer(&test.ctx, &[], &query("setup", None), clock::now_utc());
         assert!(
             said.contains("Steps every workflow must contain:\n- Benchmark, last, by the workers"),
             "{said}"
@@ -879,12 +865,7 @@ mod tests {
             does: None,
             when: Some("first".to_owned()),
         }];
-        let said = answer(
-            &test.ctx,
-            &kept,
-            &query("setup", None),
-            OffsetDateTime::now_utc(),
-        );
+        let said = answer(&test.ctx, &kept, &query("setup", None), clock::now_utc());
         assert!(
             said.contains(
                 "Steps every workflow in this conversation must contain:\n\

@@ -121,6 +121,9 @@ pub struct QuestionPrompt {
     /// A sheet one option opens in the question's own place, such as Approve with edits on a
     /// council's plan. It takes the keys until it answers or goes back.
     pub sheet: Option<Box<crate::council::screens::edits::InQuestion>>,
+    /// Drawn above the input, which stays with the bottom line under it, with no rule over it
+    /// and no blank rows inside it, as a council's plan question stands under its talk.
+    pub above_input: bool,
 }
 
 /// One question's chip on a question that asks several.
@@ -407,6 +410,7 @@ impl QuestionPrompt {
             warns: false,
             enter_hint: None,
             sheet: None,
+            above_input: false,
         };
         question.open_field();
         question

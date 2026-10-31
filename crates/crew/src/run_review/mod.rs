@@ -11,6 +11,7 @@ use std::path::Path;
 use argonauts_core::agents::session_runner::Access;
 use argonauts_core::base::log::{Note, NoteLevel, RUN_REVIEW_FAILED};
 use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::runs::events::RunEventKind;
 use argonauts_core::runs::events::run::{PhaseChange, RunOutcome, RunPhase};
 use argonauts_core::runs::events::session::{EndReason, SessionEnd};
@@ -576,14 +577,16 @@ async fn propose(host: &Host, facts: &[facts::TaskFacts], settings: &Settings) -
     ask.optional = true;
     let timeout = &settings.evolution.propose_timeout;
     ask.time_limit = timeout.parse().ok().flatten();
-    let agent = roles::display_name(&ask.worker);
+    let agent = host.names().worker(&ask.worker);
     if job_fallback::is_out(host, &ask.worker).await {
         return no_proposal(host, &format!("{agent} is out"));
     }
     let change = match host.ask::<RunReview>(ask).await {
         Ok(answered) => answered.output.change,
         Err(EngineError::Step(StepError::Session(end))) if out_of_time(&end) => {
-            let (ran, why) = host.read(who_ran).unwrap_or((agent, String::new()));
+            let (ran, why) = host
+                .read(|state| who_ran(host.names(), state))
+                .unwrap_or((agent, String::new()));
             return no_proposal(host, &format!("{ran} took longer than {}{why}", timeout.0));
         }
         Err(err) => return Err(err),
@@ -609,7 +612,7 @@ async fn propose(host: &Host, facts: &[facts::TaskFacts], settings: &Settings) -
 /// Says in one line why nobody proposed a change, and leaves the rest of the run review to go on.
 /// The run review's newest session, which may have fallen back from the agent asked: who ran
 /// it, and why it gave no reply when its CLI kept losing the network.
-fn who_ran(state: &crate::state::RunState) -> Option<(String, String)> {
+fn who_ran(names: &DisplayNames, state: &crate::state::RunState) -> Option<(String, String)> {
     let session = state
         .sessions
         .in_order()
@@ -621,7 +624,7 @@ fn who_ran(state: &crate::state::RunState) -> Option<(String, String)> {
     } else {
         String::new()
     };
-    Some((roles::display_name(&session.started.worker), why))
+    Some((names.worker(&session.started.worker), why))
 }
 
 fn no_proposal(host: &Host, why: &str) -> EngineResult<()> {

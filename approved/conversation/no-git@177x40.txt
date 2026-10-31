@@ -1,0 +1,93 @@
+The first frame in a folder git has never seen, down to the input: the header and the notice about the folder come with the input
+screen 177x40
+at 0,0
+size 177x39
+terminal fg=#c8d3f5 bg=#222436
+text
+
+ ￼￼￼￼￼￼￼￼￼ Argonauts Code v0.2.0
+ ￼￼￼￼￼￼￼￼￼ Claude Code · Opus 5.5 with xhigh effort · Captain
+ ￼￼￼￼￼￼￼￼￼ ~/Downloads
+
+
+※ This folder has no git. Captain and the workflows keep their own history in ~/.argonauts, so /rewind works, and your folder stays as it is.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Opus 5.5 ─
+❯ Try "review the last commit"
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+paint
+
+.fffffffff.aaaaaaaaa.aaaa.bbbbbb
+.fffffffff.bbbbbb.bbbb.b.bbbb.bbb.bbbb.bbbbb.bbbbbb.b.bbbbbbb
+.fffffffff.bbbbbbbbbbb
+
+
+b.bbbb.bbbbbb.bbb.bb.bbbb.bbbbbbb.bbb.bbb.bbbbbbbbb.bbbb.bbbbb.bbb.bbbbbbb.bb.bbbbbbbbbbbbb.bb.bbbbbbb.bbbbbb.bbb.bbbb.bbbbbb.bbbbb.bb.bb.bbb
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.bbbb.bbb.c
+d.ebb.bbbbbbb.bbb.bbbb.bbbbbbb
+ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+key
+. blank
+a fg=#c8d3f5 bold  ; the terminal's own
+b fg=#999999  ; Dim, ModeSupervised, SyntaxComment
+c fg=#888888
+d fg=#c8d3f5  ; the terminal's own
+e fg=#222436 bg=#c8d3f5
+f picture=mascot

@@ -3,6 +3,7 @@
 //! starts on the issue under the pointer.
 
 use argonauts_core::app::{AppChoice, IssueRow, UiCommand, ViewData};
+use argonauts_core::base::clock;
 use argonauts_core::input::{IssueRef, SlashCommand};
 use argonauts_core::runs::events::approval::{
     AnswerAction, AnswerOption, ApprovalOpened, ApprovalPacket,
@@ -36,7 +37,7 @@ pub(super) fn open(data: &ViewData, cx: &mut Cx<'_>) {
     else {
         return;
     };
-    let mut picker = picker(repo, issues, problem.as_deref(), OffsetDateTime::now_utc());
+    let mut picker = picker(repo, issues, problem.as_deref(), clock::now_utc());
     if let Some(open) = open {
         picker.about = cut_about(issues.len(), *open);
     }
@@ -351,7 +352,6 @@ mod tests {
             (&txt, &html),
             5..19,
             &theme(),
-            &[],
         );
     }
 

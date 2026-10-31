@@ -6102,7 +6102,7 @@ Used by:
 - regex 1.13.1 (https://github.com/rust-lang/regex)
 - rustix 1.1.5 (https://github.com/bytecodealliance/rustix)
 - rustls-native-certs 0.8.4 (https://github.com/rustls/rustls-native-certs)
-- rustls 0.23.45 (https://github.com/rustls/rustls)
+- rustls 0.23.46 (https://github.com/rustls/rustls)
 - scopeguard 1.2.0 (https://github.com/bluss/scopeguard)
 - security-framework-sys 2.17.0 (https://github.com/kornelski/rust-security-framework)
 - security-framework 3.7.0 (https://github.com/kornelski/rust-security-framework)
@@ -10164,7 +10164,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 Used by:
 - tokio-stream 0.1.18 (https://github.com/tokio-rs/tokio)
 - tokio-util 0.7.19 (https://github.com/tokio-rs/tokio)
-- tokio 1.53.1 (https://github.com/tokio-rs/tokio)
+- tokio 1.53.3 (https://github.com/tokio-rs/tokio)
 
 ````text
 MIT License

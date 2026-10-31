@@ -26,6 +26,5 @@ fn a_failed_update_warns_with_its_mark_and_offers_the_command_as_code() {
         include_str!("../../../../tests/golden/transcript/update_failed.txt"),
         include_str!("../../../../tests/golden/transcript/update_failed.html"),
         &Screen::theme(),
-        &[],
     );
 }

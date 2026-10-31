@@ -10,9 +10,9 @@
 //! are packed off the frame, and the last one stays until the next is ready: the screen draws
 //! the frame that sends it when it arrives, and no frame looks for it before.
 //!
-//! A scene that moves is asked for again at each step of one clock, 8 a second, which wakes the
-//! app only while the map's cells were in the last frame and its rules let it run: see
-//! [`crate::world::deliver::clock`].
+//! A scene that moves is asked for again at each step of one clock, 12 or 16 a second by the
+//! map's size, which wakes the app only while the map's cells were in the last frame and its rules
+//! let it run: see [`crate::world::deliver::clock`].
 
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -27,10 +27,11 @@ use ratatui::layout::{Position, Rect};
 use super::{Ui, UiAction};
 use crate::base::mascot::Graphics;
 use crate::base::mascot::graphics;
+use crate::base::text::sanitize_line;
 use crate::frame::view::ViewCtx;
 use crate::frame::view::map::{MapPoint, MapView};
 use crate::terminal::setup;
-use crate::world::deliver::clock::{IDLE_AFTER, Showing, Sources, Steps};
+use crate::world::deliver::clock::{IDLE_AFTER, Rate, Showing, Sources, Steps};
 use crate::world::deliver::worker::{self, Cancel, Worker};
 use crate::world::deliver::{self, Spot, Stage};
 use crate::world::{Depth, Scene};
@@ -43,6 +44,8 @@ const LINE_FIRST_ID: u32 = 0x4d4c_0000;
 const LINE_KEPT_BYTES: usize = 4 << 20;
 /// How long the note on selecting text inline stays.
 const SHIFT_HINT_FOR: Duration = Duration::from_secs(6);
+/// How long the words on a picture that couldn't be drawn stay.
+const FAILURE_HINT_FOR: Duration = Duration::from_secs(10);
 /// How long the terminal keeps the map's pictures once they leave the screen, so coming
 /// straight back sends none of them again.
 const KEEP_AFTER_LEAVING: Duration = Duration::from_secs(60);
@@ -95,6 +98,8 @@ pub(super) struct DockedMap {
     steps: Option<Steps>,
     /// The terminal keeps pictures, so a step sends only what changed.
     kept_pictures: bool,
+    /// What the map's own drawing last said when it panicked, until the bottom line says it.
+    view_failure: Option<String>,
 }
 
 /// Said once, inline, the first time the map takes the mouse.
@@ -122,6 +127,7 @@ impl DockedMap {
             sources: Sources::new(started),
             steps: None,
             kept_pictures: false,
+            view_failure: None,
         }
     }
 }
@@ -185,6 +191,9 @@ impl DockedMap {
         ctx: &ViewCtx<'_>,
     ) {
         self.wanted = view.and_then(|view| {
+            if let Some(failure) = view.take_failure() {
+                self.view_failure = Some(failure);
+            }
             let drawn = view.map_cells()?;
             let cells = Rect {
                 y: top.checked_add(drawn.area.y)?,
@@ -193,7 +202,7 @@ impl DockedMap {
             let scene = drawn.picture.zip(cell).and_then(|(key, cell)| {
                 // Reduced motion still steps a change, such as a zoom, whose scenes say they
                 // move; the world's own motion is drawn still, and says it doesn't.
-                let step = self.step(ctx.now, !ctx.theme.skips_frames);
+                let step = self.step(ctx.now, !ctx.theme.skips_frames, rate_of(cells));
                 self.scene(view, (cells, key, cell), step, ctx)
             });
             let beside = view.beside().and_then(|beside| {
@@ -239,11 +248,18 @@ impl DockedMap {
 
     /// Which step of the motion `now` falls in, while the motion may run: `motion` says whether
     /// it is allowed. The steps count from the map's first frame on screen.
-    fn step(&mut self, now: Instant, motion: bool) -> Option<u128> {
+    fn step(&mut self, now: Instant, motion: bool, rate: Rate) -> Option<u128> {
         let still = self.sources.still(self.showing(motion), now);
-        let length = self.sources.step(now);
+        let length = self.sources.step(now, rate);
         let steps = self.steps.get_or_insert_with(|| Steps::new(now));
         still.is_none().then(|| steps.index(now, length))
+    }
+
+    /// The rate the map's motion steps at, by the cells it was last asked for.
+    fn rate(&self) -> Rate {
+        self.asked
+            .as_ref()
+            .map_or_else(Rate::default, |asked| rate_of(asked.cells))
     }
 
     /// What the clock's rules read of the map as the last frame left it.
@@ -259,6 +275,11 @@ impl DockedMap {
             kept_pictures: self.kept_pictures,
         }
     }
+}
+
+/// The rate a map shown in `cells` steps at, as the view drawing it steps its motion.
+fn rate_of(cells: Rect) -> Rate {
+    Rate::for_map(usize::from(cells.width), usize::from(cells.height))
 }
 
 /// What goes out once a frame drew: the mouse's modes, the parts taken away, and the
@@ -342,7 +363,7 @@ impl<W: Write> Ui<W> {
             Some(_) => None,
             None => map
                 .steps
-                .map(|steps| steps.next(now, map.sources.step(now))),
+                .map(|steps| steps.next(now, map.sources.step(now, map.rate()))),
         };
         let free = map.left_at.map(|left| left + KEEP_AFTER_LEAVING);
         step.into_iter().chain(free).min()
@@ -353,6 +374,7 @@ impl<W: Write> Ui<W> {
     /// for a minute, then go. iTerm2 draws a picture into the cells, so where one was is
     /// written again by the frame about to draw.
     pub(super) fn place_map(&mut self, now: Instant) -> MapPlacing {
+        self.tell_of_failed_pictures(now);
         let wanted = self.map.wanted.take();
         let mut out = MapPlacing {
             escapes: std::mem::take(&mut self.map.waiting),
@@ -463,6 +485,30 @@ impl<W: Write> Ui<W> {
             }
         }
         out
+    }
+
+    /// A picture of the map whose drawing panicked gives nothing and the map goes on without
+    /// it, so the bottom line says what it said.
+    fn tell_of_failed_pictures(&mut self, now: Instant) {
+        let map = &mut self.map;
+        let failure = [
+            map.view_failure.take(),
+            map.stage.take_failure(),
+            map.line.take_failure(),
+            map.whole_packing.take_failure(),
+        ]
+        .into_iter()
+        .flatten()
+        .last();
+        if let Some(failure) = failure {
+            self.model.bottom.hint = Some(crate::bottom::Hint {
+                text: format!(
+                    "The map's picture couldn't be drawn: {}",
+                    sanitize_line(&failure)
+                ),
+                until: now + FAILURE_HINT_FOR,
+            });
+        }
     }
 
     /// The escapes that free every picture the terminal keeps for the map and its line.

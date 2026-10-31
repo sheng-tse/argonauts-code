@@ -69,8 +69,7 @@ impl ContextPrinted {
             return None;
         }
         let now = crate::base::format::wall_now();
-        Started::of(&main.start, row, &state.names, main.cli_window, now)
-            .map(|started| started.card())
+        Some(Started::of(&main.start, row, &state.names, main.cli_window, now).card())
     }
 
     /// Shows paths from `places`, wherever a test runs.
@@ -178,7 +177,7 @@ mod tests {
         for part in [
             "     Auto-compact window: 1m tokens",
             "     MCP tools \u{b7} /mcp (loaded on-demand)",
-            "     \u{2514} 237 tools \u{b7} 0 tokens",
+            "     \u{2514} 14 tools \u{b7} 0 tokens",
             "     Crew agents \u{b7} the last run, Make the rate limiter per API key",
             "     /context all to expand",
         ] {

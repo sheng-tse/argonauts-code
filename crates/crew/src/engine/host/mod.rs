@@ -497,6 +497,11 @@ impl Host {
         &self.shared.services
     }
 
+    /// What the run calls each CLI and model, such as `Opus 5.5 on Claude Code`.
+    pub fn names(&self) -> &DisplayNames {
+        &self.shared.names
+    }
+
     pub fn git(&self) -> &Git {
         &self.shared.git
     }
@@ -722,7 +727,7 @@ impl Host {
     /// on Claude Code costs about $0.36 to start here and $0.23 is left".
     fn no_room_words(&self, worker: &ModelRef, no_room: NoRoom) -> String {
         let limit = lock(&self.shared.run_meter).limit().limit;
-        let cli = DisplayNames::default().cli(&worker.agent);
+        let cli = self.names().cli(&worker.agent);
         let session = match job_fallback::model_name(self, worker) {
             Some(model) => format!("{model} on {cli}"),
             None => cli,
@@ -1552,6 +1557,7 @@ impl Host {
             }
             _ => None,
         };
+        let blocked = self.folder_blocked(key, &event);
         let outside_note = match &event {
             RunnerEvent::Agent(agent) => self.outside_note(key, agent),
             RunnerEvent::Session(SessionEvent::Ended(_)) => {
@@ -1588,6 +1594,9 @@ impl Host {
             });
             self.record_as(source, task, Some(key), note)?;
         }
+        if let Some(kind) = blocked {
+            self.record_as(source, task, Some(key), kind)?;
+        }
         Ok(())
     }
 
@@ -1617,23 +1626,6 @@ impl Host {
         });
         self.record_as(source, Some(task), Some(key), todos)
             .map(drop)
-    }
-
-    /// The line a worker's write outside the project leaves once it's done. Its own folder,
-    /// your checkout, the run's worktrees, and Argonauts Code's state are the project's.
-    fn outside_note(&self, key: &SessionKey, event: &argonauts_core::AgentEvent) -> Option<String> {
-        let repo = &self.shared.repo;
-        let state = repo.run_dir.ancestors().nth(3);
-        let project: Vec<&Path> = [
-            Some(repo.root.as_path()),
-            Some(repo.worktrees.as_path()),
-            state,
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        let home = std::env::var_os("HOME").map(PathBuf::from);
-        lock(&self.shared.outside_writes).follow(key, event, &project, home.as_deref())
     }
 
     /// The session's held deltas, then `kind`, so the log keeps the order they happened in.
@@ -2110,6 +2102,7 @@ impl Host {
                 let never =
                     argonauts_conductor::sandbox::profile::outside_reach(&spec.sandbox).never;
                 lock(&self.shared.outside_writes).began(&key, &spec.workdir, never);
+                lock(&self.shared.session_limits).insert(key.clone(), spec.limits.clone());
                 let own = identity
                     .task
                     .as_ref()

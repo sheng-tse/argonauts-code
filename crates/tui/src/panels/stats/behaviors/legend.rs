@@ -3,9 +3,10 @@
 //! with its logo and its count. Nature, the land's kinds, the wonders and the kinds of bodies are
 //! never listed: the pointer finds each. Above the picture, the row that names the levels.
 
-use argonauts_core::behaviors::behavior_map::Grouping;
+use argonauts_core::behaviors::behavior_map::{Grouping, MapGroup};
 use argonauts_core::behaviors::behavior_world::ModelFacts;
-use argonauts_core::look::logos::{Logo, logo_for};
+use argonauts_core::look::display_names::{on_cli, run_by_several};
+use argonauts_core::look::logos::{self, Logo, logo_for};
 use ratatui::style::{Color, Style};
 use ratatui::text::Span;
 use unicode_width::UnicodeWidthStr;
@@ -19,8 +20,9 @@ use super::words::Look;
 use super::{LEGEND_GAP, MAP_INSET};
 use crate::base::kit::logo::{ModelLabel, NoPicture};
 use crate::base::theme::{ColorLevel, Role, nearest_ansi256};
+use crate::panels::view::subtabs::chosen_word;
 use crate::world::Pointed;
-use crate::world::cosmos::{maker_logo, served_logo};
+use crate::world::cosmos::{maker_logo, model_logo};
 
 /// The cells from a row's mark to its logo, and from its logo to its name.
 const TO_LOGO: usize = 3;
@@ -91,9 +93,23 @@ impl Look<'_> {
         line
     }
 
-    /// A model's name after its logo, or whole where no logo stands before it.
+    /// A model's name after its logo, or whole where no logo stands before it, with its CLI
+    /// where another CLI runs a model of the same name, since the two rows' logos are alike.
     fn short(&self, model: &ModelFacts) -> String {
-        self.named_after(&served_logo(model), &self.model_name(model))
+        let whole = self.model_name(model);
+        let name = self.named_after(&model_logo(model), &whole);
+        let models = self
+            .world
+            .map(|world| world.models.as_slice())
+            .unwrap_or_default();
+        let named: Vec<(&str, String)> = (models.iter())
+            .map(|other| (other.agent.as_str(), self.model_name(other)))
+            .collect();
+        let shared = run_by_several(named.iter().map(|(agent, name)| (*agent, name.as_str())));
+        match shared.contains(whole.as_str()) {
+            true => on_cli(&name, &self.names.cli(&model.agent)),
+            false => name,
+        }
     }
 
     /// `name` as it stands after `logo`: without its maker's word only where the logo draws as
@@ -127,13 +143,29 @@ impl Look<'_> {
             .unwrap_or_else(|| model.model.clone())
     }
 
+    /// A model group's name after `logo`, with its CLI where another CLI runs a model of the
+    /// same name, since the two rows' logos are alike.
+    fn model_group_name(&self, found: &MapGroup, logo: &Logo) -> String {
+        let name = self.named_after(logo, &found.name);
+        let groups = self.map.groups.iter();
+        let shared = run_by_several(
+            groups.filter_map(|group| Some((group.agent.as_deref()?, group.name.as_str()))),
+        );
+        match found.agent.as_deref() {
+            Some(agent) if shared.contains(found.name.as_str()) => {
+                on_cli(&name, &self.names.cli(agent))
+            }
+            _ => name,
+        }
+    }
+
     /// The logo a group's row and hover line stand before its name: the CLI's for a CLI, its
-    /// server's for a model, none for a role, a workflow, a project or an outcome.
+    /// line's for a model, none for a role, a workflow, a project or an outcome.
     pub fn group_logo(&self, group: usize) -> Option<Logo> {
         let group = self.map.groups.get(group)?;
         let agent = group.agent.as_deref()?;
         match self.map.request.grouping {
-            Grouping::Model => Some(logo_for(agent, group.model.as_deref())),
+            Grouping::Model => Some(logos::model_logo(agent, group.model.as_deref())),
             Grouping::Cli => Some(logo_for(agent, None)),
             _ => None,
         }
@@ -150,7 +182,7 @@ impl Look<'_> {
                 let mut spans = crate::base::kit::logo::logo_spans(&logo, kit.theme);
                 spans.push(Span::raw(" "));
                 let name = match self.map.request.grouping {
-                    Grouping::Model => self.named_after(&logo, &found.name),
+                    Grouping::Model => self.model_group_name(found, &logo),
                     _ => found.name.clone(),
                 };
                 spans.push(Span::styled(name, kit.style(Role::Text)));
@@ -264,7 +296,7 @@ impl Look<'_> {
         let named = |group: usize| {
             let found = &self.map.groups[group];
             match (self.map.request.grouping, self.group_logo(group)) {
-                (Grouping::Model, Some(logo)) => self.named_after(&logo, &found.name),
+                (Grouping::Model, Some(logo)) => self.model_group_name(found, &logo),
                 _ => found.name.clone(),
             }
         };
@@ -400,7 +432,7 @@ impl Look<'_> {
             let name = self.short(model);
             out.push(self.body_row(
                 self.pick_mark(picked),
-                Some(&served_logo(model)),
+                Some(&model_logo(model)),
                 Span::styled(name, kit.style(Role::Text)),
                 Some(model.actions.to_string()),
             ));
@@ -416,7 +448,7 @@ impl Look<'_> {
         }) else {
             return Vec::new();
         };
-        let mut head = self.heading_logo(&served_logo(model));
+        let mut head = self.heading_logo(&model_logo(model));
         head.push(Span::styled(self.short(model), kit.bold(Role::Text)));
         let behaviors = u32::try_from(model.behaviors.len()).unwrap_or(0);
         let mut out = vec![
@@ -520,14 +552,10 @@ impl Look<'_> {
                     }
                     Some(_) => {}
                     None => {
-                        for (fill, words) in [
-                            (super::braille::more_style(kit), "more"),
-                            (super::braille::less_style(kit), "less"),
-                        ] {
+                        for (colour, words) in [("red", "more"), ("blue", "less")] {
                             out.push(vec![
-                                Span::styled("  ", fill),
-                                Span::raw(" "),
-                                kit.dim(format!("Behind the dots: {name} does this {words}")),
+                                kit.dim(format!("{colour}: ")),
+                                kit.span(format!("{name} does this {words}"), Role::Text),
                             ]);
                         }
                     }
@@ -536,10 +564,14 @@ impl Look<'_> {
         }
         out.push(Vec::new());
         let room = self.fit.legend_rows().saturating_sub(out.len());
-        let groups = self.map.groups.len();
-        let window = Window::follow(groups, room, 0, self.compared.unwrap_or(0));
+        let order = busiest_first(self.map);
+        let followed = self
+            .compared
+            .and_then(|compared| order.iter().position(|at| *at == compared))
+            .unwrap_or(0);
+        let window = Window::follow(order.len(), room, 0, followed);
         out.extend(window.above_row(kit, ""));
-        for at in window.rows() {
+        for at in window.rows().filter_map(|row| order.get(row).copied()) {
             let Some(group) = self.map.groups.get(at) else {
                 continue;
             };
@@ -571,10 +603,11 @@ impl Look<'_> {
                 line.push(kit.dim(" · "));
             }
             let words = format!("{} {name}", level.digit());
+            // `1` to `3` change the level, never the arrows, so its pick stays lavender.
             line.push(if level.digit() == shown {
-                Span::styled(words, kit.bold(Role::Question))
+                chosen_word(kit, words, false)
             } else {
-                kit.dim(words)
+                Span::raw(words)
             });
         }
         let world = self.world;
@@ -602,7 +635,7 @@ impl Look<'_> {
                 .get(star)
                 .and_then(|s| world?.models.get(s.model))
         {
-            let logo = served_logo(model);
+            let logo = model_logo(model);
             let name = self.named_after(&logo, &self.model_name(model));
             crumb(logo, name);
         }
@@ -622,8 +655,8 @@ impl Look<'_> {
     fn maps_switch(&self) -> Vec<Span<'static>> {
         let kit = self.kit;
         let paint = |on: bool, words: &'static str| match on {
-            true => Span::styled(words, kit.bold(Role::Question)),
-            false => kit.dim(words),
+            true => chosen_word(kit, words, false),
+            false => Span::raw(words),
         };
         let summaries = self.summaries();
         vec![

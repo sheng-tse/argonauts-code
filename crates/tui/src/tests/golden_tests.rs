@@ -267,6 +267,105 @@ fn the_proposal_sits_inset_in_the_note_keepers_bubble() {
     assert_screen("proposal", &rows, 23);
 }
 
+/// A point too long for one row wraps inside the bubble under its own words, and an open
+/// point's other way goes on the row under it; at a width where it fits, it keeps one row.
+#[test]
+fn long_points_wrap_inside_the_proposal_bubble() {
+    use crate::council::Piece;
+    use crate::council::Tone;
+    use crate::council::talk::item::{Inset, Item, ProposalPoint};
+
+    const FIRST: &str = "One TokenBucket per API key, kept in a dict on the limiter and made on \
+                         the key's first request";
+    const LOCK: &str = "Look the key's bucket up inside allow(), under the limiter's lock";
+    const MIDDLEWARE: &str = "fetch or instantiate a TokenBucket in the middleware";
+    let way = |words: &str, seats: &[SeatId]| {
+        let mut way = vec![Piece::text(words)];
+        for seat in seats {
+            way.push(Piece::dim(" "));
+            way.push(Piece::Badge(seat.clone()));
+        }
+        way
+    };
+    let mut message = says(
+        opus(),
+        &["Where our four answers meet: 1 point agreed, 2 still open."],
+    );
+    message.inset = Some(Inset::Proposal {
+        head: vec![
+            Piece::tone("Proposal", Tone::Bold),
+            Piece::dim(" · 3 points from 4 answers"),
+        ],
+        points: vec![
+            ProposalPoint {
+                mark: Piece::tone("✔  ", Tone::Ok),
+                ways: vec![way(FIRST, &[])],
+            },
+            ProposalPoint {
+                mark: Piece::tone("?  ", Tone::WarnBold),
+                ways: vec![
+                    way(LOCK, &[opus(), qwen()]),
+                    way(MIDDLEWARE, &[luna(), flash()]),
+                ],
+            },
+            ProposalPoint {
+                mark: Piece::tone("?  ", Tone::WarnBold),
+                ways: vec![
+                    way("Drop a bucket after 10 idle minutes", &[opus(), flash()]),
+                    way(
+                        "keep every bucket for the life of the process",
+                        &[luna(), qwen()],
+                    ),
+                ],
+            },
+        ],
+        yours: Vec::new(),
+    });
+    let items = [Item::Seat(vec![message])];
+    let room = crate::council::draw::bubbles::words_room(120);
+    let narrow = printed(&items, Look::Pictures, 120);
+    let row_of = |rows: &[String], words: &str| {
+        rows.iter()
+            .position(|row| row.contains(words))
+            .unwrap_or_else(|| panic!("no row holds {words:?}:\n{}", rows.join("\n")))
+    };
+    for row in &narrow {
+        let used = row.trim_end();
+        assert!(
+            crate::base::text::str_width(used) <= room + 10,
+            "a row runs past the bubble:\n{}",
+            narrow.join("\n")
+        );
+    }
+    let first = row_of(&narrow, "✔  One TokenBucket");
+    assert_eq!(row_of(&narrow, "first request"), first + 1);
+    let lock = row_of(&narrow, "?  Look the key's bucket");
+    let other = row_of(&narrow, "or  fetch or instantiate");
+    assert_eq!(other, lock + 1, "{}", narrow.join("\n"));
+    let at = |row: &str, words: &str| {
+        crate::base::text::str_width(&row[..row.find(words).expect("the words")])
+    };
+    assert_eq!(
+        at(&narrow[other], "or  fetch"),
+        at(&narrow[lock], "Look"),
+        "the other way starts under the first:\n{}",
+        narrow.join("\n")
+    );
+
+    let idle = row_of(&narrow, "?  Drop a bucket");
+    assert_eq!(row_of(&narrow, "or  keep every bucket"), idle + 1);
+
+    let wide = printed(&items, Look::Pictures, 177);
+    let first = row_of(&wide, "✔  One TokenBucket");
+    assert!(wide[first].contains("first request"), "{}", wide.join("\n"));
+    let idle = row_of(&wide, "?  Drop a bucket");
+    assert!(
+        wide[idle].contains("   or   keep every bucket"),
+        "{}",
+        wide.join("\n")
+    );
+}
+
 #[test]
 fn the_talk_quotes_what_each_reply_answers_and_shows_tapbacks() {
     let rows = with_typing(
@@ -463,7 +562,7 @@ fn the_plan_and_who_does_what_come_from_the_note_keeper_in_a_row() {
         story::plan_and_who(),
         story::signed(),
     ];
-    assert_screen("plan", &printed(&items, Look::Pictures, 120), 15);
+    assert_screen("plan", &printed(&items, Look::Pictures, 120), 16);
 }
 
 #[test]

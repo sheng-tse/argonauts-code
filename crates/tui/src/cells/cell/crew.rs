@@ -184,7 +184,6 @@ mod tests {
                 .join("\n"),
             &html,
             &theme,
-            &[],
         );
     }
 

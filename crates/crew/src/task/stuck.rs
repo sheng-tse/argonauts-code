@@ -6,7 +6,6 @@ use std::collections::BTreeSet;
 
 use argonauts_core::TaskId;
 use argonauts_core::base::names::{ModelRef, RoleName};
-use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::runs::events::approval::{
     AnswerAction, ApprovalDecided, ApprovalKind, ApprovalPacket, FreeText, StuckPacket,
     TakeOverReturnPacket,
@@ -177,7 +176,7 @@ fn documents(host: &Host, record: &TaskEntry, why: &str) -> Vec<EvidenceDocument
             } => {
                 let mut text = format!(
                     "Round {round}, {} said {:?}: {}",
-                    roles::display_name(reviewer),
+                    host.names().worker(reviewer),
                     review.verdict,
                     review.summary.trim()
                 );
@@ -188,7 +187,7 @@ fn documents(host: &Host, record: &TaskEntry, why: &str) -> Vec<EvidenceDocument
             }
             ReviewEvent::Settled { judge, ruling, .. } => Some(format!(
                 "{} settled the reviewers with {:?}: {}",
-                roles::display_name(judge),
+                host.names().worker(judge),
                 ruling.verdict,
                 ruling
                     .reasons
@@ -238,7 +237,7 @@ fn stuck_facts(host: &Host, record: &TaskEntry) -> Option<StuckFacts> {
     let fallback_mode = rules::applied_for(host, &record.spec, &worker).mode;
     let next = recovery::other_provider(host, record);
     let next_provider = next.as_ref().map(|model| roles::provider(host, model));
-    let next_name = next.map(|model| DisplayNames::default().cli(&model.agent));
+    let next_name = next.map(|model| host.names().cli(&model.agent));
     let providers_tried = recovery::providers_tried(host, record);
     let (extra_tries, fits_reserve) = host.read(|state| {
         (
@@ -290,7 +289,7 @@ pub(crate) async fn apply_answer(
                 host,
                 task,
                 to_ready,
-                &format!("{who} picked {}", crate::roles::display_name(worker)),
+                &format!("{who} picked {}", host.names().worker(worker)),
             )?;
             Ok(fresh(
                 TryCause::Reassigned,
@@ -307,7 +306,7 @@ pub(crate) async fn apply_answer(
                         host,
                         task,
                         to_ready,
-                        &format!("fell back to {}", crate::roles::display_name(&worker)),
+                        &format!("fell back to {}", host.names().worker(&worker)),
                     )?;
                     Ok(fresh(
                         TryCause::Fallback,

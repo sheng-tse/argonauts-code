@@ -105,7 +105,7 @@ pub fn usage() -> UsageSummary {
         PlanUsage {
             agent: "claude-code".to_owned(),
             name: "Claude Code".to_owned(),
-            plan: Some("Max".to_owned()),
+            plan: Some("Pro".to_owned()),
             in_use: true,
             windows: vec![
                 reading(
@@ -128,7 +128,7 @@ pub fn usage() -> UsageSummary {
         PlanUsage {
             agent: "codex".to_owned(),
             name: "Codex".to_owned(),
-            plan: Some("Plus".to_owned()),
+            plan: Some("Pro".to_owned()),
             windows: vec![
                 reading(
                     "codex",
@@ -150,7 +150,7 @@ pub fn usage() -> UsageSummary {
         PlanUsage {
             agent: "antigravity-cli".to_owned(),
             name: "agy".to_owned(),
-            plan: Some("Pro".to_owned()),
+            plan: Some("Ultra".to_owned()),
             windows: vec![reading(
                 "antigravity-cli",
                 "day",

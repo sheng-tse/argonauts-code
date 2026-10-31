@@ -7,7 +7,7 @@ use argonauts_core::RunId;
 use argonauts_core::app::views::{cli_workflow_run_id, conversation_run};
 use argonauts_core::app::{AppMode, CommandWork, UiCommand, ViewRequest};
 use argonauts_core::base::names::{SessionKey, WorkflowId};
-use argonauts_core::input::{ModsAction, SlashCommand, ViewAction};
+use argonauts_core::input::{LineChange, ModsAction, SlashCommand, ViewAction};
 use argonauts_core::runs::api::UsagePeriod;
 use argonauts_core::runs::events::session::SubagentStatus;
 use argonauts_core::settings::approvals::ApprovalMode;
@@ -127,6 +127,7 @@ impl KeyActions {
                     .open(HelpView::new(keymap).with_commands(cx.state.cli_commands.clone()));
             }
             UiAction::EditDraft => cx.out.edit_draft = true,
+            UiAction::Suspend => cx.out.suspend = true,
             // `,` on the pinned stats card: its page is the Stats tab's own.
             UiAction::Command(UiCommand::Slash {
                 command:
@@ -138,6 +139,14 @@ impl KeyActions {
                         ..
                     },
             }) => open_stats(cx, true),
+            // The bottom line's page opens `/bottom-line`'s picker, which is the screen's own.
+            UiAction::Command(UiCommand::Slash {
+                command:
+                    SlashCommand::BottomLine {
+                        change: LineChange::Open,
+                        scope,
+                    },
+            }) => super::bottom_line::open_picker(*scope, cx),
             UiAction::Command(command) => cx.out.send(command.clone()),
             UiAction::Replied(reply) => cx.out.replies.push(reply.clone()),
             UiAction::Request(view) => cx.out.send(UiCommand::Request { view: view.clone() }),
@@ -700,6 +709,25 @@ mod tests {
         assert_eq!(model.bottom.workflows.opening.as_deref(), Some(key));
     }
 
+    /// The bottom line's page asks for `/bottom-line`'s picker, which opens here rather than
+    /// going to the controller.
+    #[test]
+    fn the_bottom_line_page_opens_the_picker_on_this_screen() {
+        use argonauts_core::input::LineChange;
+        use argonauts_core::settings::SettingScope;
+
+        let open = UiAction::Command(UiCommand::Slash {
+            command: SlashCommand::BottomLine {
+                change: LineChange::Open,
+                scope: Some(SettingScope::Global),
+            },
+        });
+        let (out, _) = act(&AppState::default(), &open);
+        assert!(out.commands.is_empty(), "{:?}", out.commands);
+        assert_eq!(out.views.len(), 1);
+        assert!(format!("{:?}", out.views[0]).starts_with("LinePicker"));
+    }
+
     #[test]
     fn comma_on_the_pinned_stats_card_opens_its_page_over_the_stats_tab() {
         use argonauts_core::settings::ui::ModName;
@@ -822,6 +850,7 @@ mod tests {
                 uncommitted: Vec::new(),
                 settings_sha256: None,
                 continues: false,
+                opens_a_talk: false,
             },
         });
         for event in [

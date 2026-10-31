@@ -8,8 +8,10 @@
 //! the questions in, and `rewind` keeps a snapshot before and after each turn so `/rewind` can
 //! put files back.
 
+mod after;
 mod ask;
 mod listen;
+mod macos;
 pub(super) mod outside;
 mod rewind;
 mod rm;
@@ -22,19 +24,20 @@ use argonauts_core::agents::session::SessionRole;
 use argonauts_core::app::{AppEvent, ChoiceKind};
 use argonauts_core::base::names::{ChoiceId, ModelRef, TurnId};
 use argonauts_core::runs::asking::{Ask, AskReply};
-use argonauts_core::runs::event::AgentEvent;
 use argonauts_core::runs::events::approval::AnswerAction;
 use argonauts_core::runs::events::run::{CaptainOrCrewDecision, RunMode};
 use argonauts_core::runs::events::session::{InputPart, InputPartKind};
-use argonauts_core::safety::outside::{BeforeWrites, KeptIn, KeptOut, Outside, both, shown};
+use argonauts_core::safety::outside::{BeforeWrites, KeptIn, KeptOut, shown};
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::approvals::SandboxChoice;
 use argonauts_core::settings::fallback::FallbackEntry;
 use argonauts_core::settings::protocol::{CaptainKind, ForcedMode};
 use argonauts_core::settings::{SettingScope, Settings};
 use argonauts_core::{Asks, NoteLevel};
+use argonauts_crew::engine::folder_blocks::FolderBlocks;
 use serde_json::Value;
 
+pub(super) use self::after::LinesAfter;
 pub(crate) use self::listen::Asked;
 use self::listen::Listener;
 use self::rewind::Snapshot;
@@ -92,6 +95,8 @@ pub(crate) struct DirectState {
     /// The setup line the conversation's session last heard, so it hears a new one only when
     /// something changed.
     pub(super) told_setup: Option<String>,
+    /// The CLIs already told that macOS keeps them out of your folder.
+    folder_blocks: FolderBlocks,
 }
 
 impl std::fmt::Debug for PendingFallback {
@@ -932,69 +937,6 @@ pub(super) fn notes(
         notes.extend(standing::setup_note(ctx, conversation, fresh));
     }
     notes
-}
-
-/// Follows the turn's events for what comes after it: agy's refused commands, the writes outside
-/// that were turned away where the turn reads there but writes only its folder, and what the
-/// agent said, for a fallback. Gives the line a write outside your folder leaves, by a file
-/// tool or a command, once it's done, and the one a read or write the never-list refused leaves.
-pub(super) fn on_agent(
-    running: &mut Running,
-    outside: &Outside,
-    event: &AgentEvent,
-) -> Option<String> {
-    let home = running.home.as_deref();
-    running.before_writes.note(&running.root, event, home);
-    let wrote = running
-        .before_writes
-        .changed_by_command(&[&running.root], event, home);
-    let kept_out = running
-        .kept_out
-        .follow(&outside.never, &running.root, event, home);
-    if outside.read && !outside.writes_outside(SessionRole::Direct) {
-        running
-            .kept_in
-            .follow(outside, &running.root, event, home, &running.before_writes);
-    }
-    match event {
-        AgentEvent::ToolStarted { id, input, .. } => {
-            let command = ["CommandLine", "command", "cmd"]
-                .iter()
-                .find_map(|key| input.get(*key).and_then(Value::as_str));
-            if let Some(command) = command {
-                running.commands.insert(id.clone(), command.to_owned());
-            }
-        }
-        AgentEvent::FileChanged { path, .. } => {
-            running.written.extend(in_your_folder(&running.root, path));
-            return running
-                .before_writes
-                .changed_as_reported(&[&running.root], event, home);
-        }
-        AgentEvent::ToolFinished {
-            id,
-            ok: false,
-            output,
-            parent: None,
-        } => {
-            let refused = output.as_deref().is_some_and(|output| {
-                output.contains("permission check failed")
-                    || output.contains("required approval")
-                    || output.contains("auto-denied")
-            });
-            if let Some(command) = running.commands.get(id).filter(|_| refused)
-                && !running.refused.contains(command)
-            {
-                running.refused.push(command.clone());
-            }
-        }
-        AgentEvent::TextDelta { text, parent: None } => running.said.push_str(text),
-        AgentEvent::Message { text, parent: None } if running.said.is_empty() => {
-            running.said.push_str(text);
-        }
-        _ => {}
-    }
-    both(kept_out, wrote)
 }
 
 /// A file the agent changed, by path from your folder. One outside your folder isn't

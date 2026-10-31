@@ -12,6 +12,7 @@ use argonauts_core::app::{HeaderAndBottomLine, LineFacts};
 use argonauts_core::look::logos::logo_for;
 use argonauts_core::models::limits::{HealthState, PlanUsageReading, PlanUsageStatus};
 use argonauts_core::runs::events::task::TaskState;
+use argonauts_core::settings::SettingScope;
 use argonauts_core::settings::bottom_line::{
     ARTIFACT, AWAKE, BRANCH, CONTEXT, LineForm, MODE, PLAN_USAGE, PlanUsageAs, PlanUsageLine,
     PlanUsageResets, PlanUsageShow, PlanUsageWindows, SPEND, STATS, TOKENS,
@@ -36,6 +37,20 @@ mod preview;
 
 pub use picker::LinePicker;
 pub use preview::{Sample, SampleCli, preview};
+
+/// `/bottom-line`'s picker over the screen, as the line shows now, saving to `scope` or where
+/// your changes go.
+pub(super) fn open_picker(scope: Option<SettingScope>, cx: &mut super::Cx<'_>) {
+    let bottom = &cx.model.bottom;
+    let picker = LinePicker::new(
+        cx.state,
+        bottom.mode.clone(),
+        cx.settings,
+        &bottom.line_slots,
+        scope,
+    );
+    cx.out.open(picker);
+}
 
 /// The built-in mod that shows the run on screen. On the line it is the running workflow.
 pub use argonauts_core::settings::bottom_line::RUN;

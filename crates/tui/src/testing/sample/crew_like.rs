@@ -244,7 +244,7 @@ const MEMBERS: [Member; 15] = [
     },
     Member {
         agent: OPENCODE,
-        model: Some("ollama/qwen3-coder:30b-64k"),
+        model: Some("ollama/qwen3-coder:30b"),
         here: 1_431_000,
         in_all: 1_431_000,
         cost: None,
@@ -350,7 +350,7 @@ fn day(k: usize) -> Date {
 }
 
 /// Names as the CLIs' model lists give them. The local models' names come from OpenCode's
-/// list; nothing in their ids says "(64k)".
+/// list.
 fn names() -> DisplayNames {
     let mut names = DisplayNames::default();
     for (id, name) in [
@@ -362,11 +362,7 @@ fn names() -> DisplayNames {
         names.clis.insert(id.to_owned(), name.to_owned());
     }
     for (agent, model, name) in [
-        (
-            OPENCODE,
-            "ollama/qwen3-coder:30b-64k",
-            "Qwen3 Coder 30B (64k)",
-        ),
+        (OPENCODE, "ollama/qwen3-coder:30b", "Qwen3 Coder 30B"),
         (OPENCODE, "ollama/gemma4:e2b", "Gemma4 E2B"),
         (AGY, "Gemini 3.8 Flash (Low)", "Gemini 3.8 Flash (Low)"),
     ] {
@@ -378,7 +374,7 @@ fn names() -> DisplayNames {
         (CLAUDE, "claude-opus-5-5"),
         (CODEX, CODEX_DEFAULT),
         (AGY, "Gemini 3.8 Flash (Low)"),
-        (OPENCODE, "ollama/qwen3-coder:30b-64k"),
+        (OPENCODE, "ollama/qwen3-coder:30b"),
     ] {
         names.defaults.insert(agent.to_owned(), model.to_owned());
     }
@@ -668,7 +664,7 @@ fn plans() -> Vec<PlanUsage> {
         plan(
             CLAUDE,
             "Claude Code",
-            "Max",
+            "Pro",
             &[
                 (
                     "five_hour",
@@ -689,7 +685,7 @@ fn plans() -> Vec<PlanUsage> {
         plan(
             CODEX,
             "Codex",
-            "Plus",
+            "Pro",
             &[
                 (
                     "five_hour",
@@ -710,7 +706,7 @@ fn plans() -> Vec<PlanUsage> {
         plan(
             AGY,
             "agy",
-            "Pro",
+            "Ultra",
             &[(
                 "day",
                 "day",
@@ -868,7 +864,7 @@ fn context() -> ContextView {
             5,
             "build:spend-figures-under-the-spend-card",
             OPENCODE,
-            Some("ollama/qwen3-coder:30b-64k"),
+            Some("ollama/qwen3-coder:30b"),
             61_900,
             Some(65_536),
         ),

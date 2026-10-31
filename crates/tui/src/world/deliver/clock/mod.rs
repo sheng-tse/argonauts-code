@@ -8,8 +8,57 @@ use std::time::{Duration, Instant};
 
 use crate::base::draw::render::Clock;
 
-/// The world steps 8 times a second.
-pub const STEP: Duration = Duration::from_millis(125);
+/// How many times a second the world steps, chosen by the map's size, since each step costs about
+/// as much as the map has cells. The busiest of the world's cost tests, against a ceiling of 10 ms
+/// of a core a second: 16 steps a second cost 8.3 ms at 120 × 38 (a map of 64 × 13 cells) and 11.3
+/// at 177 × 40 (88 × 16), where 12 cost 8.6.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Rate(u32);
+
+impl Rate {
+    pub const QUICK: Rate = Rate(16);
+    pub const STEADY: Rate = Rate(12);
+    /// The most cells a map steps [`Rate::QUICK`] at: where 16 a second reaches that ceiling, going
+    /// by the two sizes measured.
+    const QUICK_CELLS: usize = 1_100;
+
+    /// The rate for a map `columns` × `rows` cells.
+    pub fn for_map(columns: usize, rows: usize) -> Self {
+        if columns * rows <= Self::QUICK_CELLS {
+            Self::QUICK
+        } else {
+            Self::STEADY
+        }
+    }
+
+    pub fn per_second(self) -> u32 {
+        self.0
+    }
+
+    /// How long one step lasts.
+    pub fn step(self) -> Duration {
+        Duration::from_nanos(1_000_000_000 / u64::from(self.0))
+    }
+
+    /// The steps that fit in `run`, each [`Rate::step`] long as the clock counts them, so a
+    /// moment the clock wakes at begins the step it woke for.
+    pub fn steps_in(self, run: Duration) -> u64 {
+        let steps = run.as_nanos() / self.step().as_nanos().max(1);
+        u64::try_from(steps).unwrap_or(u64::MAX)
+    }
+
+    /// When step `steps` begins, in seconds.
+    pub fn seconds(self, steps: u64) -> f64 {
+        steps as f64 / f64::from(self.0)
+    }
+}
+
+impl Default for Rate {
+    fn default() -> Self {
+        Self::QUICK
+    }
+}
+
 /// With no key or pointer move for this long, the world holds still.
 pub const IDLE_AFTER: Duration = Duration::from_secs(120);
 
@@ -128,12 +177,12 @@ impl Sources {
         None
     }
 
-    /// How long a step lasts now: twice as long on battery.
-    pub fn step(&self, now: Instant) -> Duration {
+    /// How long a step at `rate` lasts now: twice as long on battery.
+    pub fn step(&self, now: Instant, rate: Rate) -> Duration {
         if self.power.power(now).on_battery {
-            STEP * 2
+            rate.step() * 2
         } else {
-            STEP
+            rate.step()
         }
     }
 }

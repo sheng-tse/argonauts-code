@@ -22,6 +22,7 @@ mod list;
 pub mod places;
 mod pointer_line;
 mod pointing;
+mod resting;
 mod shortcuts;
 mod spoken;
 mod summary;
@@ -39,6 +40,9 @@ pub(crate) mod sample;
 mod sweeps;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) use drawn::Drawings;
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::Instant;
@@ -127,6 +131,11 @@ pub struct BehaviorsTab {
     pub at: At,
     /// What the pointer rests on: a dot on the map or the planet, or anything the world drew.
     pointed: Option<Pointed>,
+    /// The keys put the pointer on the map's busiest place, rather than the mouse.
+    resting: bool,
+    /// The map was left for another level with the keys' pointer on it, so coming back to the
+    /// map rests it again.
+    rest_on_return: bool,
     /// The first action shown of a behavior's, and the first behavior shown, as each list
     /// scrolls past the rows it shows at once. Each is moved as the list is drawn, in the room it
     /// has then, just far enough to keep the cursor in view.
@@ -249,6 +258,9 @@ impl BehaviorsTab {
             self.at = At::Map;
             self.scroll_to_top();
         }
+        if std::mem::take(&mut self.resting) {
+            self.rest_pointer();
+        }
     }
 
     /// A galaxy or a system the new map's universe no longer holds goes back to the universe,
@@ -272,6 +284,11 @@ impl BehaviorsTab {
     /// The world left the screen, so nothing it was drawing is wanted any more.
     pub fn left(&self) {
         self.drawings.leave();
+    }
+
+    /// What the last of the world's drawings to panic said, once.
+    pub fn take_picture_failure(&self) -> Option<String> {
+        self.drawings.take_failure()
     }
 
     /// The level the world shows, or is zooming to.

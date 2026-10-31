@@ -2,24 +2,27 @@
 //!
 //! Each motion says one thing in the data: a river's flecks run the way the agents moved, a
 //! hurricane turns faster the higher its category, a volcano smokes while its failures are
-//! fresh. The terminal holds each motion as a short loop of stored frames and steps them 8 times
-//! a second, so a moment of the map is the frame each motion shows then. With motion reduced or
-//! off, nothing moves: each mark holds its still pose, chosen so it still says what it means.
+//! fresh. The terminal holds each motion as a short loop of stored frames and steps them at the
+//! world's rate, so a moment of the map is the frame each motion shows then. With motion reduced
+//! or off, nothing moves: each mark holds its still pose, chosen so it still says what it means.
 
-/// The terminal steps the map's motion this often, in seconds.
-pub const TICK: f64 = 1.0 / 8.0;
+use crate::world::deliver::clock::Rate;
 
-/// One motion: a loop of `seconds`, held as `frames` stored frames.
+/// One motion: a loop of `seconds`, held as `frames` stored frames at 8 steps a second, and,
+/// where it `follows_rate`, as many more at a faster rate. Each count is even, so it scales to
+/// whole frames at 12 and at 16 steps a second.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Motion {
     pub seconds: f64,
     pub frames: u32,
+    pub follows_rate: bool,
 }
 
 /// Flecks run 12 px a second down a river's bed, 18 px apart.
 pub const RIVER: Motion = Motion {
     seconds: 1.5,
     frames: 12,
+    follows_rate: true,
 };
 pub const RIVER_SPEED: f64 = 12.0;
 pub const RIVER_GAP: f64 = 18.0;
@@ -27,6 +30,7 @@ pub const RIVER_GAP: f64 = 18.0;
 pub const CURRENT: Motion = Motion {
     seconds: 1.5,
     frames: 12,
+    follows_rate: true,
 };
 pub const CURRENT_SPEED: f64 = 16.0;
 pub const CURRENT_GAP: f64 = 24.0;
@@ -35,58 +39,78 @@ pub const CURRENT_GAP: f64 = 24.0;
 pub const HURRICANE: Motion = Motion {
     seconds: 15.0,
     frames: 24,
+    follows_rate: true,
 };
 pub const HURRICANE_DEGREES: f64 = 12.0;
 /// A tornado turns once a second.
 pub const TORNADO: Motion = Motion {
     seconds: 1.0,
     frames: 8,
+    follows_rate: true,
 };
 /// A puff of smoke every 0.75 s, each living 3 s.
 pub const SMOKE: Motion = Motion {
     seconds: 3.0,
     frames: 24,
+    follows_rate: true,
 };
 /// Flames flicker.
 pub const FIRE: Motion = Motion {
     seconds: 1.5,
     frames: 12,
+    follows_rate: true,
 };
 /// One flash for each stopped session, up to 4, each 0.25 s, in every 4 s.
 pub const LIGHTNING: Motion = Motion {
     seconds: 4.0,
     frames: 32,
+    follows_rate: true,
 };
 /// One great wave rolling in to the coast over 3 s.
 pub const TSUNAMI: Motion = Motion {
     seconds: 3.0,
     frames: 24,
+    follows_rate: true,
 };
 /// A ring runs out from the fault every 2 s for each crash of the last 24 hours.
 pub const QUAKE: Motion = Motion {
     seconds: 2.0,
     frames: 16,
+    follows_rate: true,
 };
-/// Cloud shadows drift 8 px a second east, 2 frames a second, their noise repeating every
-/// 192 px.
+/// Cloud shadows drift 8 px a second east, 2 frames a second at every rate, their noise repeating
+/// every 192 px: each of their frames is the whole map's shade, so more would take more memory
+/// than the drift is worth.
 pub const CLOUDS: Motion = Motion {
     seconds: 24.0,
     frames: 48,
+    follows_rate: false,
 };
 pub const CLOUD_SPEED: f64 = 8.0;
 pub const CLOUD_PERIOD: f64 = 192.0;
 
-/// A moment of the map: the clock's time in seconds, or held still.
+/// A moment of the map: the clock's time in seconds, stepping at a rate, or held still.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Moment {
     Still,
-    At(f64),
+    At { t: f64, rate: Rate },
 }
 
 impl Moment {
-    /// The moment of the clock's `tick`, stepping 8 times a second.
-    pub fn of_tick(tick: u64) -> Self {
-        Self::At(tick as f64 * TICK)
+    /// `t` seconds on a clock stepping at the usual rate.
+    pub fn at(t: f64) -> Self {
+        Self::At {
+            t,
+            rate: Rate::default(),
+        }
+    }
+
+    /// The moment of the clock's `tick`, stepping at `rate`.
+    pub fn of_tick(tick: u64, rate: Rate) -> Self {
+        Self::At {
+            t: rate.seconds(tick),
+            rate,
+        }
     }
 
     pub fn is_still(self) -> bool {
@@ -98,7 +122,18 @@ impl Moment {
     pub fn time(self, motion: Motion) -> f64 {
         match self {
             Self::Still => 0.0,
-            Self::At(t) => f64::from(motion.frame(t)) / f64::from(motion.frames) * motion.seconds,
+            Self::At { t, rate } => {
+                let motion = motion.at(rate);
+                f64::from(motion.frame(t)) / f64::from(motion.frames) * motion.seconds
+            }
+        }
+    }
+
+    /// The stored frame `motion` shows at this moment, `None` held still.
+    pub fn frame(self, motion: Motion) -> Option<u32> {
+        match self {
+            Self::Still => None,
+            Self::At { t, rate } => Some(motion.at(rate).frame(t)),
         }
     }
 
@@ -106,16 +141,30 @@ impl Moment {
     pub fn phase(self, motion: Motion, still: f64) -> f64 {
         match self {
             Self::Still => still,
-            Self::At(_) => self.time(motion) / motion.seconds,
+            Self::At { .. } => self.time(motion) / motion.seconds,
         }
     }
 }
 
 impl Motion {
+    /// The motion stepped at `rate`: where it follows the rate, as many more frames as `rate`
+    /// has steps over 8 a second.
+    pub fn at(self, rate: Rate) -> Self {
+        if !self.follows_rate {
+            return self;
+        }
+        Self {
+            frames: self.frames * rate.per_second() / 8,
+            ..self
+        }
+    }
+
     /// The stored frame shown at time `t`.
     pub fn frame(self, t: f64) -> u32 {
         let within = t.rem_euclid(self.seconds) / self.seconds;
-        ((within * f64::from(self.frames)).floor() as u32).min(self.frames - 1)
+        // A step at 12 a second isn't a whole number of seconds in binary, so a frame that
+        // starts on one lands a hair under it.
+        ((within * f64::from(self.frames) + 1e-9).floor() as u32).min(self.frames - 1)
     }
 }
 
@@ -180,11 +229,12 @@ impl Flashes {
     }
 }
 
-/// The most flashes `storms` start in any second of the loop, as the screen steps it.
+/// The most flashes `storms` start in any second of the loop, as the screen steps it at 8 a
+/// second, the fewest steps a flash can be seen in.
 #[cfg(test)]
 pub fn most_flashes_in_a_second(storms: &[Flashes]) -> u32 {
     let frames = LIGHTNING.frames;
-    let lit = |storm: &Flashes, frame: u32| storm.at(f64::from(frame % frames) * TICK).0 > 0.0;
+    let lit = |storm: &Flashes, frame: u32| storm.at(f64::from(frame % frames) / 8.0).0 > 0.0;
     let starts = |frame: u32| {
         storms
             .iter()
@@ -207,11 +257,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_terminal_steps_a_river_through_12_stored_frames_in_a_second_and_a_half() {
-        let frames: Vec<u32> = (0..12).map(|k| RIVER.frame(f64::from(k) * TICK)).collect();
-        assert_eq!(frames, (0..12).collect::<Vec<_>>());
-        assert_eq!(RIVER.frame(1.5), 0);
-        assert_eq!(Moment::At(0.2).time(RIVER), 0.125);
+    fn the_terminal_steps_a_river_through_a_stored_frame_each_step_of_its_loop() {
+        for rate in [Rate::QUICK, Rate::STEADY] {
+            let steps = rate.per_second() * 3 / 2;
+            let frames: Vec<u32> = (0..steps)
+                .map(|k| {
+                    Moment::of_tick(u64::from(k), rate)
+                        .frame(RIVER)
+                        .unwrap_or(0)
+                })
+                .collect();
+            assert_eq!(frames, (0..steps).collect::<Vec<_>>(), "{rate:?}");
+            assert_eq!(RIVER.at(rate).frame(1.5), 0);
+        }
+        assert_eq!(Moment::at(0.2).time(RIVER), 0.1875);
+    }
+
+    #[test]
+    fn every_motion_takes_whole_frames_at_each_rate() {
+        for motion in ALL {
+            for rate in [Rate::QUICK, Rate::STEADY] {
+                let at = motion.at(rate);
+                let scale = if motion.follows_rate {
+                    rate.per_second()
+                } else {
+                    8
+                };
+                assert_eq!(at.frames * 8, motion.frames * scale, "{motion:?}");
+            }
+        }
     }
 
     #[test]
@@ -251,6 +325,10 @@ mod tests {
         assert_eq!(HURRICANE.frame(0.6), 0);
         assert_eq!(HURRICANE.frame(0.63), 1);
         assert_eq!(CLOUDS.frame(23.99), 47);
-        assert_eq!(Moment::of_tick(8), Moment::At(1.0));
+        assert_eq!(Moment::of_tick(16, Rate::QUICK), Moment::at(1.0));
+        assert_eq!(
+            Moment::of_tick(18, Rate::STEADY).frame(HURRICANE),
+            Some(HURRICANE.at(Rate::STEADY).frame(1.5))
+        );
     }
 }
