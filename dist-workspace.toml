@@ -29,7 +29,8 @@ install-path = ["$XDG_BIN_HOME/", "$XDG_DATA_HOME/../bin", "~/.local/bin"]
 hosting = "github"
 # dist 0.33 writes `steps.cargo-cyclonedx.output.paths`, which reads nothing, so the SBOMs never uploaded.
 # release.yml reads `outputs` by hand, and adds the npm package's xz check before the upload, and dist leaves it as
-# it is.
+# it is. release.yml also calls the Publishers job (publishers.yml) in dry runs, which dist's plan jobs can't limit to
+# a dry run.
 allow-dirty = ["ci"]
 # Whether to install an updater program
 # Off: `argonauts self-update` reads a signed manifest with channels and a staged rollout, which dist's updater
@@ -80,6 +81,10 @@ publish-npm = { contents = "read", id-token = "write" }
 publish-crates = { contents = "read", id-token = "write" }
 linux-packages = { contents = "read" }
 installer-smoke = { contents = "read", issues = "write" }
+
+# Apple Silicon builds on macOS 15: GitHub retires its macOS 14 runners on 2026-11-02, with brownouts before.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
 
 # ARM musl is cross-built from x86_64 inside manylinux, as dist's own release does: a native ARM runner has no musl C
 # compiler for aws-lc and QuickJS. dist itself runs inside the container, so the host is dist's static musl build.

@@ -1,0 +1,40 @@
+# Checks that npm, crates.io and the Homebrew tap still trust this repository, and publishes nothing
+# (packaging/release/publishers.py). Called by release.yml in a dry run only (`tag=dry-run`), which the rehearsal
+# reads before the release pull request opens: on 10-29 npm's trusted publisher had expired, and the npm job
+# failed with the GitHub release already out.
+#
+# npm and crates.io trust release.yml in the `release` environment, so this job runs there too and needs the
+# maintainer's approval like the publish jobs. Each check runs even when one before it failed, so one run shows
+# everything to fix.
+name: Publishers
+
+on:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  publishers:
+    name: Publishers
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup update stable --no-self-update && rustup default stable
+      - name: npm trusts this workflow
+        if: ${{ !cancelled() }}
+        run: python3 packaging/release/publishers.py npm argonauts-code
+      - name: crates.io trusts this workflow, for every crate
+        if: ${{ !cancelled() }}
+        run: python3 packaging/release/publishers.py crates-io
+      - name: The tap token can still push to the tap
+        if: ${{ !cancelled() }}
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: python3 packaging/release/publishers.py homebrew sheng-tse/homebrew-tap

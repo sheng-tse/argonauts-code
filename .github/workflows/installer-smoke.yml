@@ -73,6 +73,7 @@ jobs:
           npx --yes "argonauts-code@${version}" --version | tee "$RUNNER_TEMP/npx.txt"
           grep -F "$version" "$RUNNER_TEMP/npx.txt"
 
+  # No Debian 11: past its end of life, its security mirror answers 404, and Ubuntu 20.04 has its glibc (2.31).
   containers:
     strategy:
       fail-fast: false
@@ -80,9 +81,6 @@ jobs:
         include:
           - name: Ubuntu 20.04
             image: ubuntu:20.04@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214
-            prepare: apt-get update && apt-get install -y curl ca-certificates xz-utils
-          - name: Debian 11
-            image: debian:11@sha256:6f519a81440354a85eb592c5f32109ab80605f6b892455983a6f618bf87fabe9
             prepare: apt-get update && apt-get install -y curl ca-certificates xz-utils
           - name: Rocky Linux 8
             image: rockylinux:8@sha256:9794037624aaa6212aeada1d28861ef5e0a935adaf93e4ef79837119f2a2d04c
@@ -113,7 +111,8 @@ jobs:
           grep -F "${TAG#v}" /tmp/shell.txt
 
   # On Linux the npm package unpacks the program with the system's tar, and GNU tar needs xz for it. A slim Node
-  # image has none, so the install has to stop with the command that gets xz, and go through once it's there.
+  # image has none, so the install has to stop with the command that gets xz, and go through once it's there, with
+  # a command that runs: npm leaves the stopped install's link to it behind, and skips the package's install script.
   npm-without-xz:
     runs-on: ubuntu-24.04
     container: node:24-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205
@@ -225,6 +224,31 @@ jobs:
           name: update-manifest
           path: target/update-manifest/
           if-no-files-found: error
+      # Each manifest's trusted comment names its own channel, version and serial, as draft_manifest.py prints them.
+      - name: Say how to sign the drafts
+        env:
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -eu
+          version="${TAG#v}"
+          folder="argonauts-update-${version}"
+          {
+            echo "### The update manifest for ${TAG}, ready to sign"
+            echo
+            echo '```sh'
+            echo "gh run download ${RUN_ID} --repo ${GITHUB_REPOSITORY} -n update-manifest -D ${folder}"
+            echo "cd ${folder}"
+            cd target/update-manifest || exit 1
+            for draft in stable.json beta.json releases/*.json; do
+              [ -f "$draft" ] || continue
+              comment=$(jq -r '"argonauts-code \(.channel) \(.version) serial \(.serial)"' "$draft")
+              echo "minisign -S -s <your key> -m ${draft} -t \"${comment}\""
+            done
+            echo "minisign -S -s <your key> -m models.toml -t \"argonauts-code models ${version}\""
+            echo '```'
+            echo
+            echo "Then publish each file and its .minisig under updates/v1/ on argonauts-code.github.io."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   report:
     needs: [machines, containers, npm-without-xz, crates-io]

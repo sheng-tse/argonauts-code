@@ -303,6 +303,9 @@ jobs:
       # crate labels, and the time the test job gives a test that hangs, against a fake curl,
       # release folders, query rows, JUnit reports and a GitHub the tests make up.
       - run: python3 -m unittest discover -s packaging/tests
+      # The Release run runs the release scripts with dash, so they're linted as POSIX sh.
+      # The runner image carries shellcheck.
+      - run: shellcheck --shell=sh packaging/release/*.sh
 
   workflows:
     name: Workflows
