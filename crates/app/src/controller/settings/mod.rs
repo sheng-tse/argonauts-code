@@ -26,12 +26,6 @@ mod scope;
 
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod tests_live;
-#[cfg(test)]
-mod tests_models;
-#[cfg(test)]
-mod tests_opencode;
 
 pub(crate) use args::{check_known, workflow_list};
 pub(crate) use models::choices as model_choices;
@@ -43,9 +37,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use argonauts_core::app::{AppEvent, ChoiceKind, ViewData, ViewRequest};
-use argonauts_core::events::approval::AnswerAction;
+use argonauts_core::base::names::{ChoiceId, ModelRef, RoleName};
 use argonauts_core::input::{AgentsAction, SlashCommand};
-use argonauts_core::names::{ChoiceId, ModelRef, RoleName};
+use argonauts_core::runs::events::approval::AnswerAction;
 use argonauts_core::settings::SettingScope;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::ui::NarratorMode;
@@ -55,9 +49,9 @@ use argonauts_registry::{
 };
 
 use super::{Ctx, Effect};
-use crate::choices::{self, NOT_CHANGED, OnSetAside};
 use crate::commands::refuse_safety_change;
-use crate::trust::{cant_trust, hash_of};
+use crate::setup::choices::{self, NOT_CHANGED, OnSetAside};
+use crate::startup::trust::{cant_trust, hash_of};
 use save::{Change, TrustAfter};
 
 const ORCHESTRATOR: &str = "orchestrator";
@@ -201,8 +195,10 @@ pub(crate) async fn saved_in(
     match change {
         SlashCommand::Agents {
             action: AgentsAction::Add { name },
-        } => super::agents_add::add(ctx, &name, Some(scope)).await,
-        SlashCommand::AddDir { path } => super::workspace::add_dir(ctx, &path, Some(scope)),
+        } => super::clis::agents_add::add(ctx, &name, Some(scope)).await,
+        SlashCommand::AddDir { path } => {
+            super::folders::workspace::add_dir(ctx, &path, Some(scope))
+        }
         SlashCommand::Verbosity { level: Some(level) } => {
             settings.hold = None;
             verbosity(ctx, settings, level, Some(scope)).await
@@ -496,7 +492,7 @@ pub(crate) async fn answer_choice(
                 _ => None,
             };
             if let Some(file) = file {
-                super::prompt_trust::show_file(ctx, &file);
+                super::library::prompt_trust::show_file(ctx, &file);
             }
             settings.pending.insert(id, pending);
             Ok(Vec::new())

@@ -49,8 +49,8 @@ fn screen_reader_flat_lines() {
 /// `a`, since a typed line never carries Tab.
 #[test]
 fn screen_reader_flips_ultracode_by_typing_a() {
+    use argonauts_core::app::model_picker::EffortSlider;
     use argonauts_core::app::{AppEvent, ViewData};
-    use argonauts_core::model_picker::EffortSlider;
 
     let slider =
         EffortSlider::without_levels(None, "claude-code/haiku".parse().unwrap(), "Haiku 4.5");

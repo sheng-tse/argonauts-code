@@ -3,8 +3,8 @@
 
 use std::sync::OnceLock;
 
-use argonauts_core::behavior_world::{BehaviorFacts, Burst, Crash, RisenWonder, Wonder};
 use argonauts_core::behaviors::LABELS;
+use argonauts_core::behaviors::behavior_world::{BehaviorFacts, Burst, Crash, RisenWonder, Wonder};
 use time::macros::datetime;
 use time::{Duration, OffsetDateTime};
 

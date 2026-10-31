@@ -3,9 +3,9 @@
 
 use std::collections::BTreeSet;
 
-use argonauts_core::names::{ModelRef, RoleName};
-use argonauts_core::registry::provider::{UNKNOWN_PROVIDER, is_known};
-use argonauts_core::registry::{ModelEntry, ModelRegistry};
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::models::registry::provider::{UNKNOWN_PROVIDER, is_known};
+use argonauts_core::models::registry::{ModelEntry, ModelRegistry};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::protocol::ReviewAssignment;
 

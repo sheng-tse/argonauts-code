@@ -1,25 +1,14 @@
 //! Everything under the transcript that redraws in place. The question sits right above the
 //! queued text and the input, where your keys go once it has them.
 
-mod agents;
-mod answered;
 mod band;
-mod bar;
-mod bottom_row;
 mod composer;
-mod files;
 mod history_search;
 pub mod line;
-mod menu;
-mod narrator;
-mod notice;
+pub mod menu;
 pub mod picker;
-mod question;
-mod retry;
-mod tips;
-pub mod verbs;
-mod workflows;
-mod working;
+pub(crate) mod question;
+pub mod working;
 
 use std::time::{Duration, Instant};
 
@@ -27,39 +16,39 @@ use argonauts_core::settings::ui::WhenQuestion;
 use crossterm::event::KeyEvent;
 use ratatui::text::{Line, Span};
 
-use crate::render::RenderCtx;
-use crate::text::{sanitize_line, truncate_line};
-use crate::theme::Role;
+use crate::base::draw::render::RenderCtx;
+use crate::base::text::{sanitize_line, truncate_line};
+use crate::base::theme::Role;
 
-pub use agents::{
-    AgentLabel, AgentPanel, AgentRef, AgentRow, AgentState, CIRCLE_PERIOD, LIST_KEYS, MAIN,
-    PanelEvent, RowKind,
-};
-pub use answered::{AnsweredPick, REMEMBER_KEY};
-pub use band::{BAND_KEYS, Band, BandEvent, PinnedRun, wall_now};
-pub use bottom_row::{ApprovalMode, BottomRow, ModeNotice, ModeState, PASTING, VimMode};
+pub use band::{BAND_KEYS, Band, BandEvent};
 pub use composer::{
     BUILT_IN_EXAMPLE, Composer, ComposerEvent, ComposerState, ComposerView, DraftAside,
-    MAX_INPUT_ROWS, SHELL_PLACEHOLDER, SHELL_PROMPT, ignored_notice, is_on_disk, requested_notice,
+    MAX_INPUT_ROWS, SHELL_PLACEHOLDER, ignored_notice, is_on_disk, requested_notice,
 };
 pub use history_search::{HistorySearch, SearchEvent, SearchScope};
+pub use line::bottom_row::{ApprovalMode, BottomRow, ModeNotice, ModeState, PASTING, VimMode};
 pub use line::{
     AddedPart, BottomLine, CliState, CliUse, LinePart, NEAR_LIMIT, PartBody, WindowUse,
 };
 pub use menu::{MenuEvent, MenuItem, MenuKind, Menus};
-pub use narrator::{NARRATOR_MAX_ROWS, narrator_lines};
-pub use notice::{NOTICE_KEYS, Notice, NoticeEvent};
 pub use picker::{Gauge, Picker, PickerCell, PickerColumn, PickerEvent, PickerRow, RowPart};
+pub use question::answered::{AnsweredPick, REMEMBER_KEY};
 pub use question::{
     BACK_HINT, CARRY_ON, Checklist, Countdown, ESC_HINT, NOTE_PLACEHOLDER, OptionKind, OptionModel,
     QUESTION_GUARD, QuestionAgent, QuestionChip, QuestionEvent, QuestionNote, QuestionOption,
     QuestionPrompt, QuestionView,
 };
-pub use retry::RetryNote;
-pub use workflows::{
+pub use runs::agents::{
+    AgentLabel, AgentPanel, AgentRef, AgentRow, AgentState, CIRCLE_PERIOD, LIST_KEYS, MAIN,
+    PanelEvent, RowKind,
+};
+pub use runs::workflows::{
     PanelRowId, RunRowKind, StopAsk, WorkflowPanel, WorkflowRow, WorkflowRowState, ask_before_stop,
     handle_panel_key, panel_has_rows, panel_lines,
 };
+pub use working::narrator::{NARRATOR_MAX_ROWS, narrator_lines};
+pub use working::notice::{NOTICE_KEYS, Notice, NoticeEvent};
+pub use working::retry::RetryNote;
 pub use working::{Activity, SPINNER_PERIOD, WorkingLine};
 
 #[derive(Debug, Clone, Default)]
@@ -139,9 +128,9 @@ pub struct BottomState {
     /// The mods pinned above the input.
     pub band: Band,
     /// The council message a reply you are writing answers, named right above the input.
-    pub replying: Option<crate::council::reply::ReplyBar>,
+    pub replying: Option<crate::council::screens::reply::ReplyBar>,
     /// A council talking on this screen, and the message or task picked in it.
-    pub council: crate::council::pick::CouncilInput,
+    pub council: crate::council::screens::pick::CouncilInput,
 }
 
 /// What the status sync last applied, so running it again changes nothing, and a change made
@@ -443,12 +432,12 @@ impl BottomState {
         else {
             return Vec::new();
         };
-        let room = crate::mods::BandRoom {
+        let room = crate::panels::mods::BandRoom {
             screen: usize::from(ctx.width),
             rows: room,
             folded: question_up && band.when_question == WhenQuestion::Fold,
         };
-        crate::mods::above_input(&crate::kit::Kit::new(ctx.theme), view, room).lines
+        crate::panels::mods::above_input(&crate::base::kit::Kit::new(ctx.theme), view, room).lines
     }
 
     /// The region while a docked view is up: the narrator and the working line stay, then a
@@ -560,7 +549,7 @@ impl BottomState {
         let text = ignored.or_else(|| asking().then(|| requested_notice(&self.workflow_key)))?;
         let width = usize::from(ctx.width);
         let text = sanitize_line(&text).into_owned();
-        let pad = width.saturating_sub(crate::text::str_width(&text) + 1);
+        let pad = width.saturating_sub(crate::base::text::str_width(&text) + 1);
         let line = Line::from(vec![
             Span::raw(" ".repeat(pad)),
             Span::styled(text, ctx.theme.style(Role::Dim)),
@@ -592,7 +581,7 @@ impl BottomState {
             _ if !working.is_empty() => working.push(Line::default()),
             _ => {
                 if let Some(words) = &self.updated {
-                    let row = crate::bridge::status::updated_row(words, theme);
+                    let row = crate::base::kit::updated_row(words, theme);
                     working.extend([truncate_line(&row, width), Line::default()]);
                 }
             }
@@ -713,7 +702,7 @@ impl BottomState {
             && self.history_search.is_none()
             && !question_holds_keys
         {
-            *rule = agents::message_rule(agent, ctx);
+            *rule = runs::agents::message_rule(agent, ctx);
         }
         // An open picker's edge rule is the only one: its rows take the input's place.
         let menu = if search.is_some() || question_holds_keys {
@@ -958,13 +947,6 @@ impl Parts {
 /// Menu entries kept when the screen is short.
 const MENU_MIN_ROWS: usize = 3;
 
-#[cfg(test)]
-mod command_tests;
-#[cfg(test)]
-mod picker_place_tests;
+pub(crate) mod runs;
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod vim_picture_tests;
-#[cfg(test)]
-mod workflow_status_tests;

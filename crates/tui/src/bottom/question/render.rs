@@ -5,15 +5,15 @@ use ratatui::text::{Line, Span};
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::{ANSWER_PLACEHOLDER, OptionKind, QuestionNote, QuestionOption, QuestionPrompt};
-use crate::bottom::composer::{Composer, ComposerState};
-use crate::render::RenderCtx;
-use crate::text::marks::decorative;
-use crate::text::{
+use crate::base::draw::panes::{scroll_mark, window};
+use crate::base::draw::render::RenderCtx;
+use crate::base::text::marks::decorative;
+use crate::base::text::{
     KEEP, Part, fit_lines, fit_parts, sanitize, sanitize_line, spans_width, str_width,
     truncate_line, wrap_spans, wrap_text,
 };
-use crate::theme::Role;
-use crate::views::workflow_rows::{scroll_mark, window};
+use crate::base::theme::Role;
+use crate::bottom::composer::{Composer, ComposerState};
 
 /// How many options a question lists at once, as Claude Code's longer pickers do. The pointer
 /// brings the rest into view.

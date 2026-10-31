@@ -9,16 +9,16 @@ use std::path::Path;
 
 use anyhow::Context as _;
 use argonauts_core::RunId;
-use argonauts_core::events::RunEvent;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::approval::{AnswerAction, ApprovalEvent, ApprovalKind};
-use argonauts_core::events::run::Party;
-use argonauts_core::events::task::MergeEvent;
-use argonauts_core::journal::read_all;
-use argonauts_core::layout::run_files;
-use argonauts_core::names::ApprovalId;
-use argonauts_core::paths::create_private_dir_all;
-use argonauts_core::policy::{ApprovalPolicy, DecisionPoint};
+use argonauts_core::base::layout::run_files;
+use argonauts_core::base::names::ApprovalId;
+use argonauts_core::base::paths::create_private_dir_all;
+use argonauts_core::runs::events::RunEvent;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::approval::{AnswerAction, ApprovalEvent, ApprovalKind};
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::runs::events::task::MergeEvent;
+use argonauts_core::runs::journal::read_all;
+use argonauts_core::safety::policy::{ApprovalPolicy, DecisionPoint};
 use serde::{Deserialize, Serialize};
 use time::{Duration, OffsetDateTime};
 
@@ -39,7 +39,7 @@ pub(crate) fn check_reverts(
     policy: &dyn ApprovalPolicy,
     now: OffsetDateTime,
 ) -> anyhow::Result<Vec<String>> {
-    let runs_dir = state_dir.join(argonauts_core::layout::repo_state::RUNS);
+    let runs_dir = state_dir.join(argonauts_core::base::layout::repo_state::RUNS);
     let entries = match std::fs::read_dir(&runs_dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -253,10 +253,10 @@ fn short(sha: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::approval::ApprovalDecided;
-    use argonauts_core::names::ModelRef;
+    use argonauts_core::base::names::ModelRef;
+    use argonauts_core::runs::events::approval::ApprovalDecided;
     use argonauts_testkit::TempRepo;
-    use argonauts_testkit::services::AskingPolicy;
+    use argonauts_testkit::engine::services::AskingPolicy;
 
     use super::*;
 
@@ -316,7 +316,9 @@ mod tests {
         repo.git(&["revert", "--no-edit", &reverted]).unwrap();
 
         let state = tempfile::tempdir().unwrap();
-        let runs = state.path().join(argonauts_core::layout::repo_state::RUNS);
+        let runs = state
+            .path()
+            .join(argonauts_core::base::layout::repo_state::RUNS);
         let now = OffsetDateTime::now_utc();
         let hit = write_run(
             &runs,
@@ -367,7 +369,9 @@ mod tests {
         let reverted = repo.commit_all("add a").unwrap();
         repo.git(&["revert", "--no-edit", &reverted]).unwrap();
         let state = tempfile::tempdir().unwrap();
-        let runs = state.path().join(argonauts_core::layout::repo_state::RUNS);
+        let runs = state
+            .path()
+            .join(argonauts_core::base::layout::repo_state::RUNS);
         let now = OffsetDateTime::now_utc();
         let run = write_run(
             &runs,

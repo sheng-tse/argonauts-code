@@ -7,28 +7,28 @@
 use argonauts_core::NoteLevel;
 use argonauts_core::PhaseStatus;
 use argonauts_core::RunId;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::approval::{
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::approval::{
     AnswerAction, AnswerOption, ApprovalDecided, ApprovalKind, ApprovalPacket, FreeText, GoalPacket,
 };
-use argonauts_core::events::goal::{
+use argonauts_core::runs::events::goal::{
     ChoiceOption, Decider, GoalEvent, GoalFile, GoalQuestion, GoalSource,
     LET_THE_MAIN_AGENT_ANSWER, LET_THE_MAIN_AGENT_DECIDE,
 };
-use argonauts_core::events::run::{Party, RunMode, RunOutcome};
-use argonauts_core::events::workflow::StepEnd;
-use argonauts_core::names::ModelRef;
-use argonauts_core::policy::{EvidenceDocument, EvidenceFacts};
+use argonauts_core::runs::events::run::{Party, RunMode, RunOutcome};
+use argonauts_core::runs::events::workflow::StepEnd;
+use argonauts_core::safety::policy::{EvidenceDocument, EvidenceFacts};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::Answerer;
 use argonauts_core::settings::workflows::RunStyle;
-use argonauts_core::steps::understand::{CompareOutput, DiffTag};
-use argonauts_core::workflow::StepRef;
+use argonauts_core::workflows::steps::understand::{CompareOutput, DiffTag};
+use argonauts_core::workflows::workflow::StepRef;
 
 use crate::approvals::{self, ApprovalRequest, autopilot, options};
-use crate::captain;
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::Host;
-use crate::error::{EngineError, EngineResult};
+use crate::roles::captain;
 use crate::state::RunState;
 use crate::state::goal::SettledGoal;
 use crate::workflow::{Flow, StepCall, StepDone, brief, kinds, shape};
@@ -658,7 +658,7 @@ pub fn approval_request(
             "{main_agent} answered {answered} of the open questions for the user. Its \
              answers are the assumptions whose basis starts with \"{}\"; check them against the \
              request",
-            argonauts_core::events::goal::MAIN_AGENT_ANSWER
+            argonauts_core::runs::events::goal::MAIN_AGENT_ANSWER
         ));
         if !authors.contains(&main_agent) {
             authors.push(main_agent);

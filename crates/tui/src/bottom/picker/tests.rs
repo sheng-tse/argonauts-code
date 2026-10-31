@@ -3,10 +3,10 @@ use std::time::Instant;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::{Picker, PickerEvent, PickerRow, VISIBLE_ROWS};
-use crate::render::{Clock, RenderCtx};
-use crate::text::plain_text;
-use crate::theme::{Glyphs, Theme};
-use crate::views::settings::flow::Stage;
+use crate::base::draw::render::{Clock, RenderCtx};
+use crate::base::text::plain_text;
+use crate::base::theme::{Glyphs, Theme};
+use crate::bottom::picker::flow::Stage;
 
 fn picker(labels: &[&str]) -> Picker {
     let mut picker = Picker::new("Model", "Pick one");
@@ -288,7 +288,7 @@ fn the_arrows_report_left_and_right_and_vim_keys_follow_them_only_where_they_go_
     };
     assert_eq!(press(&mut picker, KeyCode::Char('h')), PickerEvent::Left);
     // With a value on the arrows, h and l move it.
-    picker.flow.effort = Some(argonauts_core::model_picker::EffortLine::new(
+    picker.flow.effort = Some(argonauts_core::app::model_picker::EffortLine::new(
         &["low".to_owned(), "high".to_owned()],
         None,
         None,
@@ -301,12 +301,12 @@ fn the_arrows_report_left_and_right_and_vim_keys_follow_them_only_where_they_go_
 fn the_slider_takes_the_arrows_enter_and_esc_and_keeps_typing_from_the_composer() {
     let stops = ["low", "high"]
         .iter()
-        .map(|&level| argonauts_core::model_picker::EffortStop {
+        .map(|&level| argonauts_core::app::model_picker::EffortStop {
             level: level.into(),
             description: String::new(),
         })
         .collect();
-    let slider = argonauts_core::model_picker::EffortSlider::new(
+    let slider = argonauts_core::app::model_picker::EffortSlider::new(
         None,
         "codex".parse().unwrap(),
         "GPT 6",
@@ -333,8 +333,8 @@ fn the_slider_takes_the_arrows_enter_and_esc_and_keeps_typing_from_the_composer(
 /// descriptions still start in one column. A narrow list cuts the words, never the mark alone.
 #[test]
 fn a_rows_state_comes_before_its_description_in_the_states_color() {
-    use crate::kit::State;
-    use crate::theme::Role;
+    use crate::base::kit::State;
+    use crate::base::theme::Role;
 
     let mut picker = Picker::new("Agents", "The agents Argonauts Code can use");
     picker.rows = vec![
@@ -375,7 +375,7 @@ fn a_rows_state_comes_before_its_description_in_the_states_color() {
     let narrow = text(&picker, 44);
     assert!(narrow.contains("✗ not installed"), "{narrow}");
     for line in narrow.lines() {
-        assert!(crate::text::str_width(line) <= 44, "{line:?}");
+        assert!(crate::base::text::str_width(line) <= 44, "{line:?}");
     }
 }
 

@@ -4,12 +4,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use argonauts_core::adapter::KNOWN_AGENT_IDS;
-use argonauts_core::events::run::RunOutcome;
-use argonauts_core::names::{ModelRef, RoleName};
-use argonauts_core::pricing::builtin_price;
-use argonauts_core::runtimes::RUNTIMES;
-use argonauts_core::session::AuthMode;
+use argonauts_core::agents::adapter::KNOWN_AGENT_IDS;
+use argonauts_core::agents::runtimes::RUNTIMES;
+use argonauts_core::agents::session::AuthMode;
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::models::pricing::builtin_price;
+use argonauts_core::runs::events::run::RunOutcome;
 use argonauts_core::settings::Settings;
 use argonauts_core::{RunId, TaskId};
 use serde::Serialize;
@@ -17,8 +17,8 @@ use time::Date;
 
 use super::uses::{Use, UseLine};
 use crate::behaviors::report::BehaviorCounts;
-use crate::usage_ledger::LedgerLine;
-use crate::work_ledger::{ApprovedBy, FallbackCause, Work, WorkLine};
+use crate::usage::usage_ledger::LedgerLine;
+use crate::usage::work_ledger::{ApprovedBy, FallbackCause, Work, WorkLine};
 
 pub(crate) const EVENT: &str = "daily_usage";
 
@@ -732,7 +732,7 @@ mod tests {
     /// nothing that names the project, the run or what was run.
     #[test]
     fn the_day_s_behaviors_are_counted_from_the_run_records() {
-        use argonauts_core::names::{RoleName, SessionKey};
+        use argonauts_core::base::names::{RoleName, SessionKey};
         use argonauts_core::{AgentEvent, Paths};
 
         use crate::client::test_support::{agent, base_ts, session_started, write_journal};
@@ -766,7 +766,7 @@ mod tests {
                 call(3, "item_3", "git log -3"),
             ],
         );
-        let day = crate::usage_ledger::local_day(base_ts());
+        let day = crate::usage::usage_ledger::local_day(base_ts());
         let days = (day, day.next_day().unwrap());
         let event = usage_between(
             &paths,
@@ -792,9 +792,9 @@ mod tests {
     /// by its series and never by the tag you gave it.
     #[test]
     fn the_behaviors_name_a_local_model_by_its_series() {
-        use argonauts_core::events::RunEventKind;
-        use argonauts_core::events::session::SessionEvent;
-        use argonauts_core::names::{RoleName, SessionKey};
+        use argonauts_core::base::names::{RoleName, SessionKey};
+        use argonauts_core::runs::events::RunEventKind;
+        use argonauts_core::runs::events::session::SessionEvent;
         use argonauts_core::{AgentEvent, Paths};
 
         use crate::client::test_support::{agent, base_ts, session_started, write_journal};
@@ -823,7 +823,7 @@ mod tests {
             .join("state/demo-0123456789ab/runs/run-20260930-101500-00ab");
         std::fs::create_dir_all(&log).unwrap();
         write_journal(&log.join("events.jsonl"), &[started, call]);
-        let day = crate::usage_ledger::local_day(base_ts());
+        let day = crate::usage::usage_ledger::local_day(base_ts());
         let days = (day, day.next_day().unwrap());
         let state = State::new(day);
         let event = usage_between(

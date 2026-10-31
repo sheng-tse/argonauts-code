@@ -11,12 +11,12 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, bail};
 use argonauts_core::app::{AppChoice, AppEvent, ChoiceKind};
-use argonauts_core::events::approval::{
+use argonauts_core::base::names::ChoiceId;
+use argonauts_core::runs::events::approval::{
     ApprovalDecided, ApprovalEvent, ApprovalKind, ApprovalOpened,
 };
-use argonauts_core::events::run::{RunLifecycle, RunStarted};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::ChoiceId;
+use argonauts_core::runs::events::run::{RunLifecycle, RunStarted};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_scenarios::{Scenario, WAIT, as_set_up, past_the_guard_of};
 use argonauts_testkit::{Invocation, Key, Pty, argonauts_bin};
 use rmcp::model::{
@@ -88,7 +88,7 @@ pub fn trust_repo(scenario: &Scenario) -> anyhow::Result<()> {
     let folder = scenario.repo.root().join(".argonauts");
     fs::create_dir_all(&folder).with_context(|| format!("creating {}", folder.display()))?;
     let mut pty = scenario.launch(&["setup"])?;
-    let deadline = argonauts_testkit::deadline::after(WAIT);
+    let deadline = argonauts_testkit::pty::deadline::after(WAIT);
     let mut answered: Vec<ChoiceId> = Vec::new();
     loop {
         let open = open_setup_steps(scenario)?;
@@ -171,7 +171,7 @@ pub fn wait_for_events(
     timeout: Duration,
     done: impl Fn(&[RunEvent]) -> bool,
 ) -> anyhow::Result<Vec<RunEvent>> {
-    let deadline = argonauts_testkit::deadline::after(timeout);
+    let deadline = argonauts_testkit::pty::deadline::after(timeout);
     loop {
         // No run yet reads as no events.
         let events = scenario.latest_run_events().unwrap_or_default();
@@ -407,7 +407,7 @@ impl McpServer {
         timeout: Duration,
         done: impl Fn(&[Value]) -> bool,
     ) -> anyhow::Result<Vec<Value>> {
-        let deadline = argonauts_testkit::deadline::after(timeout);
+        let deadline = argonauts_testkit::pty::deadline::after(timeout);
         let mut since = 0;
         let mut events = Vec::new();
         loop {

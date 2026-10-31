@@ -14,12 +14,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use argonauts_adapter_opencode::models::private_server::{Listing, PrivateServer};
 use argonauts_adapter_opencode::models::{self as listing, ListedModel, ZEN};
-use argonauts_adapter_opencode::private_server::{Listing, PrivateServer};
+use argonauts_core::agents::runtimes::runtime;
 use argonauts_core::extract_version;
-use argonauts_core::model_catalog::display_name_from_id;
-use argonauts_core::registry::{CostUnit, ModelAccess, ModelEntry};
-use argonauts_core::runtimes::runtime;
+use argonauts_core::models::model_catalog::display_name_from_id;
+use argonauts_core::models::registry::{CostUnit, ModelAccess, ModelEntry};
 use argonauts_core::settings::Settings;
 
 use super::parse::plain_text;
@@ -201,7 +201,7 @@ mod tests {
     #[test]
     fn the_cached_list_keeps_what_opencode_listed() {
         use argonauts_core::AuthMode;
-        use argonauts_core::registry::ModelRegistry;
+        use argonauts_core::models::registry::ModelRegistry;
         use time::OffsetDateTime;
 
         use crate::models::{FileRegistry, ModelCache};
@@ -242,7 +242,7 @@ mod tests {
     /// named: its picker row, a line that names the agent, and a note about a model it lists.
     #[test]
     fn opencodes_names_read_as_opencode_writes_them() {
-        use argonauts_core::names::ModelRef;
+        use argonauts_core::base::names::ModelRef;
 
         let catalog = crate::models::catalog::cli_layer(&listed());
         let id = |model: &str| ModelRef::new(ADAPTER, Some(model.to_owned()));
@@ -253,7 +253,7 @@ mod tests {
         );
         assert_eq!(label("opencode/glm-5.3-flash-free"), "GLM-5.3-Flash Free");
         assert_eq!(label("ollama/qwen3-coder:30b-64k"), "Qwen3 Coder 30B (64k)");
-        let names = argonauts_core::display_names::DisplayNames {
+        let names = argonauts_core::look::display_names::DisplayNames {
             catalog: catalog.clone(),
             ..Default::default()
         };

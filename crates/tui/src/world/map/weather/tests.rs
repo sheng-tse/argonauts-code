@@ -669,9 +669,9 @@ fn crew_us_map_with_its_drowned_city_held_still() {
 
 /// The pointer's finds on crew `key`'s map at a moment, the dots included as the screen adds
 /// them.
-fn hits(key: Key, moment: Moment) -> crate::world::scene::HitMap {
+fn hits(key: Key, moment: Moment) -> crate::base::draw::scene::HitMap {
     let drawn = drawn(key);
-    let mut hits = crate::world::scene::HitMap::new();
+    let mut hits = crate::base::draw::scene::HitMap::new();
     for mark in drawn.dots.marks(0, 3) {
         hits.add(mark);
     }
@@ -683,9 +683,9 @@ fn hits(key: Key, moment: Moment) -> crate::world::scene::HitMap {
 
 #[test]
 fn pointing_at_what_stands_or_flies_names_it() {
+    use crate::base::draw::scene::Pointed;
     use crate::world::map::nature::Kind;
     use crate::world::map::nature::crews::world;
-    use crate::world::scene::Pointed;
     let world = world(Key::R);
     let weather = &drawn(Key::R).weather;
     let hits = hits(Key::R, Moment::Still);
@@ -746,9 +746,9 @@ fn pointing_at_what_stands_or_flies_names_it() {
 
 #[test]
 fn pointing_at_what_lies_on_the_ground_names_it_and_a_dot_under_the_pointer_wins() {
+    use crate::base::draw::scene::Pointed;
     use crate::world::map::nature::Kind;
     use crate::world::map::nature::crews::world;
-    use crate::world::scene::Pointed;
     let world = world(Key::R);
     let weather = &drawn(Key::R).weather;
     let hits = hits(Key::R, Moment::Still);
@@ -790,7 +790,7 @@ fn every_kind_and_wonder_has_a_picture_for_its_line() {
     use super::icon::{HEIGHT, WIDTH, icon};
     use crate::world::map::relief::cells::{compare_means, mean_colours};
     use crate::world::raster::{Brush, Canvas, Colour};
-    use argonauts_core::behavior_world::Wonder;
+    use argonauts_core::behaviors::behavior_world::Wonder;
     let words = [
         "rainforest",
         "forest",
@@ -867,7 +867,7 @@ fn every_kind_and_wonder_has_a_picture_for_its_line() {
 
 #[test]
 fn every_part_fits_in_its_own_box() {
-    use crate::world::scene::PartId;
+    use crate::base::draw::scene::PartId;
     for key in Key::ALL {
         let weather = &drawn(key).weather;
         for moment in [

@@ -4,8 +4,8 @@
 //! criterion must appear in some test task's `criteria_covered`.
 
 use argonauts_core::TaskId;
-use argonauts_core::events::goal::Criterion;
-use argonauts_core::events::task::{TaskKind, TaskLimit, TaskSpec};
+use argonauts_core::runs::events::goal::Criterion;
+use argonauts_core::runs::events::task::{TaskKind, TaskLimit, TaskSpec};
 
 /// Where each build task's acceptance tests go: `tests/acceptance/<task>/`.
 pub const ACCEPTANCE_DIR: &str = "tests/acceptance";
@@ -110,7 +110,7 @@ fn add_missing<T: Clone + PartialEq>(into: &mut Vec<T>, items: &[T]) {
 #[cfg(test)]
 mod tests {
     use argonauts_core::settings::Settings;
-    use argonauts_core::steps::plan::{ProposedKind, TaskGraphProposal, TaskProposal};
+    use argonauts_core::workflows::steps::plan::{ProposedKind, TaskGraphProposal, TaskProposal};
 
     use super::*;
     use crate::divide::graph;

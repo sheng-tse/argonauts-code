@@ -5,17 +5,17 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use argonauts_core::agents::session_runner::SessionSpec;
 use argonauts_core::app::{AppEvent, ConversationEvent, UiCommand};
-use argonauts_core::asking::{Ask, AskLine, AskReply};
 use argonauts_core::input::SlashCommand;
-use argonauts_core::session_runner::SessionSpec;
-use argonauts_core::steps::StepName;
+use argonauts_core::runs::asking::{Ask, AskLine, AskReply};
+use argonauts_core::workflows::steps::StepName;
 use argonauts_testkit::{FakeRunner, FakeSession, Hold};
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
-use crate::controller::test_support::{CliOptions, TestDriver};
+use crate::controller::base::test_support::{CliOptions, TestDriver};
 
 const TASK: &str = "Write the release note.";
 /// A goal one command checks, by its exit code.
@@ -344,7 +344,7 @@ async fn the_main_session_sets_a_goal_for_one_request_with_its_tool() {
     driver
         .submit("Write the release note, and keep going until done.txt is there.")
         .await;
-    let deadline = tokio::time::Instant::now() + crate::controller::test_support::max_wait();
+    let deadline = tokio::time::Instant::now() + crate::controller::base::test_support::max_wait();
     let spec = loop {
         if let Some(spec) = worker.specs().into_iter().next() {
             break spec;

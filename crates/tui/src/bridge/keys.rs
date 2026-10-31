@@ -4,23 +4,23 @@
 use std::time::Duration;
 
 use argonauts_core::RunId;
-use argonauts_core::api::UsagePeriod;
+use argonauts_core::app::views::{cli_workflow_run_id, conversation_run};
 use argonauts_core::app::{AppMode, CommandWork, UiCommand, ViewRequest};
-use argonauts_core::events::session::SubagentStatus;
+use argonauts_core::base::names::{SessionKey, WorkflowId};
 use argonauts_core::input::{ModsAction, SlashCommand, ViewAction};
-use argonauts_core::names::{SessionKey, WorkflowId};
+use argonauts_core::runs::api::UsagePeriod;
+use argonauts_core::runs::events::session::SubagentStatus;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::ui::ModName;
-use argonauts_core::views::{cli_workflow_run_id, conversation_run};
 
 use crate::app::UiAction;
+use crate::base::format;
+use crate::base::input::keymap::{Action, Keymap};
+use crate::base::text::sanitize_line;
 use crate::bottom::{AgentRef, ApprovalMode as ShownMode, ModeNotice};
-use crate::cell::Tone;
-use crate::format;
-use crate::keymap::{Action, Keymap};
-use crate::overview::{OverviewView, Tab};
-use crate::state::{AppState, RunState, SessionState, SessionStatus};
-use crate::text::sanitize_line;
+use crate::cells::cell::Tone;
+use crate::frame::state::{AppState, RunState, SessionState, SessionStatus};
+use crate::panels::{OverviewView, Tab};
 use crate::views::waiting::{self, RunEntry, WaitingView};
 use crate::views::{crew::AgentPanelView, help::HelpView, session::SessionView};
 
@@ -62,8 +62,9 @@ impl KeyActions {
                     Tab::Usage => cx.settings.views.usage.period.usage(),
                     _ => UsagePeriod::OPENS_ON,
                 };
-                cx.out
-                    .open(OverviewView::new(tab, watch).with_period(period));
+                cx.out.open(
+                    OverviewView::new(tab, watch, crate::config::panel()).with_period(period),
+                );
                 // What the panel asks when its own tab opens, so the tab draws whole and
                 // nothing of it reaches the conversation.
                 let ask = |view| UiCommand::Request { view };
@@ -155,7 +156,7 @@ impl KeyActions {
 /// Hands a claude.ai page to the browser and says so, in Claude Code's words. Anything else
 /// is refused: the address came out of a tool's result, and only an artifact's is opened.
 fn open_link(url: &str, name: &str, cx: &mut Cx<'_>) {
-    if !argonauts_core::artifacts::is_link(url) {
+    if !argonauts_core::app::artifacts::is_link(url) {
         notice("That isn't a claude.ai link, so it wasn't opened", cx);
         return;
     }
@@ -328,7 +329,8 @@ fn approval_mode(mode: ShownMode) -> ApprovalMode {
 /// when `page`. The numbers, which carry the file's settings, follow from the controller.
 pub(super) fn open_stats(cx: &mut Cx<'_>, page: bool) {
     let watch = cx.model.bottom.band.watch.clone();
-    let view = OverviewView::new(Tab::Stats, watch).with_stats_period_from_file();
+    let view =
+        OverviewView::new(Tab::Stats, watch, crate::config::panel()).with_stats_period_from_file();
     cx.out
         .open(if page { view.with_stats_page() } else { view });
     cx.out.send(UiCommand::Slash {
@@ -533,10 +535,14 @@ fn is_live(session: &SessionState) -> bool {
 /// moving to the tab does.
 pub(super) fn open_overview(cx: &mut Cx<'_>) {
     let watch = cx.model.bottom.band.watch.clone();
-    cx.out.open(OverviewView::new(Tab::Overview, watch));
+    cx.out.open(OverviewView::new(
+        Tab::Overview,
+        watch,
+        crate::config::panel(),
+    ));
     cx.out.send(UiCommand::Request {
         view: ViewRequest::Overview {
-            period: argonauts_core::overview::OverviewPeriod::default(),
+            period: argonauts_core::app::overview::OverviewPeriod::default(),
             import: None,
         },
     });
@@ -636,12 +642,12 @@ pub(super) fn open_agent_panel(cx: &mut Cx<'_>) {
 mod tests {
     use std::time::Instant;
 
-    use argonauts_core::names::TurnId;
+    use argonauts_core::base::names::TurnId;
     use argonauts_core::settings::ui::UiSettings;
 
     use super::*;
+    use crate::app::model::ViewModel;
     use crate::bridge::Effects;
-    use crate::model::ViewModel;
 
     fn act(state: &AppState, action: &UiAction) -> (Effects, ViewModel) {
         let mut model = ViewModel::default();
@@ -786,10 +792,10 @@ mod tests {
 
     fn subagent(id: &str, label: &str, status: SubagentStatus) -> argonauts_core::AgentEvent {
         argonauts_core::AgentEvent::Subagent {
-            update: argonauts_core::events::session::SubagentUpdate {
+            update: argonauts_core::runs::events::session::SubagentUpdate {
                 id: id.into(),
                 parent: None,
-                kind: argonauts_core::events::session::SubagentKind::Subagent,
+                kind: argonauts_core::runs::events::session::SubagentKind::Subagent,
                 label: Some(label.into()),
                 prompt: None,
                 status,
@@ -876,7 +882,7 @@ mod tests {
                 id: "toolu_a".into()
             }]
         );
-        state.runs = crate::mentions::fixture::working_state().runs;
+        state.runs = crate::bridge::mentions::fixture::working_state().runs;
         let running: Vec<_> = state
             .runs
             .values()
@@ -1077,17 +1083,17 @@ mod tests {
         // with its question.
         let mut earlier = AppState::default();
         earlier.apply(&argonauts_core::app::AppEvent::BackgroundRuns {
-            runs: vec![argonauts_core::api::RunSummary {
+            runs: vec![argonauts_core::runs::api::RunSummary {
                 run: run_id(),
                 title: "hi".into(),
-                mode: argonauts_core::events::run::RunMode::Captain,
+                mode: argonauts_core::runs::events::run::RunMode::Captain,
                 workflow: "council".into(),
-                state: argonauts_core::api::RunState::Waiting,
+                state: argonauts_core::runs::api::RunState::Waiting,
                 stopped_at: String::new(),
                 updated: time::OffsetDateTime::UNIX_EPOCH,
                 spent: argonauts_core::Spend::default(),
                 sessions_to_resume: 0,
-                waiting: vec![argonauts_core::names::ApprovalId::numbered(1)],
+                waiting: vec![argonauts_core::base::names::ApprovalId::numbered(1)],
                 live: false,
                 remind: false,
                 name: None,
@@ -1222,9 +1228,9 @@ mod tests {
 
     #[test]
     fn quit_says_how_to_resume_the_conversation_here_or_in_its_cli() {
+        use argonauts_core::agents::cli_sessions::{CliSessionRef, InItsCli};
         use argonauts_core::app::{HeaderAndBottomLine, LineFacts};
-        use argonauts_core::cli_sessions::{CliSessionRef, InItsCli};
-        use argonauts_core::names::{AgentId, ConversationId};
+        use argonauts_core::base::names::{AgentId, ConversationId};
 
         let id = "00000000-0000-4000-8000-000000000001";
         let line = LineFacts {

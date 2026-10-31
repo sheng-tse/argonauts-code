@@ -4,13 +4,13 @@
 
 use argonauts_core::NoteLevel;
 use argonauts_core::app::AppEvent;
-use argonauts_core::events::session::{InputPart, InputPartKind};
+use argonauts_core::runs::events::session::{InputPart, InputPartKind};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::ui::OutputStyle;
 
 use super::{ConversationState, direct, request_planned};
-use crate::controller::turn::{self, fast_choice};
+use crate::controller::turns::turn::{self, fast_choice};
 use crate::controller::{Ctx, Effect};
 
 /// Kept across `/clear`, `/branch`, and `/resume` until the app closes.

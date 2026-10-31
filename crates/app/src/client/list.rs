@@ -4,31 +4,31 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use argonauts_core::api::{ApiError, RunState, RunSummary};
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::agent_status::SpendEvent;
-use argonauts_core::events::approval::{ApprovalEvent, ApprovalKind, ApprovalPacket};
-use argonauts_core::events::run::{RunLifecycle, RunMode, RunOutcome, RunPhase, WaitReason};
-use argonauts_core::events::session::{CliWorkflowRun, SessionEvent};
-use argonauts_core::events::task::MergeEvent;
-use argonauts_core::events::{RunEvent, RunEventKind, WorkflowEvent};
-use argonauts_core::hidden_git::{self, MergedInto};
-use argonauts_core::journal::{self, RunLock, WrittenBy};
-use argonauts_core::layout::run_files as names;
-use argonauts_core::names::{ApprovalId, SessionKey};
+use argonauts_core::base::layout::run_files as names;
+use argonauts_core::base::names::{ApprovalId, SessionKey};
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::api::{ApiError, RunState, RunSummary};
+use argonauts_core::runs::events::agent_status::SpendEvent;
+use argonauts_core::runs::events::approval::{ApprovalEvent, ApprovalKind, ApprovalPacket};
+use argonauts_core::runs::events::run::{RunLifecycle, RunMode, RunOutcome, RunPhase, WaitReason};
+use argonauts_core::runs::events::session::{CliWorkflowRun, SessionEvent};
+use argonauts_core::runs::events::task::MergeEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind, WorkflowEvent};
+use argonauts_core::runs::hidden_git::{self, MergedInto};
+use argonauts_core::runs::journal::{self, RunLock, WrittenBy};
 use argonauts_core::settings::Settings;
-use argonauts_core::steps::StepName;
+use argonauts_core::workflows::steps::StepName;
 use argonauts_core::{AgentEvent, RunId, Spend};
 use argonauts_registry::resolve;
-use argonauts_tui::format::WallClock;
+use argonauts_tui::base::format::WallClock;
 use time::OffsetDateTime;
 
 use super::Client;
 use super::journal_ends;
 use super::start::WELCOME_TIMEOUT;
-use crate::app_settings;
-use crate::run_files;
-use crate::trust::TrustStore;
+use crate::host::run_files;
+use crate::startup::app_settings;
+use crate::startup::trust::TrustStore;
 use crate::views::add_spend;
 
 pub(crate) fn list(client: &Client) -> Result<Vec<RunSummary>, ApiError> {
@@ -281,7 +281,7 @@ struct Tally {
 }
 
 /// What the events say of whether the run's workflow has its shape, so its row is drawn, by
-/// the rule the screen holds the run it streams to: [`argonauts_core::views::shape_known`].
+/// the rule the screen holds the run it streams to: [`argonauts_core::app::views::shape_known`].
 #[derive(Default)]
 struct Shape {
     /// Whether the run's own workflow writes its phases as it goes, once it started.
@@ -304,7 +304,9 @@ impl Shape {
             return true;
         }
         match self.own_writes {
-            Some(writes) => argonauts_core::views::shape_known(writes, self.first_report.iter()),
+            Some(writes) => {
+                argonauts_core::app::views::shape_known(writes, self.first_report.iter())
+            }
             None => self.begun && !self.designing,
         }
     }
@@ -378,8 +380,9 @@ impl Tally {
                 RunEventKind::Workflow(WorkflowEvent::Started(started)) => {
                     tally.shape.begun = true;
                     if started.parent.is_none() && tally.shape.own_writes.is_none() {
-                        tally.shape.own_writes =
-                            Some(argonauts_core::views::writes_its_phases(&started.workflow));
+                        tally.shape.own_writes = Some(
+                            argonauts_core::app::views::writes_its_phases(&started.workflow),
+                        );
                     }
                 }
                 RunEventKind::Workflow(WorkflowEvent::Reported(report)) => {
@@ -632,7 +635,7 @@ mod tests {
     fn a_wait_for_a_cli_says_which_and_when_on_your_clock() {
         let until = time::macros::datetime!(2026-10-15 05:13:20 UTC);
         let waiting = WaitReason::WaitingForAgent {
-            agent_id: argonauts_core::names::AgentId("codex".to_owned()),
+            agent_id: argonauts_core::base::names::AgentId("codex".to_owned()),
             until: Some(until),
         };
         let at = WallClock::default().clock_rounded_up(until);
@@ -836,7 +839,7 @@ mod tests {
                 "stopped · no fallback for the main agent".to_owned()
             )
         );
-        let stop = argonauts_core::events::run::RunStop {
+        let stop = argonauts_core::runs::events::run::RunStop {
             why: "nothing else can take the main agent".to_owned(),
             ..Default::default()
         };
@@ -873,7 +876,7 @@ mod tests {
     /// script at the script's first report, and a run going a while past its snapshot.
     #[test]
     fn a_runs_summary_says_when_its_workflow_has_its_shape() {
-        use argonauts_core::events::run::RunSnapshot;
+        use argonauts_core::runs::events::run::RunSnapshot;
 
         let captain = recorded(include_str!(
             "../../../crew/tests/fixtures/runs/captain-review-loop.jsonl"
@@ -901,7 +904,7 @@ mod tests {
             RunEventKind::Run(RunLifecycle::Snapshot(Box::new(RunSnapshot {
                 upto: 0,
                 engine: serde_json::json!({"version": 1}),
-                summary: argonauts_core::api::StatusSummary::default(),
+                summary: argonauts_core::runs::api::StatusSummary::default(),
                 open_approvals: Vec::new(),
                 running: Vec::new(),
             }))),
@@ -911,8 +914,8 @@ mod tests {
 
     #[test]
     fn a_run_goes_by_its_newest_name() {
-        use argonauts_core::api::StatusSummary;
-        use argonauts_core::events::run::{RunNamed, RunSnapshot};
+        use argonauts_core::runs::api::StatusSummary;
+        use argonauts_core::runs::events::run::{RunNamed, RunSnapshot};
         use argonauts_core::settings::workflows::RunStyle;
 
         let named = |seq, name: &str| {

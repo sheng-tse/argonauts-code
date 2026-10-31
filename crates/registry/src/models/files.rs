@@ -3,15 +3,15 @@
 use std::io::ErrorKind;
 use std::path::Path;
 
-use argonauts_core::model_catalog::{CatalogEntry, EffortNote, ModelCatalog};
-use argonauts_core::names::ModelRef;
-use argonauts_core::registry::{CliManifest, ModelEntry, RegistryFile};
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::models::model_catalog::{CatalogEntry, EffortNote, ModelCatalog};
+use argonauts_core::models::registry::{CliManifest, ModelEntry, RegistryFile};
 use serde::Deserialize;
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 
 use super::catalog;
 use crate::SettingsError;
-use crate::write::{lock_folder, real_path, write_replacing};
+use crate::settings::write::{lock_folder, real_path, write_replacing};
 
 const TIERS: std::ops::RangeInclusive<u8> = 1..=5;
 
@@ -278,11 +278,11 @@ fn io_error(path: &Path, e: &std::io::Error) -> SettingsError {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::registry::{CliManifest, CostUnit, ModelAccess, RegistryKind};
+    use argonauts_core::models::registry::{CliManifest, CostUnit, ModelAccess, RegistryKind};
 
     use super::*;
     use crate::models::{FileRegistry, ProjectModels};
-    use argonauts_core::registry::ModelRegistry;
+    use argonauts_core::models::registry::ModelRegistry;
     use argonauts_core::settings::Settings;
     use argonauts_core::sha256_hex;
 

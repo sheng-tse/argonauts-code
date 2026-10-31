@@ -1,8 +1,8 @@
 //! `final-json`: stdout kept whole, then read at exit through the manifest's JSON pointers
 //! into `Init`, `Usage`, `Result`, and `Error`.
 
-use argonauts_core::registry::CliManifest;
-use argonauts_core::registry::cli::FinalJsonPointers;
+use argonauts_core::models::registry::CliManifest;
+use argonauts_core::models::registry::cli::FinalJsonPointers;
 use argonauts_core::{AgentEvent, ErrorCategory, StreamParser};
 use serde_json::Value;
 

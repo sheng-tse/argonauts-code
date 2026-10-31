@@ -21,12 +21,12 @@ use time::OffsetDateTime;
 
 use argonauts_core::RunId;
 use argonauts_core::settings::Settings;
-use argonauts_core::steps::task::ProcessChange;
+use argonauts_core::workflows::steps::task::ProcessChange;
 
-use crate::error::{LearningError, Result};
 use crate::learned_workflows::{self, Change, ChangeClass, LoadedLearnedWorkflow};
 use crate::store::Store;
-use crate::types::{LearnedWorkflowRef, RunRecord};
+use crate::store::error::{LearningError, Result};
+use crate::store::types::{LearnedWorkflowRef, RunRecord};
 
 pub use rules::{check_evolvable, check_mutation};
 pub use stats::{

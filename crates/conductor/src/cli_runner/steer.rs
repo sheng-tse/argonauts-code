@@ -2,7 +2,7 @@
 //! delivery is recorded. Each delivery emits `Delivered` for a message and a fresh `Input`
 //! holding only the new parts.
 
-use argonauts_core::events::session::{
+use argonauts_core::runs::events::session::{
     Delivery, InputPart, InputPartKind, LaunchRecord, LimitEvent, QueuedMessage, SessionEvent,
     WrapUpVia,
 };
@@ -10,7 +10,7 @@ use argonauts_core::{LimitDimension, WRAP_UP_MESSAGE};
 
 use super::launch::{input_event, message_part, part};
 use super::outbox::Outbox;
-use crate::watchdogs::{NO_PROGRESS_WRAP_UP, REPEAT_NOTE};
+use crate::process::watchdogs::{NO_PROGRESS_WRAP_UP, REPEAT_NOTE};
 
 /// Put between messages sent as one turn.
 const BETWEEN: &str = "\n\n";

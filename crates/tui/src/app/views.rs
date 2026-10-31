@@ -8,10 +8,10 @@ use argonauts_core::app::{UiCommand, ViewData};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 
 use super::{Ui, UiAction};
-use crate::cell::{HistoryCell, ResultLine, Tone, UserMessage};
-use crate::keymap::{Action, Layer};
-use crate::state::AppState;
-use crate::views::{Follow, ViewCtx, ViewOutcome};
+use crate::base::input::keymap::{Action, Layer};
+use crate::cells::cell::{HistoryCell, ResultLine, Tone, UserMessage};
+use crate::frame::state::AppState;
+use crate::frame::view::{Follow, ViewCtx, ViewOutcome};
 
 impl<W: Write> Ui<W> {
     /// Like [`handle_event`](Self::handle_event), with the top view seeing `state`.

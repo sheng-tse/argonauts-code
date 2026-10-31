@@ -14,12 +14,12 @@ use std::process::ExitCode;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use argonauts_testkit::deadline;
-use argonauts_testkit::fake_clis::{is_message_command, signal_path};
-use argonauts_testkit::scenario::{
+use argonauts_testkit::fake_clis::scenario::{
     BAD_SCENARIO_EXIT, FakeRule, FakeScenario, FakeStep, Invocation, LOG_ENV, LogLine,
     NO_RULE_EXIT, SCENARIO_ENV, StdinPrompt,
 };
+use argonauts_testkit::fake_clis::{is_message_command, signal_path};
+use argonauts_testkit::pty::deadline;
 
 fn main() -> ExitCode {
     let mut argv = std::env::args();
@@ -45,7 +45,7 @@ fn main() -> ExitCode {
 fn run(argv0: &str, args: &[String]) -> anyhow::Result<i32> {
     // `gh` answers from its own world file rather than a scenario.
     if argv0 == "gh" {
-        return Ok(argonauts_testkit::fake_gh::serve(args));
+        return Ok(argonauts_testkit::fake_clis::fake_gh::serve(args));
     }
     let scenario_path = std::env::var_os(SCENARIO_ENV)
         .map(PathBuf::from)

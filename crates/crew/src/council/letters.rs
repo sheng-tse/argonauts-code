@@ -7,9 +7,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use argonauts_core::RunId;
-use argonauts_core::hash::sha256_hex;
-use argonauts_core::names::{SeatId, SeatLetter};
-use argonauts_core::workflow::StepRef;
+use argonauts_core::base::hash::sha256_hex;
+use argonauts_core::base::names::{SeatId, SeatLetter};
+use argonauts_core::workflows::workflow::StepRef;
 
 use crate::engine::host::Host;
 
@@ -281,7 +281,7 @@ mod tests {
             .join("run-1");
         let run = RunId::new("run-1").unwrap();
         let talk = StepRef {
-            workflow: argonauts_core::names::WorkflowId::numbered(1),
+            workflow: argonauts_core::base::names::WorkflowId::numbered(1),
             phase: 1,
             path: vec![0],
         };

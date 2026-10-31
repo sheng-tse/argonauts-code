@@ -161,7 +161,7 @@ pub fn write_line<W: Write>(writer: &mut W, line: &Line<'_>, width: u16) -> io::
 /// terminal that knows links opens it on a click. The address is the text itself, so one
 /// that doesn't know them shows the same row.
 fn print_with_link<W: Write>(writer: &mut W, text: &str) -> io::Result<()> {
-    let Some(link) = argonauts_core::artifacts::whole_link_in(text) else {
+    let Some(link) = argonauts_core::app::artifacts::whole_link_in(text) else {
         return queue!(writer, Print(text));
     };
     let start = text.find(link).unwrap_or(0);

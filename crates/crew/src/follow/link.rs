@@ -43,7 +43,7 @@ pub struct IssueLink {
 impl IssueLink {
     /// What tells an issue's title and body from any edit of them.
     pub fn mark(title: &str, body: &str) -> String {
-        argonauts_core::hash::sha256_hex(format!("{title}\n{body}").as_bytes())
+        argonauts_core::base::hash::sha256_hex(format!("{title}\n{body}").as_bytes())
     }
 
     /// `<state>/issues/`, where every link of a repository is kept.

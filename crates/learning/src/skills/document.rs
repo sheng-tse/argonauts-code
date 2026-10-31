@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 
 use serde_json::{Map, Value};
 
-use argonauts_core::hash::sha256_hex;
+use argonauts_core::base::hash::sha256_hex;
 
 use super::{Frontmatter, META_SHA256, Skill};
 

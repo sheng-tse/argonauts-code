@@ -3,12 +3,12 @@
 //! And every agent's label.
 
 use crate::support;
-use argonauts_core::events::run::{RunLifecycle, RunMode, RunNamed, handed_over};
-use argonauts_core::events::session::SessionEvent;
-use argonauts_core::events::workflow::{StepEnd, WorkflowEvent};
-use argonauts_core::events::{RunEvent, RunEventKind};
+use argonauts_core::runs::events::run::{RunLifecycle, RunMode, RunNamed, handed_over};
+use argonauts_core::runs::events::session::SessionEvent;
+use argonauts_core::runs::events::workflow::{StepEnd, WorkflowEvent};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::workflows::RunStyle;
-use argonauts_core::workflow::WorkflowRef;
+use argonauts_core::workflows::workflow::WorkflowRef;
 
 fn workflow_events(events: &[RunEvent]) -> Vec<&WorkflowEvent> {
     events

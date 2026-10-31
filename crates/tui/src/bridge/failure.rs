@@ -4,9 +4,9 @@
 use ratatui::text::{Line, Span};
 use serde_json::Value;
 
-use crate::cell::{Cell, HistoryCell};
-use crate::render::RenderCtx;
-use crate::text::{fit_lines, sanitize_line, wrap_spans};
+use crate::base::draw::render::RenderCtx;
+use crate::base::text::{fit_lines, sanitize_line, wrap_spans};
+use crate::cells::cell::{Cell, HistoryCell};
 
 /// Plain lines are cut here, so one never wraps a narrow screen twice.
 const PLAIN_CHARS: usize = 120;
@@ -192,8 +192,8 @@ mod tests {
 
     #[test]
     fn the_raw_view_lays_json_out_and_keeps_other_text_as_it_came() {
-        let theme = crate::theme::Theme::dark();
-        let clock = crate::render::Clock::still(std::time::Instant::now());
+        let theme = crate::base::theme::Theme::dark();
+        let clock = crate::base::draw::render::Clock::still(std::time::Instant::now());
         let ctx = RenderCtx::new(40, &theme, clock);
         let shown = |text: &str| -> Vec<String> {
             let raw = RawFailure {

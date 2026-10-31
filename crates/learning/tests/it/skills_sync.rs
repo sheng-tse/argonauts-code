@@ -7,10 +7,10 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use argonauts_learning::Store;
+use argonauts_learning::export::package;
+use argonauts_learning::export::sync::{self, SyncMode};
 use argonauts_learning::learned_workflows::{LearnedWorkflow, LoadedLearnedWorkflow, Match};
-use argonauts_learning::package;
 use argonauts_learning::skills::{export, render, validate};
-use argonauts_learning::sync::{self, SyncMode};
 
 fn new_store() -> (tempfile::TempDir, Store) {
     let dir = tempfile::tempdir().unwrap();

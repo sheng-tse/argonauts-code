@@ -10,8 +10,8 @@ pub mod promotion;
 pub mod stuck;
 pub mod understand;
 
-use argonauts_core::events::approval::ApprovalKind;
-use argonauts_core::policy::{DecisionPoint, EvidencePacket, Verdict};
+use argonauts_core::runs::events::approval::ApprovalKind;
+use argonauts_core::safety::policy::{DecisionPoint, EvidencePacket, Verdict};
 use argonauts_core::settings::Settings;
 use time::OffsetDateTime;
 

@@ -1,19 +1,21 @@
 use std::path::Path;
 use std::time::Duration;
 
-use argonauts_core::events::run::Party;
-use argonauts_core::events::session::{
-    Delivery, EndReason, InputPart, InputPartKind, QueuedMessage, SessionEvent,
-};
-use argonauts_core::input::MentionTarget;
-use argonauts_core::names::MessageId;
-use argonauts_core::session_runner::{
+use argonauts_core::agents::session_runner::{
     Access, RunnerDirectory, RunnerError, RunnerEvent, SessionControl, SessionHandle, SessionRunner,
 };
-use argonauts_core::steps::intake::{Estimate, ReplyKind};
-use argonauts_core::steps::{StepRequest, StepRunner, decode, output_schema};
-use argonauts_testkit::runner::{drain, session_spec};
-use argonauts_testkit::{FakeDirectory, FakeRunner, FakeServices, FakeSession, Hold, deadline};
+use argonauts_core::base::names::MessageId;
+use argonauts_core::input::MentionTarget;
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::runs::events::session::{
+    Delivery, EndReason, InputPart, InputPartKind, QueuedMessage, SessionEvent,
+};
+use argonauts_core::workflows::steps::intake::{Estimate, ReplyKind};
+use argonauts_core::workflows::steps::{StepRequest, StepRunner, decode, output_schema};
+use argonauts_testkit::engine::runner::{drain, session_spec};
+use argonauts_testkit::{
+    FakeDirectory, FakeRunner, FakeServices, FakeSession, Hold, pty::deadline,
+};
 use serde_json::json;
 
 fn prompt(text: &str) -> Vec<InputPart> {

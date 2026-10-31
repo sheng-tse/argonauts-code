@@ -15,12 +15,12 @@ use argonauts_core::settings::bottom_line::LineForm;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use crate::cell::Tone;
-use crate::kit::{Kit, Level};
-use crate::render::RenderCtx;
-use crate::text::{sanitize_line, spans_width, truncate_line, truncate_spans};
-use crate::theme::Role;
-use argonauts_core::logos::Logo;
+use crate::base::draw::render::RenderCtx;
+use crate::base::kit::{Kit, Level};
+use crate::base::text::{sanitize_line, spans_width, truncate_line, truncate_spans};
+use crate::base::theme::Role;
+use crate::cells::cell::Tone;
+use argonauts_core::look::logos::Logo;
 
 pub(super) use fit::Give;
 use fit::Shape;
@@ -175,7 +175,7 @@ const NAME_CELLS: usize = 24;
 
 /// What a chip shows after its logo or name, with all the room it wants, as a list of CLIs
 /// beside their names draws it: `5h ▄▄▄▄▁▁  71%  7d ▄▄▄▄▁▁  59%`, or `out until Tue 3:45pm`.
-pub fn chip_meters(cli: &CliUse, theme: &crate::theme::Theme) -> Vec<Span<'static>> {
+pub fn chip_meters(cli: &CliUse, theme: &crate::base::theme::Theme) -> Vec<Span<'static>> {
     let kit = Kit::new(theme);
     let look = chip::Look {
         kit: &kit,
@@ -544,7 +544,9 @@ impl Drawer<'_> {
             }
             PartBody::Artifact { name, others } => self.artifact(name, *others),
             PartBody::Drawn(spans) => spans.clone(),
-            PartBody::Mod { file, reading } => crate::mods::draw::chip(&self.kit, file, reading),
+            PartBody::Mod { file, reading } => {
+                crate::panels::mods::draw::chip(&self.kit, file, reading)
+            }
         }
     }
 
@@ -579,7 +581,6 @@ fn chip_gap(shape: &Shape) -> &'static str {
     if shape.tight { " " } else { "   " }
 }
 
-#[cfg(test)]
-mod golden_tests;
+pub(crate) mod bottom_row;
 #[cfg(test)]
 mod tests;

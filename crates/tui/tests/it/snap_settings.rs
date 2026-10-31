@@ -1,23 +1,26 @@
 use crate::common;
+use argonauts_core::app::model_picker::{EffortSlider, EffortStop};
 use argonauts_core::app::{ModelChoice, SettingRow, UiCommand, ViewRequest};
-use argonauts_core::events::approval::ApprovalKind;
-use argonauts_core::limits::{CostEstimate, PlanUsageReading, PlanUsageSource, PlanUsageStatus};
-use argonauts_core::model_picker::{EffortSlider, EffortStop};
-use argonauts_core::names::{AgentId, ApprovalId, RoleName};
-use argonauts_core::policy::{ApprovalRow, ApprovalsView as ApprovalsData};
-use argonauts_core::registry::ModelAccess;
+use argonauts_core::base::names::{AgentId, ApprovalId, RoleName};
+use argonauts_core::models::limits::{
+    CostEstimate, PlanUsageReading, PlanUsageSource, PlanUsageStatus,
+};
+use argonauts_core::models::registry::ModelAccess;
+use argonauts_core::runs::events::approval::ApprovalKind;
+use argonauts_core::safety::policy::{ApprovalRow, ApprovalsView as ApprovalsData};
 use argonauts_core::settings::SettingScope;
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 use argonauts_core::settings::ui::UiSettings;
 use argonauts_core::{KeyScheme, RunId};
+use argonauts_tui::base::stability::{WIDTHS, assert_frames, assert_lines, buffer_text};
+use argonauts_tui::base::theme::Role;
+use argonauts_tui::bottom::picker::flow::Step;
 use argonauts_tui::bottom::{Picker, PickerEvent};
-use argonauts_tui::stability::{WIDTHS, assert_frames, assert_lines, buffer_text};
-use argonauts_tui::state::{AppState, RunState};
-use argonauts_tui::theme::Role;
+use argonauts_tui::frame::state::{AppState, RunState};
+use argonauts_tui::frame::view::{View, ViewCtx, ViewOutcome};
 use argonauts_tui::views::settings::all_settings::AllSettingsView;
 use argonauts_tui::views::settings::approvals::ApprovalsView;
-use argonauts_tui::views::settings::flow::{self, Step};
-use argonauts_tui::views::{View, ViewCtx, ViewOutcome};
+use argonauts_tui::views::settings::flow;
 use common::{fg, still, style_of, t0, text, theme};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
@@ -84,7 +87,7 @@ fn workflows() -> Picker {
         .iter()
         .zip(&allowed)
         .map(|(name, value)| {
-            let (_, text) = argonauts_core::workflow_files::BUILT_IN
+            let (_, text) = argonauts_core::workflows::workflow_files::BUILT_IN
                 .iter()
                 .find(|(built_in, _)| built_in == name)
                 .expect("a built-in workflow");
@@ -459,7 +462,7 @@ fn slider(chosen: &str) -> EffortSlider {
         .iter()
         .map(|&level| EffortStop {
             level: level.into(),
-            description: argonauts_core::model_catalog::builtin_effort_note(level)
+            description: argonauts_core::models::model_catalog::builtin_effort_note(level)
                 .unwrap_or_default()
                 .to_owned(),
         })
@@ -481,7 +484,7 @@ fn unset_slider(worker: &str, model: &str, default: &str) -> EffortSlider {
         .iter()
         .map(|&level| EffortStop {
             level: level.into(),
-            description: argonauts_core::model_catalog::builtin_effort_note(level)
+            description: argonauts_core::models::model_catalog::builtin_effort_note(level)
                 .unwrap_or_default()
                 .to_owned(),
         })

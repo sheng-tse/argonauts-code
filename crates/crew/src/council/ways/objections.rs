@@ -2,12 +2,12 @@
 //! may object with a reason, only you change the way, and the objection stays beside the task
 //! on the plan, at the approval and in the decision record.
 
-use argonauts_core::events::approval::WayObjection;
-use argonauts_core::events::council::{
+use argonauts_core::base::names::SeatId;
+use argonauts_core::runs::events::approval::WayObjection;
+use argonauts_core::runs::events::council::{
     CouncilMessage, Point, PointState, Speaker, Stance, TextPart,
 };
-use argonauts_core::events::task::TaskSpec;
-use argonauts_core::names::SeatId;
+use argonauts_core::runs::events::task::TaskSpec;
 
 use super::asked::{asked_in, best_match};
 use super::{done_by, yours_stands};
@@ -159,10 +159,10 @@ fn sentence_of(words: &str) -> String {
 mod tests {
     use super::*;
     use argonauts_core::TaskId;
-    use argonauts_core::events::council::{MessageKind, PointStance};
-    use argonauts_core::events::task::{TaskKind, TaskWay, Way};
-    use argonauts_core::names::MessageId;
-    use argonauts_core::workflow::WorkflowRef;
+    use argonauts_core::base::names::MessageId;
+    use argonauts_core::runs::events::council::{MessageKind, PointStance};
+    use argonauts_core::runs::events::task::{TaskKind, TaskWay, Way};
+    use argonauts_core::workflows::workflow::WorkflowRef;
 
     fn task(n: u32, title: &str, how: Way, asked_by_you: bool) -> TaskSpec {
         TaskSpec {

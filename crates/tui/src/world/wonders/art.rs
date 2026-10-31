@@ -3,7 +3,7 @@
 
 use std::f64::consts::PI;
 
-use argonauts_core::behavior_world::Wonder;
+use argonauts_core::behaviors::behavior_world::Wonder;
 
 use super::hand::{EDGE, Hand, Look, Normal, Step, facing as n};
 use crate::world::map::fields::Rgb;

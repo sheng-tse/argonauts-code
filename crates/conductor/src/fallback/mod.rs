@@ -17,21 +17,21 @@ pub(crate) mod testing;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use argonauts_core::events::RunEvent;
-use argonauts_core::events::task::{TaskKind, TaskSpec};
-use argonauts_core::limits::{
+use argonauts_core::agents::session_runner::RunnerDirectory;
+use argonauts_core::base::names::{AgentId, ModelRef, RoleName};
+use argonauts_core::models::limits::{
     Candidate, CandidateQuery, FallbackNote, FallbackPlanner, HealthBoard, PlanUsageBoard,
     Shortlist, TrackRecords, TranscriptPaths,
 };
-use argonauts_core::names::{AgentId, ModelRef, RoleName};
-use argonauts_core::registry::ModelRegistry;
-use argonauts_core::session_runner::RunnerDirectory;
+use argonauts_core::models::registry::ModelRegistry;
+use argonauts_core::runs::events::RunEvent;
+use argonauts_core::runs::events::task::{TaskKind, TaskSpec};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::fallback::{
     AppliedFallback, FallbackContext, FallbackEntry, FallbackRules,
 };
 
-use crate::slots::Slots;
+use crate::limits::slots::Slots;
 
 /// How many more sessions an agent can start right now, for `spread`.
 pub trait FreeSlots: Send + Sync {
@@ -223,7 +223,7 @@ mod tests {
 
     use super::*;
     use crate::fallback::testing::agent_id;
-    use crate::slots::SlotGuard;
+    use crate::limits::slots::SlotGuard;
 
     /// A test elsewhere that forks a child shares every open lock until the child execs, so a
     /// released slot can look taken for a moment. Counts are read once they settle.

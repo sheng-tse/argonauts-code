@@ -1,7 +1,7 @@
 //! The globe as what moves on it sees it: where a place of the map lands, how the globe bends
 //! the map there, and how the sun lights it.
 
-use crate::world::geo::{Globe, GlobePoint, Plate};
+use crate::base::draw::geo::{Globe, GlobePoint, Plate};
 use crate::world::planet::{Side, Sun};
 use crate::world::raster::Transform;
 use crate::world::raster::noise::smooth;

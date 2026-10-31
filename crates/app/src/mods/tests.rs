@@ -8,7 +8,7 @@ use argonauts_core::input::{ModsAction, SlashCommand};
 use argonauts_core::settings::mods::view::{ModChange, ModRowKind, ModsView};
 use argonauts_core::settings::mods::{ModForm, ModOrigin, ModPlace};
 
-use crate::controller::test_support::{CliOptions, TestDriver};
+use crate::controller::base::test_support::{CliOptions, TestDriver};
 
 const CLOCK: &str =
     "body = \"text\"\nplaces = [\"above\"]\n[data]\ncommand = [\"./clock.sh\"]\nevery = \"1s\"\n";

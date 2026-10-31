@@ -2,12 +2,12 @@ use crate::common;
 use std::time::Duration;
 
 use argonauts_tui::HistoryCell;
-use argonauts_tui::model::{
+use argonauts_tui::app::model::{
     AgentReady, AssistantMessage, ClockTime, CollapsedGroup, DiffCell, DiffView, Notice, Recap,
     SessionHeader, Todo, TodoState, Tone, ToolCall, ToolItem, ToolKind, ToolState, TurnEnd,
     UserMessage,
 };
-use argonauts_tui::theme::{ColorLevel, Role};
+use argonauts_tui::base::theme::{ColorLevel, Role};
 use common::{
     assert_fits, bg, fg, row_styled, row_text, row_with, still, style_of, styled, text, theme,
     theme_at,
@@ -628,7 +628,7 @@ fn untrusted_text_is_neutralized() {
 /// `Running… (3s)` until it ends, then its output, folded past a screen.
 #[test]
 fn shell_command_running_finished_and_folded() {
-    use argonauts_tui::model::{ShellEnd, ShellRun};
+    use argonauts_tui::app::model::{ShellEnd, ShellRun};
 
     let theme = theme();
     let running = ShellRun::new("sleep 25", common::t0());

@@ -7,14 +7,14 @@ use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
 use argonauts_core::app::UiCommand;
-use argonauts_tui::keymap::Keymap;
-use argonauts_tui::model::{
+use argonauts_tui::app::model::{
     AgentReady, AssistantMessage, QuestionOption, QuestionPrompt, SessionHeader, ToolCall,
     ToolItem, UserMessage, ViewModel, WorkingLine,
 };
-use argonauts_tui::theme::Role;
+use argonauts_tui::base::input::keymap::Keymap;
+use argonauts_tui::base::theme::Role;
 use argonauts_tui::views::help::HelpView;
-use argonauts_tui::{InlineTerminal, Ui, UiAction, stability};
+use argonauts_tui::{InlineTerminal, Ui, UiAction, base::stability};
 use common::{t0, theme};
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -638,29 +638,30 @@ fn the_inline_screen_leaves_the_mouse_to_the_terminal() {
 
 /// A run's workflow with one phase going and its two agents, for the docked view.
 fn docked_workflow() -> Box<argonauts_tui::views::workflow::WorkflowView> {
-    let data: argonauts_core::views::WorkflowView = serde_json::from_value(serde_json::json!({
-        "run": "run-01", "id": "wf-001", "name": "fix-slugify-median",
-        "description": "Fix slugify's dashes and median's even and empty lists, with tests",
-        "agents_done": 1, "agents_total": 2, "elapsed_ms": 271000,
-        "spent": {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0, "cost_usd": 0.0,
-                  "cost_partial": false, "cost_estimated": false},
-        "phases": [{"name": "Fix", "standard": "do", "status": "running",
-                    "count": {"done": 1, "total": 2},
-                    "rows": [
-            {"row": "agent", "session": "s-001", "label": "fix:slugify",
-             "worker": "claude-code/claude-haiku-4-5", "status": "done", "tokens": 18100,
-             "spent": {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0,
-                       "cost_usd": 0.0, "cost_partial": false, "cost_estimated": false},
-             "elapsed_ms": 130000, "subagents": 0, "context": null, "fallback_for": null},
-            {"row": "agent", "session": "s-002", "label": "fix:median",
-             "worker": "codex/gpt-5.6-luna", "status": "running", "tokens": 31200,
-             "spent": {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0,
-                       "cost_usd": 0.0, "cost_partial": false, "cost_estimated": false},
-             "elapsed_ms": 151000, "subagents": 0, "context": null, "fallback_for": null}
-        ]},
-        {"name": "Review", "standard": "check", "status": "waiting", "rows": []}]
-    }))
-    .expect("a workflow view");
+    let data: argonauts_core::app::views::WorkflowView =
+        serde_json::from_value(serde_json::json!({
+            "run": "run-01", "id": "wf-001", "name": "fix-slugify-median",
+            "description": "Fix slugify's dashes and median's even and empty lists, with tests",
+            "agents_done": 1, "agents_total": 2, "elapsed_ms": 271000,
+            "spent": {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0, "cost_usd": 0.0,
+                      "cost_partial": false, "cost_estimated": false},
+            "phases": [{"name": "Fix", "standard": "do", "status": "running",
+                        "count": {"done": 1, "total": 2},
+                        "rows": [
+                {"row": "agent", "session": "s-001", "label": "fix:slugify",
+                 "worker": "claude-code/claude-haiku-4-5", "status": "done", "tokens": 18100,
+                 "spent": {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0,
+                           "cost_usd": 0.0, "cost_partial": false, "cost_estimated": false},
+                 "elapsed_ms": 130000, "subagents": 0, "context": null, "fallback_for": null},
+                {"row": "agent", "session": "s-002", "label": "fix:median",
+                 "worker": "codex/gpt-5.6-luna", "status": "running", "tokens": 31200,
+                 "spent": {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0,
+                           "cost_usd": 0.0, "cost_partial": false, "cost_estimated": false},
+                 "elapsed_ms": 151000, "subagents": 0, "context": null, "fallback_for": null}
+            ]},
+            {"name": "Review", "standard": "check", "status": "waiting", "rows": []}]
+        }))
+        .expect("a workflow view");
     Box::new(argonauts_tui::views::workflow::WorkflowView::new(data))
 }
 

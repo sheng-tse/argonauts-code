@@ -3,7 +3,7 @@
 //! dim second line says why when the nearest behavior's own days would draw another.
 
 use super::ice::Polar;
-use crate::world::geo::Plate;
+use crate::base::draw::geo::Plate;
 use crate::world::map::climate::Climate;
 use crate::world::map::fields::{COARSE, Ground, LAND, Look};
 

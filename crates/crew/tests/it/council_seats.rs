@@ -9,23 +9,23 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::{Context as _, bail};
 use serde_json::{Value, json};
 
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::engine::EngineExit;
-use argonauts_core::events::approval::{
+use argonauts_core::agents::session_runner::SessionSpec;
+use argonauts_core::base::names::RoleName;
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::engine::EngineExit;
+use argonauts_core::runs::events::approval::{
     AnswerAction, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket,
 };
-use argonauts_core::events::council::{CheckRung, CouncilEventKind};
-use argonauts_core::events::run::{RunMode, RunOutcome};
-use argonauts_core::events::session::SessionEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::RoleName;
-use argonauts_core::session_runner::SessionSpec;
+use argonauts_core::runs::events::council::{CheckRung, CouncilEventKind};
+use argonauts_core::runs::events::run::{RunMode, RunOutcome};
+use argonauts_core::runs::events::session::SessionEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::council::SameModelCheck;
 use argonauts_core::settings::crew::{CrewSettings, Orchestrator};
 use argonauts_core::settings::workflows::AdaptWith;
-use argonauts_core::steps::StepName;
+use argonauts_core::workflows::steps::StepName;
 use argonauts_crew::council::lexicon::Lexicon;
-use argonauts_testkit::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::engine::runner::{FakeRunner, FakeSession};
 
 use support::Crew;
 
@@ -191,8 +191,8 @@ async fn a_task_is_checked_by_another_maker_in_a_fresh_session_blind_to_its_make
         .expect("the council's check");
     assert!(reviewer < council, "the check follows the reviewers' frame");
     assert!(read.contains("You aren't told who made the change"));
-    let models: Vec<argonauts_core::names::ModelRef> = vec![WORKER.parse()?, OTHER.parse()?];
-    let provider = |model: &argonauts_core::names::ModelRef| match model.agent.as_str() {
+    let models: Vec<argonauts_core::base::names::ModelRef> = vec![WORKER.parse()?, OTHER.parse()?];
+    let provider = |model: &argonauts_core::base::names::ModelRef| match model.agent.as_str() {
         "codex" => "openai".to_owned(),
         _ => "google".to_owned(),
     };

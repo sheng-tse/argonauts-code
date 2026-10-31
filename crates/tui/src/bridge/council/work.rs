@@ -6,17 +6,17 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use argonauts_core::TaskId;
-use argonauts_core::event::TodoStatus;
-use argonauts_core::events::task::Way;
-use argonauts_core::names::{ModelRef, SeatId, SessionKey};
+use argonauts_core::base::names::{ModelRef, SeatId, SessionKey};
+use argonauts_core::runs::event::TodoStatus;
+use argonauts_core::runs::events::task::Way;
 
+use crate::base::format::{duration_slot, tokens};
 use crate::bridge::tools::start_call;
-use crate::cell::ToolTitle;
-use crate::council::plan::{Now, Progress, Step, TaskWork, way_word};
-use crate::council::task_header::TaskHeader;
+use crate::cells::cell::ToolTitle;
+use crate::council::work::plan::{Now, Progress, Step, TaskWork, way_word};
+use crate::council::work::task_header::TaskHeader;
 use crate::council::{Item, Piece};
-use crate::format::{duration_slot, tokens};
-use crate::state::{RunState, SessionState, SessionStatus, WorkflowState};
+use crate::frame::state::{RunState, SessionState, SessionStatus, WorkflowState};
 
 /// The centred line that says a seat set out on its task's way, as "▐▌ 3.8 Flash started 3
 /// agents" reads. None for a task in its own session, whose box says so.
@@ -288,8 +288,8 @@ fn count(n: usize) -> u32 {
 #[cfg(test)]
 mod tests {
     use argonauts_core::RunId;
-    use argonauts_core::names::{RoleName, WorkflowId};
-    use argonauts_core::workflow::{StepRef, WorkflowRef};
+    use argonauts_core::base::names::{RoleName, WorkflowId};
+    use argonauts_core::workflows::workflow::{StepRef, WorkflowRef};
     use time::macros::datetime;
 
     use super::*;

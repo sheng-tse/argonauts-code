@@ -7,16 +7,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
+use argonauts_core::agents::cli_commands::{CliCommandSet, CommandSource};
 use argonauts_core::app::AppEvent;
-use argonauts_core::cli_commands::{CliCommandSet, CommandSource};
-use argonauts_core::events::context::{
+use argonauts_core::app::views::ContextRow;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::base::paths::{create_private_dir_all, write_private_file};
+use argonauts_core::prompts::prompt_parts::approx_tokens;
+use argonauts_core::runs::events::context::{
     ContextDetail, ContextKind, ContextUsage, FirstCount, NamedTokens, StartHolds, StartPart,
     StartedFrom, StartingCount, StartingTools,
 };
-use argonauts_core::names::ModelRef;
-use argonauts_core::paths::{create_private_dir_all, write_private_file};
-use argonauts_core::prompt_parts::approx_tokens;
-use argonauts_core::views::ContextRow;
 use argonauts_core::{AgentEvent, NoteLevel};
 use argonauts_mcp::session::main_tools;
 use serde::Deserialize;
@@ -819,7 +819,7 @@ fn kept(path: &Path, worker: &ModelRef) -> Option<StartingCount> {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::adapter::Adapter;
+    use argonauts_core::agents::adapter::Adapter;
 
     use super::*;
 

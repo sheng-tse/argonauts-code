@@ -4,7 +4,7 @@
 
 use std::collections::BTreeSet;
 
-use argonauts_core::names::RoleName;
+use argonauts_core::base::names::RoleName;
 use regex::Regex;
 use toml::de::{DeTable, DeValue};
 
@@ -167,7 +167,7 @@ pub fn templates(files: &[File]) -> Vec<Place> {
     /// The catalogs of the prompts the app and the judge and narrator add to the crew's.
     const OTHER_CATALOGS: [&str; 2] = [
         "crates/app/src/prompts/catalog.rs",
-        "crates/policy/src/templates.rs",
+        "crates/policy/src/sessions/templates.rs",
     ];
     const FOLDER: &str = "crates/core/templates/prompts/";
     let text = text_in(files, CATALOG);

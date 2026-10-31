@@ -1,13 +1,13 @@
 //! Who decides in auto mode: your rules, your judge, both, or either.
 
-use argonauts_core::names::ModelRef;
-use argonauts_core::policy::{DecisionPoint, EvidencePacket, Verdict};
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::safety::policy::{DecisionPoint, EvidencePacket, Verdict};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::DecideWith;
 use time::OffsetDateTime;
 
 use crate::approvals::in_autopilot;
-use crate::parts::{Approve, ModelVerdict};
+use crate::approvals::parts::{Approve, ModelVerdict};
 use crate::rules::{self, RuleVerdict};
 
 #[derive(Debug, Clone, PartialEq)]

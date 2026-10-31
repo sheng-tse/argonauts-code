@@ -9,7 +9,7 @@ use std::time::Duration;
 use argonauts_conductor::sandbox::selftest::self_test_once;
 use argonauts_conductor::sandbox::{ProfileInput, SandboxWrap, session_profile};
 use argonauts_core::CommandSpec;
-use argonauts_core::session_runner::{Access, SandboxMode, SandboxProfile};
+use argonauts_core::agents::session_runner::{Access, SandboxMode, SandboxProfile};
 use argonauts_core::settings::approvals::SandboxSettings;
 use argonauts_core::settings::mods::{ModReading, span_words};
 use nix::sys::signal::{Signal, killpg};

@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use argonauts_core::AgentEvent;
-use argonauts_core::names::SessionKey;
-use argonauts_core::outside::{BeforeWrites, KeptOut, Never, both};
+use argonauts_core::base::names::SessionKey;
+use argonauts_core::safety::outside::{BeforeWrites, KeptOut, Never, both};
 
 #[derive(Debug, Default)]
 pub struct OutsideWrites {

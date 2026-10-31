@@ -4,8 +4,8 @@
 //! once its window is known to hold them; when it doesn't, a reviewer with tools takes that one
 //! review, and the model keeps the ones it can hold.
 
-use argonauts_core::names::ModelRef;
-use argonauts_core::registry::{ModelAccess, ModelEntry};
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::models::registry::{ModelAccess, ModelEntry};
 
 use crate::engine::host::Host;
 

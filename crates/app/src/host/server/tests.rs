@@ -3,24 +3,24 @@ use std::os::unix::process::CommandExt as _;
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, PoisonError};
 
-use argonauts_core::api::{ApprovalAnswer, StatusSummary};
-use argonauts_core::control::ClientKind;
-use argonauts_core::engine::EngineCommand;
-use argonauts_core::engine::EventSink as _;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::approval::AnswerAction;
-use argonauts_core::journal::{Journal, RunLock};
-use argonauts_core::layout::run_files;
-use argonauts_core::names::{ApprovalId, MessageId};
+use argonauts_core::base::layout::run_files;
+use argonauts_core::base::names::{ApprovalId, MessageId};
+use argonauts_core::runs::api::{ApprovalAnswer, StatusSummary};
+use argonauts_core::runs::engine::EngineCommand;
+use argonauts_core::runs::engine::EventSink as _;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::approval::AnswerAction;
+use argonauts_core::runs::journal::{Journal, RunLock};
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::{Note, NoteLevel};
 use tokio::net::unix::OwnedReadHalf;
 
 use super::*;
-use crate::ancestry::tests::{ScriptedProcesses, register_group, test_markers};
-use crate::ancestry::{agent_ancestor, agent_ancestor_in};
+use crate::control::ClientKind;
 use crate::host::relay::{Queue, forward};
 use crate::host::sink::JournalSink;
+use crate::startup::ancestry::tests::{ScriptedProcesses, register_group, test_markers};
+use crate::startup::ancestry::{agent_ancestor, agent_ancestor_in};
 
 pub(crate) const TOKEN: &str = "0123456789abcdef0123456789abcdef";
 const PEER_SOCKET: &str = "ARGONAUTS_TEST_PEER_SOCKET";
@@ -293,7 +293,7 @@ async fn socket_binds_and_connects_with_a_long_run_dir() {
         .parent()
         .unwrap()
         .to_owned();
-    crate::run_files::remove_socket(&run_dir).unwrap();
+    crate::host::run_files::remove_socket(&run_dir).unwrap();
     assert!(!socket.exists());
     assert!(
         std::fs::symlink_metadata(&link).is_err(),
@@ -321,7 +321,7 @@ async fn socket_refuses_answer_without_token() {
     assert_error(&client.call(4, mode).await, "token");
     let reassign = ControlRequest::Reassign {
         task: argonauts_core::TaskId::new("task-001").unwrap(),
-        to: argonauts_core::names::ModelRef::new("codex", None),
+        to: argonauts_core::base::names::ModelRef::new("codex", None),
         rule_override: Some("review.other_provider".to_owned()),
         token: None,
     };
@@ -625,7 +625,7 @@ async fn a_waiting_run_wakes_only_for_requests_that_need_the_engine() {
         &apply(
             &fixture.state,
             ControlRequest::StopSession {
-                session: argonauts_core::names::SessionKey::numbered(1),
+                session: argonauts_core::base::names::SessionKey::numbered(1),
                 again: false,
             },
             Origin::Pending,
@@ -663,17 +663,17 @@ async fn a_waiting_run_answers_status_diff_and_raw_from_its_files() {
     );
     let task = argonauts_core::TaskId::new("task-001").unwrap();
     std::fs::write(fixture.dir.path().join("task-001.diff"), "+hello\n").unwrap();
-    let diff = RunEventKind::Task(argonauts_core::events::task::TaskEvent::Diff {
+    let diff = RunEventKind::Task(argonauts_core::runs::events::task::TaskEvent::Diff {
         stat: argonauts_core::DiffStat::default(),
         path: PathBuf::from("task-001.diff"),
     });
     sink.record(Some(&task), None, "argonauts-code", diff)
         .unwrap();
-    let session = argonauts_core::names::SessionKey::numbered(1);
-    let session_dir = argonauts_core::layout::session_dir(fixture.dir.path(), &session);
+    let session = argonauts_core::base::names::SessionKey::numbered(1);
+    let session_dir = argonauts_core::base::layout::session_dir(fixture.dir.path(), &session);
     std::fs::create_dir_all(&session_dir).unwrap();
     std::fs::write(
-        session_dir.join(argonauts_core::layout::session_files::RAW_STDOUT),
+        session_dir.join(argonauts_core::base::layout::session_files::RAW_STDOUT),
         "{\"line\":1}\n",
     )
     .unwrap();
@@ -683,7 +683,7 @@ async fn a_waiting_run_answers_status_diff_and_raw_from_its_files() {
     assert!(matches!(status, ControlReply::Status { .. }), "{status:?}");
     let request = ControlRequest::Diff {
         task: task.clone(),
-        scope: argonauts_core::api::DiffScope::Task,
+        scope: argonauts_core::runs::api::DiffScope::Task,
     };
     match apply(&fixture.state, request, Origin::Pending).await {
         ControlReply::Diff { diff } => assert_eq!(diff.text, "+hello\n"),
@@ -733,7 +733,7 @@ async fn a_waiting_run_wakes_for_the_last_turns_diff() {
 async fn a_council_message_reaches_the_run_as_one() {
     let fixture = Fixture::new(false, test_markers());
     let write = ControlRequest::Council {
-        action: argonauts_core::events::council::CouncilAction::Write {
+        action: argonauts_core::runs::events::council::CouncilAction::Write {
             text: "Keep /health open.".to_owned(),
             reply_to: None,
             mentions: Vec::new(),

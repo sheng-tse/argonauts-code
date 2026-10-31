@@ -12,14 +12,14 @@ use argonauts_core::settings::bottom_line::{
 use ratatui::text::Span;
 
 use super::{shown_windows, with_mode};
+use crate::base::draw::render::{Clock, RenderCtx};
+use crate::base::text::sanitize_line;
+use crate::base::theme::{Role, Theme};
 use crate::bottom::{
     AddedPart, ApprovalMode, BottomLine, BottomRow, CliState, CliUse, LinePart, ModeState,
     PartBody, WindowUse,
 };
-use crate::cell::Tone;
-use crate::render::{Clock, RenderCtx};
-use crate::text::sanitize_line;
-use crate::theme::{Role, Theme};
+use crate::cells::cell::Tone;
 
 /// What the app knows now of what the line shows.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -110,7 +110,7 @@ fn sample_line(settings: &BottomLineSettings, sample: &Sample) -> BottomLine {
                 who: crate::bottom::MAIN.to_owned(),
                 who_role: Role::Label,
                 percent: 21,
-                level: crate::kit::Level::Ok,
+                level: crate::base::kit::Level::Ok,
             },
             TOKENS => words("48.2k tokens"),
             // As wide as the stats mod's words, so the preview gives up what the line would.
@@ -160,7 +160,7 @@ fn picked<'s>(
 /// the CLI out, as a reading the plan turned down does on the live line.
 fn chip(cli: &SampleCli, both: bool, set: &PlanUsageLine) -> CliUse {
     let mut chip = CliUse::new(sanitize_line(&cli.label).trim(), Role::for_cli(&cli.id));
-    chip.logo = Some(argonauts_core::logos::logo_for(&cli.id, None));
+    chip.logo = Some(argonauts_core::look::logos::logo_for(&cli.id, None));
     chip.main = cli.main;
     let windows: Vec<WindowUse> = [("5h", cli.five_hours), ("7d", cli.seven_days)]
         .into_iter()
@@ -178,7 +178,7 @@ mod tests {
     use argonauts_core::settings::bottom_line::PlanUsageShow;
 
     use super::*;
-    use crate::theme::ColorLevel;
+    use crate::base::theme::ColorLevel;
 
     fn cli(label: &str, id: &str, five_hours: f64, seven_days: f64) -> SampleCli {
         SampleCli {
@@ -212,7 +212,7 @@ mod tests {
         let theme = Theme::dark().with_level(ColorLevel::None);
         let spans = preview(&theme, settings, sample, width);
         let text: String = spans.iter().map(|span| span.content.as_ref()).collect();
-        assert!(crate::text::str_width(&text) <= width, "{text}");
+        assert!(crate::base::text::str_width(&text) <= width, "{text}");
         text
     }
 
@@ -221,7 +221,7 @@ mod tests {
     #[test]
     fn the_preview_is_the_line_as_it_ships() {
         let shown = text(&BottomLineSettings::default(), &crew(), 120);
-        assert_eq!(crate::text::str_width(&shown), 120);
+        assert_eq!(crate::base::text::str_width(&shown), 120);
         assert!(shown.starts_with("  ⏵⏵ auto mode on"), "{shown}");
         assert!(
             shown

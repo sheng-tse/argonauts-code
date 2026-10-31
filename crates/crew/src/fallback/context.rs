@@ -4,15 +4,15 @@
 
 use std::fmt::Write as _;
 
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::task::TryCause;
-use argonauts_core::limits::FallbackNote;
-use argonauts_core::names::ModelRef;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::models::limits::FallbackNote;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::task::TryCause;
 use argonauts_core::settings::fallback::{AppliedFallback, FallbackContext};
 use argonauts_core::{Note, NoteLevel, TaskId};
 
+use crate::engine::error::EngineResult;
 use crate::engine::host::Host;
-use crate::error::EngineResult;
 use crate::fallback::{rules, summary};
 use crate::state::tasks::{TaskEntry, TaskProgress};
 use crate::task::support::newest_worker_session;
@@ -134,8 +134,8 @@ mod tests {
     use std::path::PathBuf;
 
     use argonauts_core::DiffStat;
-    use argonauts_core::events::task::{TaskKind, TaskLimit, TaskSpec};
-    use argonauts_core::limits::{TranscriptPaths, WorkSoFar};
+    use argonauts_core::models::limits::{TranscriptPaths, WorkSoFar};
+    use argonauts_core::runs::events::task::{TaskKind, TaskLimit, TaskSpec};
 
     use super::*;
 
@@ -192,7 +192,7 @@ mod tests {
     fn record() -> TaskEntry {
         TaskEntry {
             spec: spec(),
-            state: argonauts_core::events::task::TaskState::NeedsDecision,
+            state: argonauts_core::runs::events::task::TaskState::NeedsDecision,
             tries: 1,
             worker: None,
             reassigned: 0,

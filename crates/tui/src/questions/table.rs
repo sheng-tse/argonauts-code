@@ -5,9 +5,9 @@
 
 use ratatui::text::{Line, Span};
 
-use crate::text::{fit_lines, sanitize_line, str_width};
-use crate::theme::{Role, Theme};
-use crate::views::layout::{cut, left, right};
+use crate::base::draw::layout::{cut, left, right};
+use crate::base::text::{fit_lines, sanitize_line, str_width};
+use crate::base::theme::{Role, Theme};
 
 const GAP: usize = 2;
 

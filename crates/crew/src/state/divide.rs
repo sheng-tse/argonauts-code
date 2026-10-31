@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use argonauts_core::TaskId;
-use argonauts_core::events::RunEvent;
-use argonauts_core::events::plan::{DivideEvent, LimitPlan, TaskGraph};
-use argonauts_core::names::ModelRef;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::runs::events::RunEvent;
+use argonauts_core::runs::events::plan::{DivideEvent, LimitPlan, TaskGraph};
 use argonauts_core::settings::protocol::RoutingAlgorithm;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -74,7 +74,10 @@ impl DivideState {
         }
     }
 
-    fn task_mut(&mut self, task: &TaskId) -> Option<&mut argonauts_core::events::task::TaskSpec> {
+    fn task_mut(
+        &mut self,
+        task: &TaskId,
+    ) -> Option<&mut argonauts_core::runs::events::task::TaskSpec> {
         self.graph
             .as_mut()?
             .tasks
@@ -86,9 +89,9 @@ impl DivideState {
 #[cfg(test)]
 mod tests {
     use argonauts_core::RunId;
-    use argonauts_core::events::RunEventKind;
-    use argonauts_core::events::task::{TaskKind, TaskLimit, TaskSpec};
-    use argonauts_core::steps::task::Predictions;
+    use argonauts_core::runs::events::RunEventKind;
+    use argonauts_core::runs::events::task::{TaskKind, TaskLimit, TaskSpec};
+    use argonauts_core::workflows::steps::task::Predictions;
 
     use super::*;
 

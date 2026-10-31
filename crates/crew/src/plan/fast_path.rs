@@ -1,24 +1,24 @@
 //! The fast path when no topic is disputed: one agent merges the drafts, a judge checks the
 //! merge is complete, and `Plan::FastPath` is recorded.
 
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::plan::PlanEvent;
-use argonauts_core::events::session::InputPartKind;
-use argonauts_core::names::{ModelRef, RoleName};
-use argonauts_core::session_runner::Access;
-use argonauts_core::steps::plan::{
+use argonauts_core::agents::session_runner::Access;
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::plan::PlanEvent;
+use argonauts_core::runs::events::session::InputPartKind;
+use argonauts_core::workflows::steps::plan::{
     Draft, DraftInput, Judge, JudgeInput, LabeledPlan, PlanDraft, RubricCriterion,
 };
-use argonauts_core::workflow::StandardPhase;
+use argonauts_core::workflows::workflow::StandardPhase;
 
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::{Ask, Host};
-use crate::error::{EngineError, EngineResult};
 use crate::plan::context::{self, crew_for, part, providers, workers_for};
 use crate::plan::{decisions, drafts};
 use crate::prompts::plan::{MERGE_CHECK, MERGE_DRAFTS, SYNTHESIZE};
+use crate::roles::tie_breaker;
 use crate::state::plan::{MERGED_LABEL, SealedDraft};
 use crate::task::at_start;
-use crate::tie_breaker;
 use crate::workflow::{StepCall, StepDone};
 
 /// A completeness score under this sends the merge back once with the judge's reasons.
@@ -83,7 +83,9 @@ pub async fn merge(host: &Host, call: &StepCall) -> EngineResult<StepDone> {
 /// The step's worker, else the tie-breaker, whose process work this is.
 fn merger(host: &Host, call: &StepCall) -> ModelRef {
     match &call.step.models {
-        argonauts_core::workflow::StepModels::Named(named) if !named.is_empty() => named[0].clone(),
+        argonauts_core::workflows::workflow::StepModels::Named(named) if !named.is_empty() => {
+            named[0].clone()
+        }
         _ => host
             .read(|state| tie_breaker::tie_breaker(state, host.settings()))
             .unwrap_or_else(|| host.settings().crew.main.clone()),

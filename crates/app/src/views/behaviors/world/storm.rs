@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use argonauts_core::behavior_world::StormWord;
+use argonauts_core::behaviors::behavior_world::StormWord;
 
 const TYPHOON: &[&str] = &[
     "Asia/Tokyo",

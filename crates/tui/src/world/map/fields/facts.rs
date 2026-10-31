@@ -2,9 +2,9 @@
 
 use std::collections::HashMap;
 
-use argonauts_core::behavior_map::BehaviorMap;
-use argonauts_core::behavior_world::QuietStretch;
 use argonauts_core::behaviors::LABELS;
+use argonauts_core::behaviors::behavior_map::BehaviorMap;
+use argonauts_core::behaviors::behavior_world::QuietStretch;
 use time::OffsetDateTime;
 
 /// A crew's actions as the ground reads them.

@@ -2,18 +2,19 @@
 
 pub mod decide;
 pub mod evaluate;
+pub mod parts;
 pub mod settings;
 #[cfg(test)]
 mod tests;
 
-use argonauts_core::future::BoxFuture;
-use argonauts_core::policy::{
+use argonauts_core::base::future::BoxFuture;
+use argonauts_core::safety::policy::{
     ApprovalPolicy, ApprovalsView, DecisionPoint, EvidencePacket, HardLimits, PolicyOutcome,
     UserDecision,
 };
 use argonauts_core::settings::approvals::ApprovalMode;
 
-use crate::parts::PolicyParts;
+use crate::approvals::parts::PolicyParts;
 
 pub(crate) use evaluate::in_autopilot;
 

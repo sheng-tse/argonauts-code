@@ -11,22 +11,22 @@ use anyhow::Context;
 use serde_json::json;
 use tokio::sync::oneshot;
 
-use argonauts_core::engine::{EngineCommand, EngineExit};
-use argonauts_core::events::approval::{ApprovalEvent, ApprovalKind};
-use argonauts_core::events::run::{ResumeCause, RunLifecycle, RunMode, RunOutcome};
-use argonauts_core::events::shared::{BlackboardEvent, BlackboardKind};
-use argonauts_core::events::task::{TaskEvent, TaskState};
-use argonauts_core::events::workflow::WorkflowEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::policy::EvidencePacket;
+use argonauts_core::runs::engine::{EngineCommand, EngineExit};
+use argonauts_core::runs::events::approval::{ApprovalEvent, ApprovalKind};
+use argonauts_core::runs::events::run::{ResumeCause, RunLifecycle, RunMode, RunOutcome};
+use argonauts_core::runs::events::shared::{BlackboardEvent, BlackboardKind};
+use argonauts_core::runs::events::task::{TaskEvent, TaskState};
+use argonauts_core::runs::events::workflow::WorkflowEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
+use argonauts_core::safety::policy::EvidencePacket;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::crew::{CrewSettings, Orchestrator};
 use argonauts_core::settings::workflows::AdaptWith;
-use argonauts_core::steps::StepName;
+use argonauts_core::workflows::steps::StepName;
 use argonauts_crew::engine::shared::with_git_env;
 use argonauts_crew::state::RunState;
-use argonauts_testkit::runner::{FakeRunner, FakeSession};
-use argonauts_testkit::services::TEST_RUN;
+use argonauts_testkit::engine::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::engine::services::TEST_RUN;
 
 use support::{Crew, Outcome};
 
@@ -40,7 +40,7 @@ const TASK: &str = "task-fix-the-money-rounding";
 fn crew() -> anyhow::Result<Crew> {
     let mut crew = Crew::new()?;
     crew.settings.evolution.propose_every = 0;
-    let answers = |spec: &argonauts_core::session_runner::SessionSpec| match spec.step {
+    let answers = |spec: &argonauts_core::agents::session_runner::SessionSpec| match spec.step {
         Some(StepName::ModelJudge) => FakeSession::structured(json!({
             "verdict": "approve",
             "reasons": ["the evidence meets the rules"],

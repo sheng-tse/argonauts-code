@@ -6,15 +6,15 @@
 //! origin, and its source is who or what it came from. A part with any other label keeps the
 //! label as its heading.
 
-use argonauts_core::events::session::{
+use argonauts_core::runs::events::session::{
     InputPart, InputPartKind, LaunchRecord, PromptVia, SessionInput,
 };
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 
-use crate::text::{sanitize, sanitize_line, wrap_text};
-use crate::theme::{Role, Theme};
-use crate::views::panes;
+use crate::base::draw::panes;
+use crate::base::text::{sanitize, sanitize_line, wrap_text};
+use crate::base::theme::{Role, Theme};
 
 /// Lines of a part shown before `→` expands it.
 pub(super) const PART_LINES: usize = 6;
@@ -114,7 +114,7 @@ pub(super) fn parts_of(input: &SessionInput) -> Vec<AskedPart> {
 fn asked(part: &InputPart) -> AskedPart {
     // The frame, whoever wrote the instructions, your file and your request's words are named
     // by the assembly that put them in.
-    if let Some(heading) = argonauts_core::prompt_parts::heading(part) {
+    if let Some(heading) = argonauts_core::prompts::prompt_parts::heading(part) {
         return AskedPart {
             origin: Origin::Named(sanitize_line(&heading).trim().to_owned()),
             from: None,
@@ -380,12 +380,14 @@ fn launch_lines(launch: &LaunchRecord, index: usize, draw: &Draw<'_>) -> Vec<Lin
     if draw.expanded != Some(index) {
         let hint = panes::key_names(" · →  expands", theme);
         let opening = "Launched as ";
-        let room = draw
-            .width
-            .saturating_sub(crate::text::str_width(opening) + crate::text::str_width(&hint));
+        let room = draw.width.saturating_sub(
+            crate::base::text::str_width(opening) + crate::base::text::str_width(&hint),
+        );
         let mut line = heading(opening, selected, theme);
-        line.spans
-            .push(Span::styled(crate::views::layout::cut(&command, room), dim));
+        line.spans.push(Span::styled(
+            crate::base::draw::layout::cut(&command, room),
+            dim,
+        ));
         line.spans.push(Span::styled(hint, dim));
         return vec![line];
     }
@@ -427,8 +429,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::text::plain_text;
-    use crate::theme::Glyphs;
+    use crate::base::text::plain_text;
+    use crate::base::theme::Glyphs;
 
     fn part(kind: InputPartKind, label: &str, source: Option<&str>, text: &str) -> InputPart {
         InputPart {
@@ -571,7 +573,7 @@ mod tests {
     /// whoever wrote the instructions, and your file, each with where it came from.
     #[test]
     fn the_head_of_a_prompt_reads_as_its_assembly_names_it() {
-        use argonauts_core::prompt_parts;
+        use argonauts_core::prompts::prompt_parts;
 
         let input = SessionInput {
             launch: launch(),

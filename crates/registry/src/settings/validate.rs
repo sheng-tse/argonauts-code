@@ -3,7 +3,7 @@
 use std::iter;
 use std::path::{Component, Path, PathBuf};
 
-use argonauts_core::names::ModelRef;
+use argonauts_core::base::names::ModelRef;
 use argonauts_core::settings::approvals::Otherwise;
 use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::settings::evolution::FIXED_CORE_KEYS;
@@ -18,8 +18,8 @@ use super::plain;
 use super::roles::{self, AgentIds};
 use super::set_by::SetBy;
 use crate::SettingsError;
-use crate::catalog::setting_meta;
 use crate::clis::enabled_agent;
+use crate::settings::catalog::setting_meta;
 
 pub(crate) struct Context<'a> {
     /// The repo, when resolving for one. `agents.*.binary` must be outside it.
@@ -209,8 +209,11 @@ fn evolvable(settings: &Settings) -> Vec<Problem> {
                 .iter()
                 .chain(argonauts_core::settings::SAFETY_KEYS)
                 .find(|pattern| {
-                    crate::resolve::key_matches(pattern, key)
-                        || crate::resolve::key_matches(key, pattern.trim_end_matches(".*"))
+                    crate::settings::resolve::key_matches(pattern, key)
+                        || crate::settings::resolve::key_matches(
+                            key,
+                            pattern.trim_end_matches(".*"),
+                        )
                 })?;
             Some(Problem::new(
                 "evolution.evolvable",

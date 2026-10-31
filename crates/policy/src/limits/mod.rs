@@ -2,6 +2,7 @@
 //! built-in checks, run before the command checks), and on each session's sandbox. When a check
 //! can't tell, it reports a violation.
 
+pub mod daily;
 pub mod deps;
 pub mod diff;
 pub mod paths;
@@ -16,9 +17,11 @@ mod tests;
 use std::path::Path;
 use std::sync::Arc;
 
-use argonauts_core::events::task::TaskSpec;
-use argonauts_core::policy::{DecisionPoint, EvidencePacket, HardLimit, HardLimits, Violation};
-use argonauts_core::session_runner::{RunnerDirectory, SessionSpec};
+use argonauts_core::agents::session_runner::{RunnerDirectory, SessionSpec};
+use argonauts_core::runs::events::task::TaskSpec;
+use argonauts_core::safety::policy::{
+    DecisionPoint, EvidencePacket, HardLimit, HardLimits, Violation,
+};
 
 use crate::approvals::settings::SettingsSource;
 

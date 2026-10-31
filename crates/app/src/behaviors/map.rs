@@ -6,7 +6,7 @@
 //! cloud, so equation 2 would rank clouds by size; its list ranks labels by how much more of the
 //! group's share each is than of the others'.
 
-use argonauts_core::behavior_map::GRID;
+use argonauts_core::behaviors::behavior_map::GRID;
 
 /// A group with fewer actions than this draws no density, and counts in nobody's mean.
 pub(crate) const SMALLEST: usize = 5;

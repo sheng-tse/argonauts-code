@@ -3,14 +3,14 @@ use std::path::PathBuf;
 use argonauts_adapter_codex::CodexAdapter;
 use argonauts_conductor::doctor::standing::oldest_supported;
 use argonauts_conductor::{DoctorReport, GitCheck};
-use argonauts_core::api::{RunState, RunSummary};
 use argonauts_core::app::{AnswerTarget, AppChoice, UiCommand};
+use argonauts_core::base::names::ModelRef;
 use argonauts_core::input::SlashCommand;
-use argonauts_core::names::ModelRef;
+use argonauts_core::runs::api::{RunState, RunSummary};
 use argonauts_testkit::TempRepo;
 
-use super::super::test_support::{Call, CliOptions, TestCtx, TestDriver};
 use super::*;
+use crate::controller::base::test_support::{Call, CliOptions, TestCtx, TestDriver};
 
 /// A version older than any Codex was recorded with.
 const OLD: &str = "0.1.0";
@@ -559,15 +559,15 @@ async fn a_cli_is_never_updated_while_a_run_is_going() {
     assert_eq!(asked.options[0].label, "Update it now");
 
     // A run starts somewhere before you answer.
-    let (pid, start_time) = crate::ancestry::own_process();
-    let going = crate::live_registry::LiveRunHost {
+    let (pid, start_time) = crate::startup::ancestry::own_process();
+    let going = crate::host::live_registry::LiveRunHost {
         pid,
         start_time,
         repo_root: PathBuf::from("/another/folder"),
         run: argonauts_core::RunId::new("run-20261010-091503-3fa2").unwrap(),
         sessions: 1,
     };
-    crate::live_registry::register(&fixture.parts.env.paths, &going).unwrap();
+    crate::host::live_registry::register(&fixture.parts.env.paths, &going).unwrap();
     let ctx = &mut fixture.parts.ctx;
     let effects =
         answer_choice(ctx, &mut fixture.state, asked.id, choices::choose(UPDATE)).unwrap();

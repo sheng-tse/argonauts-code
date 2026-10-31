@@ -15,22 +15,22 @@ use std::time::Instant;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::Line;
 
-use argonauts_core::cli_commands::CliCommandSet;
+use argonauts_core::agents::cli_commands::CliCommandSet;
 use argonauts_core::input::{DraftCommand, draft_command};
-use argonauts_core::keywords::Keyword;
-use argonauts_core::sanitize::sanitize_for_terminal;
+use argonauts_core::look::keywords::Keyword;
+use argonauts_core::safety::sanitize::sanitize_for_terminal;
 
 use super::VimMode;
-use crate::keywords;
-use crate::render::{Clock, RenderCtx};
-use crate::text::sanitize_line;
-use crate::theme::Theme;
+use crate::base::draw::render::{Clock, RenderCtx};
+use crate::base::text::keywords;
+use crate::base::text::sanitize_line;
+use crate::base::theme::Theme;
 
 use edit::{Clip, Draft};
 use paste_burst::PasteBurst;
 pub(super) use paste_burst::{CHAR_INTERVAL, ENTER_WINDOW, MIN_CHARS};
 
-pub use view::{SHELL_PLACEHOLDER, SHELL_PROMPT};
+pub use view::SHELL_PLACEHOLDER;
 pub use workflow_word::{ignored_notice, requested_notice};
 
 /// Longer drafts scroll to keep the cursor in view.
@@ -102,9 +102,9 @@ pub struct Composer {
     edits: undo::EditHistory,
     /// The pictures made in this conversation. A chip in a draft, or in a message brought back
     /// from history or the queue, names one of them.
-    pictures: Vec<argonauts_core::pictures::Picture>,
+    pictures: Vec<argonauts_core::look::pictures::Picture>,
     /// The pictures of the prompt just sent, until the screen takes them.
-    sent_pictures: Vec<argonauts_core::pictures::Picture>,
+    sent_pictures: Vec<argonauts_core::look::pictures::Picture>,
     /// The last chip's number. Chips count on across the conversation, as in Claude Code.
     next_picture: u32,
     clipboard: picture::Clipboard,

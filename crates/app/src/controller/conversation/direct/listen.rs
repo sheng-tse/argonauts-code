@@ -4,9 +4,9 @@
 
 use std::net::{Ipv4Addr, SocketAddr};
 
-use argonauts_core::asking::{Ask, AskLine, AskReply};
-use argonauts_core::names::TurnId;
-use argonauts_core::session_runner::Asking;
+use argonauts_core::agents::session_runner::Asking;
+use argonauts_core::base::names::TurnId;
+use argonauts_core::runs::asking::{Ask, AskLine, AskReply};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};

@@ -7,16 +7,16 @@ use std::time::{Duration, Instant};
 
 use argonauts_core::AgentEvent;
 use argonauts_core::app::{AppEvent, AppMode};
-use argonauts_core::events::{RunEvent, RunEventKind};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use ratatui::text::Line;
 
+use super::super::testing::pictures::picture_check::assert_rows_match;
 use super::Bridge;
-use super::transcript::picture_check::assert_rows_match;
+use crate::app::model::ViewModel;
+use crate::app::options::UiOptions;
+use crate::base::draw::render::{Clock, RenderCtx};
+use crate::base::theme::{Glyphs, Theme};
 use crate::bottom::ApprovalMode;
-use crate::model::ViewModel;
-use crate::options::UiOptions;
-use crate::render::{Clock, RenderCtx};
-use crate::theme::{Glyphs, Theme};
 
 const RECORDED: &str = include_str!("../../../crew/tests/fixtures/runs/captain-review-loop.jsonl");
 const PICTURE: &str = include_str!("../../tests/golden/workflow_shape_known.txt");
@@ -260,9 +260,9 @@ fn shaped_at(events: &[RunEvent]) -> u64 {
         .iter()
         .find(|event| match &event.kind {
             RunEventKind::Agent(AgentEvent::Workflow { workflow }) => !workflow.phases.is_empty(),
-            RunEventKind::Workflow(argonauts_core::events::workflow::WorkflowEvent::Reported(
-                report,
-            )) => !report.workflow.phases.is_empty(),
+            RunEventKind::Workflow(
+                argonauts_core::runs::events::workflow::WorkflowEvent::Reported(report),
+            ) => !report.workflow.phases.is_empty(),
             _ => false,
         })
         .expect("a report with phases")
@@ -322,7 +322,7 @@ fn until_the_shape_is_known_the_line_says_the_workflow_is_being_written() {
                         && matches!(
                             &event.kind,
                             RunEventKind::Session(
-                                argonauts_core::events::session::SessionEvent::Started(_)
+                                argonauts_core::runs::events::session::SessionEvent::Started(_)
                             )
                         )
                 })
@@ -370,7 +370,7 @@ fn the_working_line_names_the_phase_its_view_shows() {
         .expect("the first report");
     building.seq = before.last().map_or(shaped, |last| last.seq + 1);
     if let RunEventKind::Agent(AgentEvent::Workflow { workflow }) = &mut building.kind {
-        use argonauts_core::events::session::{CliAgentState, SubagentStatus};
+        use argonauts_core::runs::events::session::{CliAgentState, SubagentStatus};
         workflow.status = SubagentStatus::Running;
         workflow.agents.truncate(1);
         workflow.agents[0].state = CliAgentState::Running;

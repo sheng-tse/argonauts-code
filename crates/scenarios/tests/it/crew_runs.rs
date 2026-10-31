@@ -10,14 +10,14 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, bail};
 
 use argonauts_core::TaskId;
-use argonauts_core::events::approval::{AnswerAction, ApprovalEvent, ApprovalKind};
-use argonauts_core::events::goal::GoalEvent;
-use argonauts_core::events::plan::{DivideEvent, PlanEvent};
-use argonauts_core::events::run::{Party, RunLifecycle, RunOutcome, WaitReason};
-use argonauts_core::events::session::SessionEvent;
-use argonauts_core::events::task::{MergeEvent, TaskEvent, TaskState};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::session_runner::Access;
+use argonauts_core::agents::session_runner::Access;
+use argonauts_core::runs::events::approval::{AnswerAction, ApprovalEvent, ApprovalKind};
+use argonauts_core::runs::events::goal::GoalEvent;
+use argonauts_core::runs::events::plan::{DivideEvent, PlanEvent};
+use argonauts_core::runs::events::run::{Party, RunLifecycle, RunOutcome, WaitReason};
+use argonauts_core::runs::events::session::SessionEvent;
+use argonauts_core::runs::events::task::{MergeEvent, TaskEvent, TaskState};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_scenarios::{Scenario, WAIT, as_set_up, past_the_question_guard, scenario_file};
 use argonauts_testkit::{FakeScenario, Key, Pty};
 
@@ -130,7 +130,7 @@ fn wait_for_event<T>(
     timeout: Duration,
     found: impl Fn(&RunEvent) -> Option<T>,
 ) -> anyhow::Result<T> {
-    let deadline = argonauts_testkit::deadline::after(timeout);
+    let deadline = argonauts_testkit::pty::deadline::after(timeout);
     loop {
         if let Ok(events) = scenario.latest_run_events()
             && let Some(hit) = events.iter().find_map(&found)
@@ -477,7 +477,7 @@ fn crew_goal_answer_approves() -> anyhow::Result<()> {
             _ => None,
         })
         .context("the goal was approved")?;
-    assert_eq!(by, argonauts_core::events::run::Party::User);
+    assert_eq!(by, argonauts_core::runs::events::run::Party::User);
     assert!(
         file.answers
             .iter()

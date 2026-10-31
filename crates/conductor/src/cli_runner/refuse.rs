@@ -3,11 +3,11 @@
 //! also needs the approved goal's hash; and an agent disabled for new work starts nothing. A
 //! billing cap's disable only steers fallbacks away, so the retry after you top up still starts.
 
-use argonauts_core::limits::AgentHealth;
-use argonauts_core::session_runner::{RunnerError, SandboxMode, SessionSpec};
+use argonauts_core::agents::session_runner::{RunnerError, SandboxMode, SessionSpec};
+use argonauts_core::models::limits::AgentHealth;
 use argonauts_core::settings::approvals::SandboxSettings;
 
-use crate::health::{DisableScope, disable_scope};
+use crate::boards::health::{DisableScope, disable_scope};
 use crate::sandbox::SelfTest;
 
 /// `spec.sandbox.mode` is the sandbox the session will really run in, so a CLI the runner
@@ -63,8 +63,8 @@ pub fn check(
 mod tests {
     use super::*;
     use crate::cli_runner::testing::{healthy, spec_in};
-    use argonauts_core::names::AgentId;
-    use argonauts_core::session_runner::Access;
+    use argonauts_core::agents::session_runner::Access;
+    use argonauts_core::base::names::AgentId;
     use argonauts_core::settings::approvals::SandboxChoice;
 
     fn passed() -> SelfTest {
@@ -159,7 +159,7 @@ mod tests {
             other => panic!("expected Disabled, got {other:?}"),
         }
         // A billing cap leaves the retry on the same agent free to start.
-        health.disabled = Some(crate::health::billing_disable());
+        health.disabled = Some(crate::boards::health::billing_disable());
         check(&spec, &settings(SandboxChoice::Os), &health, &passed()).unwrap();
     }
 }

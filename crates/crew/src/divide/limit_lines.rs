@@ -2,8 +2,8 @@
 //! With `limits.from_history`, a task's limit is the median spend of past tasks of the same
 //! task type once there are at least `limits.history_min`; otherwise `per_task_*`.
 
-use argonauts_core::events::plan::{LimitLine, LimitPlan};
-use argonauts_core::events::task::{TaskLimit, TaskSpec};
+use argonauts_core::runs::events::plan::{LimitLine, LimitPlan};
+use argonauts_core::runs::events::task::{TaskLimit, TaskSpec};
 use argonauts_core::settings::limit::{
     LimitAmount, LimitLineKind, LimitLines, LimitUnit, SpendLimits,
 };

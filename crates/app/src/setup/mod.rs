@@ -17,19 +17,19 @@ use anyhow::bail;
 use argonauts_conductor::{DoctorReport, doctor};
 use argonauts_core::NoteLevel;
 use argonauts_core::app::AppEvent;
-use argonauts_core::events::approval::AnswerAction;
-use argonauts_core::layout::user_files;
-use argonauts_core::model_catalog::display_name_from_id;
-use argonauts_core::names::{ChoiceId, ModelRef};
-use argonauts_core::paths::{create_private_dir_all, write_private_file};
+use argonauts_core::base::layout::user_files;
+use argonauts_core::base::names::{ChoiceId, ModelRef};
+use argonauts_core::base::paths::{create_private_dir_all, write_private_file};
+use argonauts_core::base::text::shown_name;
+use argonauts_core::models::model_catalog::display_name_from_id;
+use argonauts_core::runs::events::approval::AnswerAction;
 use argonauts_core::settings::approvals::ApprovalMode;
-use argonauts_core::text::shown_name;
 
 use crate::builtin_adapters;
-use crate::choices::app_choice;
 use crate::controller::{Ctx, Effect, Internal};
+use crate::setup::choices::app_choice;
+use crate::startup::trust::cant_trust;
 use crate::startup::{RunCounts, run_counts, settings_warnings, welcome_from};
-use crate::trust::cant_trust;
 use argonauts_registry::SettingsWarning;
 
 pub(crate) use finish::project_dir as project_folder;
@@ -579,5 +579,6 @@ fn usage_words(enabled: bool, quiet: bool) -> &'static str {
     }
 }
 
+pub(crate) mod choices;
 #[cfg(test)]
 mod tests;

@@ -2,8 +2,8 @@
 
 use crate::limits_support;
 use anyhow::Context as _;
-use argonauts_core::events::approval::{ApprovalKind, ApprovalPacket};
-use argonauts_core::events::{RunEventKind, TaskEvent};
+use argonauts_core::runs::events::approval::{ApprovalKind, ApprovalPacket};
+use argonauts_core::runs::events::{RunEventKind, TaskEvent};
 use argonauts_scenarios::WAIT;
 use argonauts_testkit::Key;
 use limits_support::*;

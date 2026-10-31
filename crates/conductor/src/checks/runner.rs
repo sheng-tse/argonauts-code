@@ -7,10 +7,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use argonauts_core::events::task::{CheckKind, CheckOutcome};
-use argonauts_core::future::BoxFuture;
-use argonauts_core::limits::{CheckRequest, CheckRunner};
-use argonauts_core::session_runner::{Access, SandboxMode, SandboxProfile};
+use argonauts_core::agents::session_runner::{Access, SandboxMode, SandboxProfile};
+use argonauts_core::base::future::BoxFuture;
+use argonauts_core::models::limits::{CheckRequest, CheckRunner};
+use argonauts_core::runs::events::task::{CheckKind, CheckOutcome};
 use argonauts_core::settings::Settings;
 use argonauts_core::{CommandSpec, Paths};
 use tokio::time::Instant;
@@ -19,10 +19,10 @@ use super::env::check_env;
 use super::setup::{copy_untracked, main_checkout, run_setup_command};
 use super::summary::one_line_summary;
 use super::{CheckProcess, Ran, execute};
-use crate::control::StopHandle;
-use crate::run_host::millis;
+use crate::limits::control::StopHandle;
 use crate::sandbox::selftest::self_test_once;
 use crate::sandbox::{ProfileInput, SandboxWrap, session_profile};
+use crate::session::run_host::millis;
 
 /// The checks cell with `checks.run` empty, rather than a silent pass.
 pub const NO_COMMAND_CHECKS: &str = "No command checks set · /config checks.run";
@@ -349,7 +349,7 @@ mod tests {
     use crate::sandbox::Unsandboxed;
     use argonauts_core::settings::protocol::CheckSettings;
     use argonauts_core::{RunId, TaskId};
-    use argonauts_testkit::repo::TempRepo;
+    use argonauts_testkit::home::repo::TempRepo;
 
     fn checks(settings: Settings) -> SandboxedChecks {
         SandboxedChecks::new(Arc::new(settings), Arc::new(Unsandboxed))

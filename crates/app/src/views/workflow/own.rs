@@ -5,11 +5,11 @@
 //! workflow the session starts for the same task is a row in the last phase that ran.
 
 use argonauts_core::RunId;
-use argonauts_core::events::session::CliWorkflowRun;
-use argonauts_core::names::{SessionKey, WorkflowId};
-use argonauts_core::views::{
+use argonauts_core::app::views::{
     PhaseCount, PhaseRow, RowStatus, WorkflowRow, WorkflowView, agents_counted,
 };
+use argonauts_core::base::names::{SessionKey, WorkflowId};
+use argonauts_core::runs::events::session::CliWorkflowRun;
 
 use super::WorkflowLog;
 
@@ -162,7 +162,7 @@ fn placed(
     });
     title
         .and_then(|title| {
-            let name = argonauts_core::text::shown_name(&title.title);
+            let name = argonauts_core::base::text::shown_name(&title.title);
             phases.iter().position(|phase| phase.name == name)
         })
         .unwrap_or(0)

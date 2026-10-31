@@ -10,7 +10,7 @@
 //! back, and ↑ or Tab on an empty input hands them to a waiting question again.
 //! What the named keys do comes from the [`Keymap`].
 //!
-//! [`Keymap`]: crate::keymap::Keymap
+//! [`Keymap`]: crate::base::input::keymap::Keymap
 
 use std::io::Write;
 use std::time::{Duration, Instant};
@@ -22,12 +22,12 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Position, Size};
 
 use super::{OverlayEvent, QuitArm, TranscriptOverlay, Ui, UiAction};
+use crate::base::input::keymap::{Action, CHORD_WAIT, KeySpec, Layer};
 use crate::bottom::{
     BandEvent, ComposerEvent, Hint, MenuEvent, Menus, NoticeEvent, PanelEvent, PickerEvent,
     QuestionEvent, REMEMBER_KEY, SearchEvent, WORD_IGNORED_NOTICE, ignored_notice,
 };
-use crate::keymap::{Action, CHORD_WAIT, KeySpec, Layer};
-use crate::views::list;
+use crate::frame::view::list;
 
 /// How long a first Ctrl+C, Ctrl+D, or Esc waits for the second.
 pub const QUIT_WINDOW: Duration = Duration::from_secs(1);
@@ -47,7 +47,7 @@ impl<W: Write> Ui<W> {
             }
             return self.handle_conversation_event(event, now);
         }
-        let state = crate::state::AppState::default();
+        let state = crate::frame::state::AppState::default();
         self.handle_event_in(event, now, &state)
     }
 
@@ -64,7 +64,7 @@ impl<W: Write> Ui<W> {
                 self.handle_key(key, now, &mut actions);
             }
             Event::Mouse(mouse) => {
-                let state = crate::state::AppState::default();
+                let state = crate::frame::state::AppState::default();
                 actions = self.mouse_event(mouse, now, &state);
             }
             Event::Key(_) => {}

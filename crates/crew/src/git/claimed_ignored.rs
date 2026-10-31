@@ -57,7 +57,7 @@ impl Git {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::{TestRepo, git_test_env};
+    use crate::testing::{TestRepo, git_test_env};
 
     #[tokio::test]
     async fn a_claimed_file_your_ignore_rules_match_is_told_with_the_rule() {

@@ -7,14 +7,14 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
-use argonauts_core::events::session::LaunchRecord;
-use argonauts_core::limits::{HealthBoard, PlanUsageBoard};
-use argonauts_core::model_memory::ModelMemory;
-use argonauts_core::names::AgentId;
-use argonauts_core::registry::ModelRegistry;
-use argonauts_core::session_runner::{
+use argonauts_core::agents::session_runner::{
     Access, RunnerCapabilities, SandboxMode, SandboxProfile, SessionSpec,
 };
+use argonauts_core::base::names::AgentId;
+use argonauts_core::models::limits::{HealthBoard, PlanUsageBoard};
+use argonauts_core::models::model_memory::ModelMemory;
+use argonauts_core::models::registry::ModelRegistry;
+use argonauts_core::runs::events::session::LaunchRecord;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::{SandboxChoice, SandboxSettings};
 use argonauts_core::settings::context::ContextAsk;
@@ -22,7 +22,7 @@ use argonauts_core::settings::endpoints::local_endpoint_addresses;
 use argonauts_core::{Adapter, CommandSpec, Paths, SessionRequest, create_private_dir_all};
 
 use super::{CliRunner, capabilities, config_query, launch, request};
-use crate::cli_versions::CliVersions;
+use crate::boards::cli_versions::CliVersions;
 use crate::doctor::resolve_binary;
 use crate::sandbox::profile::{build_cache_env, build_cache_root, launch_paths, rewritten_files};
 use crate::sandbox::proxy::{self, Allowlist, Proxy, Refusal};
@@ -194,7 +194,7 @@ impl Context {
             make_rewritten_files(self.adapter.id(), &user_home(&self.home))?;
         }
         if self.proxied(&profile) {
-            crate::health::goes_through_proxy(&spec.key);
+            crate::boards::health::goes_through_proxy(&spec.key);
             let (port, url) = self.proxy()?;
             profile.proxy_port = Some(port);
             set_env(&mut command, proxy::session_env(&url));
@@ -412,12 +412,12 @@ fn extra_writable(rules: &SandboxSettings, user_home: &Path, workdir: &Path) -> 
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::names::{ModelRef, RoleName};
+    use argonauts_core::base::names::{ModelRef, RoleName};
     use argonauts_core::settings::agents::EndpointSettings;
 
     use super::*;
     use crate::cli_runner::testing::{FakeDriver, TestAdapter, TestDriver, spec_in};
-    use argonauts_core::session_runner::Access;
+    use argonauts_core::agents::session_runner::Access;
 
     #[test]
     fn a_missing_rewritten_file_is_made_where_its_folder_is() {
@@ -465,7 +465,7 @@ mod tests {
 
     #[test]
     fn a_home_kept_for_the_task_is_made_readable_and_writable() {
-        use argonauts_core::layout;
+        use argonauts_core::base::layout;
 
         let keeping = TestAdapter::new("true")
             .with_driver(FakeDriver::default())
@@ -560,7 +560,7 @@ mod tests {
         use crate::cli_runner::session::{name_proxy_refusal, not_started};
         use crate::sandbox::proxy::tests::{connect_as, to_loopback};
         use argonauts_core::ErrorCategory;
-        use argonauts_core::events::session::EndReason;
+        use argonauts_core::runs::events::session::EndReason;
 
         let dir = tempfile::tempdir().unwrap();
         let proxy = Proxy::with_resolver(to_loopback(1, Arc::default())).unwrap();
@@ -951,8 +951,8 @@ mod tests {
             .with_sandbox(Arc::new(Pretend(SandboxMode::Os)))
             .with_proxy(proxy.clone());
         let mut spec = spec_in(dir.path(), dir.path(), "hi");
-        spec.asking = Some(argonauts_core::session_runner::Asking {
-            asks: argonauts_core::session::Asks::LikeCli,
+        spec.asking = Some(argonauts_core::agents::session_runner::Asking {
+            asks: argonauts_core::agents::session::Asks::LikeCli,
             endpoint: "127.0.0.1:41234".to_owned(),
             token: "t".to_owned(),
             tools: vec!["argonauts_start_workflow".to_owned()],

@@ -8,12 +8,12 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
 use argonauts_core::TaskId;
-use argonauts_core::events::session::SessionEnd;
-use argonauts_core::names::{RoleName, SessionKey};
-use argonauts_core::session_runner::{RunnerEvent, SessionControl};
+use argonauts_core::agents::session_runner::{RunnerEvent, SessionControl};
+use argonauts_core::base::names::{RoleName, SessionKey};
+use argonauts_core::runs::events::session::SessionEnd;
 
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::{Host, crashed_end};
-use crate::error::{EngineError, EngineResult};
 
 pub struct LiveSessions {
     by_key: Mutex<BTreeMap<SessionKey, LiveSession>>,

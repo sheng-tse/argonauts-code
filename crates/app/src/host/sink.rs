@@ -5,16 +5,16 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Mutex, PoisonError, mpsc};
 
-use argonauts_core::engine::EventSink;
-use argonauts_core::events::session::SessionEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::journal::{Journal, JournalError};
-use argonauts_core::names::SessionKey;
-use argonauts_core::redact::{redact_json, redact_secrets};
+use argonauts_core::base::names::SessionKey;
+use argonauts_core::runs::engine::EventSink;
+use argonauts_core::runs::events::session::SessionEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
+use argonauts_core::runs::journal::{Journal, JournalError};
+use argonauts_core::safety::redact::{redact_json, redact_secrets};
 use argonauts_core::{Paths, RunId, TaskId};
 use tokio::sync::broadcast;
 
-use crate::live_registry;
+use crate::host::live_registry;
 
 pub(crate) struct JournalSink {
     journal: Mutex<Journal>,
@@ -131,8 +131,8 @@ fn count_sessions(home: &Paths, pid: u32, changes: &mpsc::Receiver<SessionChange
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::journal::{RunLock, read_all};
-    use argonauts_core::layout::run_files;
+    use argonauts_core::base::layout::run_files;
+    use argonauts_core::runs::journal::{RunLock, read_all};
     use argonauts_core::{Note, NoteLevel};
 
     use super::*;

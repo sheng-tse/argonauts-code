@@ -3,21 +3,21 @@ use std::sync::Arc;
 
 use argonauts_conductor::{AgentCheck, AgentStatus, DoctorReport, GitCheck};
 use argonauts_core::Paths;
-use argonauts_core::adapter::SetupHints;
+use argonauts_core::agents::adapter::SetupHints;
 use argonauts_core::app::{AppChoice, AppEvent};
-use argonauts_core::clock::SystemClock;
-use argonauts_core::events::approval::AnswerAction;
+use argonauts_core::base::clock::SystemClock;
+use argonauts_core::runs::events::approval::AnswerAction;
 use argonauts_core::settings::approvals::ApprovalMode;
-use argonauts_core::steps::SchemaStepRunner;
+use argonauts_core::workflows::steps::SchemaStepRunner;
 use argonauts_testkit::{FakeDirectory, TempRepo};
 use tokio::sync::mpsc;
 
 use super::*;
-use crate::app_settings::AppSettings;
-use crate::controller::test_support::FakeConductor;
+use crate::controller::base::test_support::FakeConductor;
 use crate::controller::{AppServices, Outbox};
-use crate::env::AppEnv;
-use crate::trace::Trace;
+use crate::startup::app_settings::AppSettings;
+use crate::startup::env::AppEnv;
+use crate::testing::trace::Trace;
 
 struct Fixture {
     repo: TempRepo,
@@ -39,7 +39,7 @@ impl Fixture {
         env.agent_session = false;
         env.user_home = Some(repo.user_home().to_owned());
         let env = Arc::new(env);
-        let flags = crate::controller::test_support::quiet_local_servers(Vec::new());
+        let flags = crate::controller::base::test_support::quiet_local_servers(Vec::new());
         let settings = AppSettings::load(&env, flags, interactive).unwrap();
         let (plan_usage, health) = argonauts_conductor::boards(&paths);
         let services = AppServices {
@@ -47,7 +47,7 @@ impl Fixture {
             approvals: None,
             workers: Arc::new(FakeDirectory::new()),
             steps: Arc::new(SchemaStepRunner),
-            registry: crate::controller::test_support::quiet_registry(
+            registry: crate::controller::base::test_support::quiet_registry(
                 settings.settings(),
                 repo.root(),
             ),
@@ -589,7 +589,7 @@ async fn guided_setup_offers_a_local_servers_models_as_reviewers() {
     let ollama = &settings.endpoints["ollama"];
     assert_eq!(ollama.base_url.as_deref(), Some("http://127.0.0.1:9/v1"));
     assert!(ollama.local);
-    let reviewers: Vec<String> = settings.roles[&argonauts_core::names::RoleName::Reviewer]
+    let reviewers: Vec<String> = settings.roles[&argonauts_core::base::names::RoleName::Reviewer]
         .models
         .iter()
         .map(ToString::to_string)
@@ -678,7 +678,7 @@ async fn a_reviewer_chosen_by_role_skips_the_local_server() {
     let mut fixture = Fixture::new(true);
     let servers = vec![ollama_that_reviews()];
     let (mut setup, effects) = start(&mut fixture, two_ready(), Vec::new(), servers).await;
-    let value = |option: &argonauts_core::events::approval::AnswerOption| {
+    let value = |option: &argonauts_core::runs::events::approval::AnswerOption| {
         questions::value_of(&option.action)
     };
     let chose_reviewer = std::cell::Cell::new(false);
@@ -715,7 +715,7 @@ async fn guided_setup_asks_who_orchestrates_a_orchestrator() {
     let (mut setup, effects) = start(&mut fixture, two_ready(), Vec::new(), Vec::new()).await;
     let pick = |choice: &AppChoice| {
         if choice.title == "How the crew works" {
-            let value = |option: &argonauts_core::events::approval::AnswerOption| {
+            let value = |option: &argonauts_core::runs::events::approval::AnswerOption| {
                 questions::value_of(&option.action)
             };
             let orchestrated = choice
@@ -746,7 +746,7 @@ async fn who_does_what_sets_a_role_and_comes_back_until_you_keep_them_all() {
     let mut fixture = Fixture::new(true);
     let (mut setup, effects) = start(&mut fixture, two_ready(), Vec::new(), Vec::new()).await;
     let changed = std::cell::Cell::new(false);
-    let value = |option: &argonauts_core::events::approval::AnswerOption| {
+    let value = |option: &argonauts_core::runs::events::approval::AnswerOption| {
         questions::value_of(&option.action)
     };
     let pick = |choice: &AppChoice| {
@@ -982,7 +982,7 @@ async fn the_approvals_answer_shows_on_the_bottom_line_at_once() {
     let mut fixture = Fixture::new(true);
     let (mut setup, effects) = start(&mut fixture, two_ready(), Vec::new(), Vec::new()).await;
     let pick = |choice: &AppChoice| match choice.title.as_str() {
-        "Approvals" => crate::choices::choose("autopilot"),
+        "Approvals" => crate::setup::choices::choose("autopilot"),
         _ => enter(choice),
     };
     let mut effects = effects;

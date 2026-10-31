@@ -12,8 +12,8 @@ use toml::{Table, Value};
 
 use super::fallback::drop_entry_billing;
 use super::passing_over::Stop;
-use crate::catalog::setting_meta;
-use crate::resolve::{check_plain_keys, is_safety_key, key_matches, leaves};
+use crate::settings::catalog::setting_meta;
+use crate::settings::resolve::{check_plain_keys, is_safety_key, key_matches, leaves};
 use crate::workflows::{
     PHASES_EXTENSIONS, SCRIPT_EXTENSIONS, builtin, is_workflow_name, not_a_workflow_name,
     workflow_choices, workflow_choices_in,

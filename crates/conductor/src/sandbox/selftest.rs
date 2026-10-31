@@ -10,7 +10,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use argonauts_core::CommandSpec;
-use argonauts_core::session_runner::{SandboxMode, SandboxProfile};
+use argonauts_core::agents::session_runner::{SandboxMode, SandboxProfile};
 use tokio::sync::Mutex;
 
 use super::SandboxWrap;
@@ -291,7 +291,7 @@ async fn run(command: &CommandSpec) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::session_runner::SandboxProfile;
+    use argonauts_core::agents::session_runner::SandboxProfile;
 
     use super::super::{SandboxError, Unsandboxed};
     use super::*;

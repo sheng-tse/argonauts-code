@@ -6,19 +6,19 @@
 use time::OffsetDateTime;
 
 use argonauts_core::app::SettingRow;
-use argonauts_core::settings::Settings;
-use argonauts_core::views::{
+use argonauts_core::app::views::{
     LearningAction, LearningArea, LearningCommand, LearningRow, LearningTab, LearningView,
 };
+use argonauts_core::settings::Settings;
 use argonauts_crew::run_review::notes;
 use argonauts_learning::Store;
 use argonauts_learning::evolution::{self, CandidateState, Evolution};
+use argonauts_learning::export::sync::{self, SyncMode};
 use argonauts_learning::learned_workflows::{self, LearnedWorkflowSet};
 use argonauts_learning::predictions::{self, Calibration};
 use argonauts_learning::records::{Book, Record};
 use argonauts_learning::replay::ReplaySet;
 use argonauts_learning::skills;
-use argonauts_learning::sync::{self, SyncMode};
 
 use super::or_empty;
 
@@ -589,7 +589,7 @@ fn skill_tabs(store: &Store) -> anyhow::Result<(Vec<LearningTab>, String)> {
 
 /// Proposal branches under `prefixes`, each with its pull-request action.
 fn branches(store: &Store, prefixes: &[&str]) -> Vec<LearningRow> {
-    let listed = argonauts_learning::git::run(
+    let listed = argonauts_learning::store::git::run(
         &store.repo_root,
         &[
             "for-each-ref",
@@ -746,8 +746,8 @@ fn conventions_rows(store: &Store) -> Vec<LearningRow> {
     rows
 }
 
-fn finding_text(finding: &argonauts_learning::scan::Finding) -> String {
-    use argonauts_learning::scan::Finding;
+fn finding_text(finding: &argonauts_learning::export::scan::Finding) -> String {
+    use argonauts_learning::export::scan::Finding;
     match finding {
         Finding::HiddenText { codepoint, .. } => format!("hidden character U+{codepoint:04X}"),
         Finding::Injection { phrase } => format!("injection phrasing \"{phrase}\""),

@@ -4,20 +4,20 @@
 //! actions in the footer. Tab and ⇧Tab switch tabs; a letter acts on the row. In the Settings
 //! tab, Enter opens the setting's picker under the input, as `/config <key>` does.
 
+use argonauts_core::app::views::{LearningAction, LearningRow, LearningView};
 use argonauts_core::app::{SettingRow, UiCommand, ViewData};
 use argonauts_core::input::SlashCommand;
-use argonauts_core::views::{LearningAction, LearningRow, LearningView};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 
-use crate::text::{sanitize_line, str_width};
-use crate::theme::{Role, Theme};
+use crate::base::text::{sanitize_line, str_width};
+use crate::base::theme::{Role, Theme};
 
-use super::list::{self, Column, ListState, fit_columns};
-use super::panes::{self, Footer, Header, Marks, Side};
-use super::{View, ViewCtx, ViewOutcome};
+use super::super::base::draw::panes::{self, Footer, Header, Marks, Side};
+use super::super::frame::view::list::{self, Column, ListState, fit_columns};
+use crate::frame::view::{View, ViewCtx, ViewOutcome};
 
 /// Cells between columns.
 const GAP: usize = 2;
@@ -338,7 +338,7 @@ impl View for LearningPicker {
             .min(panes.header.width.saturating_sub(title_width + 2));
         if tabs_width > 0 && panes.header.height > 0 {
             let line = Line::from(Span::styled(
-                super::layout::right(&tabs, usize::from(tabs_width)),
+                super::super::base::draw::layout::right(&tabs, usize::from(tabs_width)),
                 theme.style(Role::Dim),
             ));
             panes::put(
@@ -398,7 +398,12 @@ impl View for LearningPicker {
         panes::put_lines(buf, panes.right, &shown);
 
         let marks = Marks::for_theme(theme);
-        let mark = super::pager::position_mark(self.list.offset, self.page, self.len(), marks.down);
+        let mark = super::super::frame::view::pager::position_mark(
+            self.list.offset,
+            self.page,
+            self.len(),
+            marks.down,
+        );
         panes::draw_footer(buf, panes.footer, Footer::Hints(self.hints()), &mark, theme);
     }
 
@@ -459,10 +464,10 @@ impl View for LearningPicker {
 mod tests {
     use std::time::Instant;
 
-    use argonauts_core::views::{LearningArea, LearningCommand, LearningTab};
+    use argonauts_core::app::views::{LearningArea, LearningCommand, LearningTab};
 
     use super::*;
-    use crate::state::AppState;
+    use crate::frame::state::AppState;
 
     pub(crate) fn records() -> LearningView {
         LearningView {

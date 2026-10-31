@@ -1,8 +1,8 @@
 //! What `/approvals` and `argonauts approvals` show: each point's mode and decider, its auto
 //! preview record, and the spot checks waiting.
 
-use argonauts_core::events::approval::ApprovalKind;
-use argonauts_core::policy::{ApprovalRow, ApprovalsView};
+use argonauts_core::runs::events::approval::ApprovalKind;
+use argonauts_core::safety::policy::{ApprovalRow, ApprovalsView};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::ApprovalMode;
 use time::OffsetDateTime;
@@ -81,7 +81,7 @@ pub fn build(
 mod tests {
     use time::macros::datetime;
 
-    use argonauts_core::names::ModelRef;
+    use argonauts_core::base::names::ModelRef;
 
     use super::*;
 

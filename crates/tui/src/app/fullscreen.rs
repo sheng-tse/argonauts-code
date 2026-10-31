@@ -22,12 +22,12 @@ use ratatui::text::{Line, Span};
 use super::selection::{Point, Selecting};
 use super::sticky;
 use super::{Ui, UiAction, compose_docked, compose_live};
-use crate::render::{Clock, RenderCtx};
-use crate::state::AppState;
+use crate::base::draw::render::{Clock, RenderCtx};
+use crate::base::text::{hard_wrap_spans, sanitize, truncate_line};
+use crate::base::theme::Role;
+use crate::frame::state::AppState;
 use crate::terminal::paint_rows;
 use crate::terminal::setup;
-use crate::text::{hard_wrap_spans, sanitize, truncate_line};
-use crate::theme::Role;
 
 /// Rows one notch of the wheel moves, as most terminals scroll their own scrollback.
 pub const WHEEL_ROWS: usize = 3;
@@ -381,7 +381,7 @@ impl Scrollback {
         };
         // The same down arrow token counts use, with its ASCII form.
         let arrow = ctx.theme.glyphs.tokens;
-        let gap = crate::theme::glyphs::gap_after(arrow);
+        let gap = crate::base::theme::glyphs::gap_after(arrow);
         let line = Line::from(Span::styled(
             format!("  {arrow}{gap}{what} · pgdn to scroll"),
             ctx.theme.style(Role::Dim),
@@ -671,9 +671,9 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
-    use crate::render::Clock;
-    use crate::text::plain_text;
-    use crate::theme::{Glyphs, Theme};
+    use crate::base::draw::render::Clock;
+    use crate::base::text::plain_text;
+    use crate::base::theme::{Glyphs, Theme};
 
     fn theme() -> Theme {
         let mut theme = Theme::dark();

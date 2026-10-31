@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use argonauts_core::status_tab::VersionStanding;
+use argonauts_core::app::status_tab::VersionStanding;
 
 use super::command::ask;
 use super::standing::standing;

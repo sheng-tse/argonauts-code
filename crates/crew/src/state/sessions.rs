@@ -6,12 +6,12 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use argonauts_core::TaskId;
-use argonauts_core::event::AgentEvent;
-use argonauts_core::events::RunEvent;
-use argonauts_core::events::session::{
+use argonauts_core::base::names::{ModelRef, SessionKey};
+use argonauts_core::runs::event::AgentEvent;
+use argonauts_core::runs::events::RunEvent;
+use argonauts_core::runs::events::session::{
     CliWorkflowRun, EndReason, SessionEnd, SessionEvent, SessionStarted,
 };
-use argonauts_core::names::{ModelRef, SessionKey};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Sessions {

@@ -4,11 +4,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use argonauts_core::events::agent_status::FallbackEvent;
-use argonauts_core::events::session::{EndReason, SessionEvent};
-use argonauts_core::events::task::{TaskEvent, TaskState, TryCause};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{AgentId, ModelRef};
+use argonauts_core::base::names::{AgentId, ModelRef};
+use argonauts_core::runs::events::agent_status::FallbackEvent;
+use argonauts_core::runs::events::session::{EndReason, SessionEvent};
+use argonauts_core::runs::events::task::{TaskEvent, TaskState, TryCause};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::{ErrorCategory, TaskId};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -224,7 +224,7 @@ pub async fn task_log(path: &Path, task: &TaskId) -> std::io::Result<TaskLog> {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::names::SessionKey;
+    use argonauts_core::base::names::SessionKey;
     use argonauts_core::{AgentEvent, Note, NoteLevel};
     use time::OffsetDateTime;
 
@@ -340,7 +340,7 @@ mod tests {
                     task: id("task-006"),
                     to: worker("codex/gpt-5"),
                     mode: argonauts_core::settings::fallback::FallbackMode::Auto,
-                    by: argonauts_core::events::run::Party::ArgonautsCode,
+                    by: argonauts_core::runs::events::run::Party::ArgonautsCode,
                     context: None,
                 }),
             ),
@@ -430,9 +430,9 @@ mod tests {
             ..event(Some(TASK), None, kind)
         };
         let check = || {
-            RunEventKind::Check(argonauts_core::events::task::CheckOutcome {
+            RunEventKind::Check(argonauts_core::runs::events::task::CheckOutcome {
                 name: "tests".to_owned(),
-                kind: argonauts_core::events::task::CheckKind::Command,
+                kind: argonauts_core::runs::events::task::CheckKind::Command,
                 passed: true,
                 command: None,
                 exit_code: Some(0),

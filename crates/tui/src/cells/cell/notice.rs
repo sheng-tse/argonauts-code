@@ -1,0 +1,746 @@
+use argonauts_core::app::CommandReply;
+use ratatui::style::Modifier;
+use ratatui::text::{Line, Span};
+
+use super::layout::{BODY_COL, EXPAND_HINT, indent, result_prefix};
+use super::tool::body::text_rows;
+use super::{HistoryCell, Tone};
+use crate::base::draw::render::RenderCtx;
+use crate::base::kit::logo::{LOGO_BEFORE, logo_before};
+use crate::base::text::marks;
+use crate::base::text::{fit_lines, sanitize, sanitize_line, spans_width, str_width, wrap_spans};
+use crate::base::theme::Role;
+
+/// A short message from the app rather than an agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notice {
+    pub tone: Tone,
+    /// Replaces the bullet.
+    pub glyph: Option<String>,
+    /// Uses the theme's question glyph, `◆`, for a question's record.
+    pub question: bool,
+    pub text: String,
+    /// Dim words after the text: who decided and when, like `merged by you, 10:58`, or why.
+    pub decided: Option<String>,
+    /// Dim lines under `⎿`.
+    pub detail: Vec<String>,
+    /// Dim lines under `⎿` that only Ctrl+O shows, such as the raw error behind a plain line.
+    pub more: Vec<String>,
+    /// The words take the text color and only the bullet the tone, as for a warning that says
+    /// who steps in.
+    pub plain_words: bool,
+    /// Dim words right after the text, a space apart, such as how to undo what it says.
+    pub after: Option<String>,
+    /// Dim lines under the text at its own column, with no hook, such as what it can't do.
+    pub under: Vec<String>,
+    /// The words are bold in the tone and the bullet takes the text color, for something that
+    /// changed under you, such as a run that ended or a CLI that signed out.
+    pub headline: bool,
+    /// Words right after all the others, as ` · run claude /login` goes on after a headline.
+    pub trailing: Vec<Trailing>,
+    /// The rows under `⎿` read dim through, a command in them too, as one account of what
+    /// happened, such as why a run stopped and how to carry it on.
+    pub dim_details: bool,
+    /// Logos before the rows under `⎿` that start with the name of a CLI or a host.
+    pub detail_logos: Vec<DetailLogo>,
+    /// Offers something about the reply above it, right under that reply with no blank row
+    /// between, its `◆` in the accent.
+    pub offer: bool,
+}
+
+/// A logo before a row under `⎿` that starts with the name of whoever it stands for, followed
+/// by a column's blanks. Where the logo draws, the name gives up two of them, so the columns
+/// after it stay where they were.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetailLogo {
+    /// The row, counted from the first under `⎿`.
+    pub row: usize,
+    /// `None` for a row of the same column that names what has no logo, as Argonauts Code:
+    /// it keeps the logo's cells blank, so its name lines up with the others'.
+    pub logo: Option<argonauts_core::look::logos::Logo>,
+    /// Bytes of the name at the row's start.
+    pub name: usize,
+}
+
+/// A piece of the words a notice ends with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Trailing {
+    /// Read dim, as words beside the line's own do.
+    Dim(String),
+    /// A command to type, in the text color so the eye finds it among the dim words.
+    Command(String),
+    /// A command to type after plain words, in the code color, as `argonauts self-update`
+    /// ends the line about an update that failed.
+    Code(String),
+}
+
+impl Notice {
+    pub fn new(tone: Tone, text: impl Into<String>) -> Self {
+        Self {
+            tone,
+            glyph: None,
+            question: false,
+            text: text.into(),
+            decided: None,
+            detail: Vec::new(),
+            more: Vec::new(),
+            plain_words: false,
+            after: None,
+            under: Vec::new(),
+            headline: false,
+            trailing: Vec::new(),
+            dim_details: false,
+            detail_logos: Vec::new(),
+            offer: false,
+        }
+    }
+
+    /// `◆ Doing this alone: about 1 file · /crew to have Council do it`: an offer about the
+    /// reply above it, the words dim and the command in the text color so the eye finds it.
+    pub fn offer(
+        words: impl Into<String>,
+        command: impl Into<String>,
+        after: impl Into<String>,
+    ) -> Self {
+        Self {
+            question: true,
+            offer: true,
+            ..Self::new(Tone::Dim, words)
+        }
+        .with_trailing([
+            Trailing::Command(command.into()),
+            Trailing::Dim(after.into()),
+        ])
+    }
+
+    /// `◆ Keeping the computer and its screen awake until you quit. /awake again lets them
+    /// sleep.`: a switch you flipped, with the `◆` in the success color, how to undo it dim
+    /// after it, and what it can't do dim on the row under it.
+    pub fn switched(text: impl Into<String>, undo: Option<String>, caveat: Option<String>) -> Self {
+        Self {
+            question: true,
+            after: undo,
+            under: caveat.into_iter().collect(),
+            ..Self::new(Tone::Success, text)
+        }
+    }
+
+    /// `● Back from Claude Code · 2 turns made there`: the bullet in the tone, the words plain,
+    /// and `after` dim.
+    pub fn plain_with_after(tone: Tone, text: impl Into<String>, after: impl Into<String>) -> Self {
+        Self {
+            decided: Some(after.into()),
+            plain_words: true,
+            ..Self::new(tone, text)
+        }
+    }
+
+    /// The `◆` takes the success color, since the question no longer needs you.
+    pub fn answered(title: impl Into<String>, decided: impl Into<String>) -> Self {
+        Self {
+            question: true,
+            decided: Some(decided.into()),
+            ..Self::new(Tone::Success, title)
+        }
+    }
+
+    /// `● The run ended · Nothing was merged: …`: the words bold in the tone after a bullet in
+    /// the text color, and why dim after them.
+    pub fn headline(tone: Tone, text: impl Into<String>, why: Option<String>) -> Self {
+        Self {
+            headline: true,
+            decided: why,
+            ..Self::new(tone, text)
+        }
+    }
+
+    pub fn with_trailing(mut self, trailing: impl IntoIterator<Item = Trailing>) -> Self {
+        self.trailing.extend(trailing);
+        self
+    }
+
+    pub fn with_glyph(mut self, glyph: impl Into<String>) -> Self {
+        self.glyph = Some(glyph.into());
+        self
+    }
+
+    /// Words dim after the text on its own row, as `carries it on` after `/resume`.
+    pub fn with_after(mut self, after: impl Into<String>) -> Self {
+        self.after = Some(after.into());
+        self
+    }
+
+    /// See [`Notice::dim_details`].
+    pub fn with_dim_details(mut self) -> Self {
+        self.dim_details = true;
+        self
+    }
+
+    pub fn with_detail(mut self, line: impl Into<String>) -> Self {
+        self.detail.push(line.into());
+        self
+    }
+
+    pub fn with_more(mut self, line: impl Into<String>) -> Self {
+        self.more.push(line.into());
+        self
+    }
+}
+
+impl HistoryCell for Notice {
+    fn lines(&self, ctx: &RenderCtx<'_>) -> Vec<Line<'static>> {
+        let theme = ctx.theme;
+        let width = usize::from(ctx.width);
+        // The ASCII glyph set is for fonts that draw symbols at the wrong width, so a symbol of
+        // the caller's own gives way to the bullet there.
+        let ascii = theme.glyphs.bullet.is_ascii();
+        let glyph = if self.question {
+            theme.glyphs.question.to_owned()
+        } else {
+            self.glyph
+                .as_deref()
+                .map(|glyph| sanitize_line(glyph).into_owned())
+                .filter(|glyph| !glyph.is_empty() && (glyph.is_ascii() || !ascii))
+                .unwrap_or_else(|| theme.glyphs.bullet.to_owned())
+        };
+        let hang = str_width(&glyph) + 1;
+        let glyph_role = if self.headline {
+            Role::Text
+        } else if self.offer {
+            Role::Accent
+        } else {
+            self.tone.role()
+        };
+        let first = [
+            marks::decorative(glyph, theme.style(glyph_role)),
+            Span::raw(" "),
+        ];
+        let rest = [Span::raw(" ".repeat(hang))];
+        let text_style = match self.tone {
+            _ if self.headline => theme.style(self.tone.role()).add_modifier(Modifier::BOLD),
+            Tone::Dim | Tone::Warning | Tone::Error if !self.plain_words => {
+                theme.style(self.tone.role())
+            }
+            _ => theme.style(Role::Text),
+        };
+        let mut spans = Vec::new();
+        // Only color sets a warning or an error apart from an answer, so without it they say so.
+        if !theme.has_color() {
+            match self.tone {
+                Tone::Warning => spans.push(Span::styled("warning: ", text_style)),
+                Tone::Error => spans.push(Span::styled(
+                    "error: ",
+                    text_style.add_modifier(Modifier::BOLD),
+                )),
+                _ => {}
+            }
+        }
+        spans.push(Span::styled(sanitize(&self.text).into_owned(), text_style));
+        if let Some(decided) = &self.decided {
+            let decided = sanitize_line(decided);
+            if !decided.trim().is_empty() {
+                spans.push(Span::styled(
+                    format!(" · {}", decided.trim()),
+                    theme.style(Role::Dim),
+                ));
+            }
+        }
+        if let Some(after) = &self.after {
+            let after = sanitize_line(after);
+            if !after.trim().is_empty() {
+                spans.push(Span::styled(
+                    format!(" {}", after.trim()),
+                    theme.style(Role::Dim),
+                ));
+            }
+        }
+        for piece in &self.trailing {
+            let (words, role) = match piece {
+                Trailing::Dim(words) => (words, Role::Dim),
+                Trailing::Command(words) => (words, Role::Text),
+                Trailing::Code(words) => (words, Role::Code),
+            };
+            spans.push(Span::styled(
+                sanitize_line(words).into_owned(),
+                theme.style(role),
+            ));
+        }
+        let hidden = !ctx.expanded && self.more.iter().any(|line| !line.trim().is_empty());
+        if hidden && spans_width(&first) + spans_width(&spans) + str_width(EXPAND_HINT) <= width {
+            spans.push(Span::styled(EXPAND_HINT, theme.style(Role::Dim)));
+        }
+        let mut lines = wrap_spans(&spans, width, &first, &rest);
+        for under in &self.under {
+            let under = sanitize_line(under);
+            if !under.trim().is_empty() {
+                let words = [Span::styled(
+                    under.trim().to_owned(),
+                    theme.style(Role::Dim),
+                )];
+                lines.extend(wrap_spans(&words, width, &rest, &rest));
+            }
+        }
+        let shown = if ctx.expanded {
+            self.detail.iter().chain(&self.more).collect::<Vec<_>>()
+        } else {
+            self.detail.iter().collect()
+        };
+        // Every row with a logo, or with the logo's cells kept blank, gives up the same blanks
+        // after its name, as many as the tightest can, so the column after stays in line.
+        let give_up = self
+            .detail_logos
+            .iter()
+            .filter_map(|logo| {
+                let detail = shown.get(logo.row)?;
+                let rest = detail.get(logo.name..)?;
+                let blanks = rest.len() - rest.trim_start_matches(' ').len();
+                Some(blanks.saturating_sub(1))
+            })
+            .min()
+            .unwrap_or(0);
+        for (i, detail) in shown.into_iter().enumerate() {
+            let mut first = if i == 0 {
+                result_prefix(theme)
+            } else {
+                vec![indent(BODY_COL)]
+            };
+            let logo = self.detail_logos.iter().find(|logo| logo.row == i);
+            let picture = logo.map(|logo| match &logo.logo {
+                Some(drawn) => logo_before(drawn, theme),
+                None if theme.logo_pictures => {
+                    vec![Span::raw(" ".repeat(usize::from(LOGO_BEFORE)))]
+                }
+                None => Vec::new(),
+            });
+            let detail: std::borrow::Cow<'_, str> = match (logo, picture) {
+                (Some(logo), Some(picture)) if !picture.is_empty() => {
+                    let given_up = spans_width(&picture);
+                    first.extend(picture);
+                    let (name, rest) = detail.split_at(logo.name.min(detail.len()));
+                    let blanks = rest.len() - rest.trim_start_matches(' ').len();
+                    // One blank always stays between the name and what follows it.
+                    let from = given_up.min(give_up).min(blanks.saturating_sub(1));
+                    format!("{name}{}", &rest[from..]).into()
+                }
+                _ => detail.as_str().into(),
+            };
+            let detail = detail.as_ref();
+            // A detail set in under the one before, as /doctor's notes under an agent are, hangs
+            // under its own words when it wraps.
+            let set_in = detail.len() - detail.trim_start_matches(' ').len();
+            if self.headline || self.dim_details {
+                // Under a headline the rows are its sentence, so a command in them reads dim
+                // with the words around it.
+                let words = [Span::styled(
+                    sanitize(detail).into_owned(),
+                    theme.style(Role::Dim),
+                )];
+                let hang = [indent(BODY_COL + set_in)];
+                lines.extend(wrap_spans(&words, width, &first, &hang));
+            } else {
+                // The same formatter as a tool's results, so `/resume` takes the code color
+                // here too.
+                lines.extend(text_rows(detail, Tone::Dim, ctx, first, BODY_COL + set_in));
+            }
+        }
+        fit_lines(&mut lines, width);
+        lines
+    }
+
+    fn continues_previous(&self) -> bool {
+        self.offer
+    }
+}
+
+/// One line hung under the item before it, with no blank row between, such as
+/// `  ⎿  Interrupted · What should Argonauts Code do instead?` under a stopped answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResultLine {
+    pub tone: Tone,
+    pub text: String,
+    /// Drawn after `text` in the accent color, as in Claude Code's `Kept model as Opus 5.5`.
+    pub value: Option<String>,
+    /// Dim words after the value, such as where a setting was saved.
+    pub after: Option<String>,
+}
+
+impl ResultLine {
+    pub fn new(tone: Tone, text: impl Into<String>) -> Self {
+        Self {
+            tone,
+            text: text.into(),
+            value: None,
+            after: None,
+        }
+    }
+
+    /// `text` in the normal color with `value` after it in the accent color.
+    pub fn valued(text: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            value: Some(value.into()),
+            ..Self::new(Tone::Normal, text)
+        }
+    }
+
+    pub fn with_after(mut self, after: impl Into<String>) -> Self {
+        self.after = Some(after.into());
+        self
+    }
+
+    /// The line as the conversation's record keeps a command's answer.
+    pub fn reply(&self) -> CommandReply {
+        CommandReply {
+            text: self.text.clone(),
+            value: self.value.clone(),
+            after: self.after.clone(),
+            dim: self.tone == Tone::Dim,
+            error: self.tone == Tone::Error,
+        }
+    }
+
+    /// A command's answer as the record kept it, drawn as it was.
+    pub fn of_reply(reply: &CommandReply) -> Self {
+        let tone = match (reply.error, reply.dim) {
+            (true, _) => Tone::Error,
+            (false, true) => Tone::Dim,
+            (false, false) => Tone::Normal,
+        };
+        Self {
+            value: reply.value.clone(),
+            after: reply.after.clone(),
+            ..Self::new(tone, reply.text.clone())
+        }
+    }
+}
+
+impl HistoryCell for ResultLine {
+    fn lines(&self, ctx: &RenderCtx<'_>) -> Vec<Line<'static>> {
+        let width = usize::from(ctx.width);
+        let mut lines = match &self.value {
+            None => text_rows(
+                &self.text,
+                self.tone,
+                ctx,
+                result_prefix(ctx.theme),
+                BODY_COL,
+            ),
+            Some(value) => {
+                let theme = ctx.theme;
+                let mut spans = vec![
+                    Span::styled(
+                        format!("{} ", sanitize_line(&self.text).trim_end()),
+                        theme.style(self.tone.role()),
+                    ),
+                    Span::styled(
+                        sanitize_line(value).trim().to_owned(),
+                        theme.style(Role::Accent),
+                    ),
+                ];
+                if let Some(after) = &self.after {
+                    spans.push(Span::styled(
+                        format!(" {}", sanitize_line(after).trim()),
+                        theme.style(Role::Dim),
+                    ));
+                }
+                wrap_spans(&spans, width, &result_prefix(theme), &[indent(BODY_COL)])
+            }
+        };
+        fit_lines(&mut lines, width);
+        lines
+    }
+
+    fn continues_previous(&self) -> bool {
+        true
+    }
+}
+
+/// A dim line hung under the result line before it, at its words' column, such as
+/// `     Carried over: the last 6 exchanges in full` under `  ⎿  Set model to …`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HungLine {
+    pub text: String,
+}
+
+impl HungLine {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self { text: text.into() }
+    }
+}
+
+impl HistoryCell for HungLine {
+    fn lines(&self, ctx: &RenderCtx<'_>) -> Vec<Line<'static>> {
+        let mut lines = text_rows(&self.text, Tone::Dim, ctx, vec![indent(BODY_COL)], BODY_COL);
+        fit_lines(&mut lines, usize::from(ctx.width));
+        lines
+    }
+
+    fn continues_previous(&self) -> bool {
+        true
+    }
+}
+
+/// The lines left in scrollback on exit, like `Reattach with: argonauts`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExitNote {
+    pub lines: Vec<String>,
+}
+
+impl ExitNote {
+    pub fn new(lines: Vec<String>) -> Self {
+        Self { lines }
+    }
+}
+
+impl HistoryCell for ExitNote {
+    fn lines(&self, ctx: &RenderCtx<'_>) -> Vec<Line<'static>> {
+        let width = usize::from(ctx.width);
+        let dim = ctx.theme.style(Role::Dim);
+        let mut lines = Vec::new();
+        for line in &self.lines {
+            let spans = [Span::styled(sanitize_line(line).into_owned(), dim)];
+            lines.extend(wrap_spans(&spans, width, &[], &[]));
+        }
+        fit_lines(&mut lines, width);
+        lines
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use super::*;
+    use crate::base::draw::render::{Clock, RenderCtx};
+    use crate::base::text::plain_text;
+    use crate::base::theme::{Glyphs, Theme};
+
+    #[test]
+    fn a_result_draws_its_value_in_the_accent_color() {
+        let mut theme = Theme::dark();
+        theme.glyphs = Glyphs::UNICODE;
+        let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now()));
+        let lines = ResultLine::valued("Kept model as", "Opus 5.5").lines(&ctx);
+        assert_eq!(plain_text(&lines), "  ⎿  Kept model as Opus 5.5");
+        let spans = &lines[0].spans;
+        let value = spans
+            .iter()
+            .find(|span| span.content == "Opus 5.5")
+            .unwrap();
+        assert_eq!(value.style, theme.style(Role::Accent));
+        let words = spans
+            .iter()
+            .find(|span| span.content.contains("Kept"))
+            .unwrap();
+        assert_eq!(words.style, theme.style(Role::Text));
+
+        let narrow = RenderCtx::new(20, &theme, Clock::still(Instant::now()));
+        for line in ResultLine::valued("Kept model as", "Opus 5.5").lines(&narrow) {
+            assert!(line.width() <= 20, "{line:?}");
+        }
+
+        let set = ResultLine::valued("Set model to", "Opus 5.5").with_after("· just you");
+        let lines = set.lines(&ctx);
+        assert_eq!(plain_text(&lines), "  ⎿  Set model to Opus 5.5 · just you");
+        let after = lines[0]
+            .spans
+            .iter()
+            .find(|span| span.content.contains("just you"))
+            .unwrap();
+        assert_eq!(after.style, theme.style(Role::Dim));
+        for line in set.lines(&narrow) {
+            assert!(line.width() <= 20, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn a_notice_hangs_its_detail_under_the_hook() {
+        let mut theme = Theme::dark();
+        theme.glyphs = Glyphs::UNICODE;
+        let ctx = RenderCtx::new(40, &theme, Clock::still(Instant::now()));
+        let notice = Notice::new(Tone::Warning, "Merged task-002 into main")
+            .with_glyph("◆")
+            .with_detail("Interrupted · What should Argonauts Code do instead?")
+            .with_detail("second");
+        let lines = notice.lines(&ctx);
+        assert_eq!(
+            plain_text(&lines),
+            "◆ Merged task-002 into main\n  ⎿  Interrupted · What should Argonauts\n     Code do instead?\n     second"
+        );
+        assert_eq!(
+            lines[0].spans[0].style,
+            marks::decoration(theme.style(Role::Warn))
+        );
+        // A detail set in under the one before hangs under its own words.
+        let doctor = Notice::new(Tone::Normal, "Doctor")
+            .with_detail("claude-code 2.1.291 · newer than tested")
+            .with_detail("  loaded built-ins it doesn't know yet")
+            .lines(&ctx);
+        assert_eq!(
+            plain_text(&doctor),
+            "● Doctor\n  ⎿  claude-code 2.1.291 · newer than\n     tested\n       loaded built-ins it doesn't know\n       yet"
+        );
+        let plain = Notice::new(Tone::Error, "failed\x1b[31m hard").lines(&ctx);
+        assert_eq!(plain_text(&plain), "● failed hard");
+        assert_eq!(
+            plain[0].spans[0].style,
+            marks::decoration(theme.style(Role::Danger))
+        );
+    }
+
+    #[test]
+    fn an_answered_question_says_who_decided_and_when() {
+        let mut theme = Theme::dark();
+        theme.glyphs = Glyphs::UNICODE;
+        let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now()));
+        let lines =
+            Notice::answered("Merge task-002 into main?", "merged by you, 10:58").lines(&ctx);
+        assert_eq!(
+            plain_text(&lines),
+            "◆ Merge task-002 into main? · merged by you, 10:58"
+        );
+        assert_eq!(
+            lines[0].spans[0].style,
+            marks::decoration(theme.style(Role::Success))
+        );
+        assert_eq!(lines[0].spans[3].style, theme.style(Role::Dim));
+    }
+
+    #[test]
+    fn a_plain_notice_colors_its_bullet_alone_and_dims_what_follows() {
+        let mut theme = Theme::dark();
+        theme.glyphs = Glyphs::UNICODE;
+        let ctx = RenderCtx::new(100, &theme, Clock::still(Instant::now()));
+        let lines =
+            Notice::plain_with_after(Tone::Warning, "Back from Claude Code", "2 turns made there")
+                .lines(&ctx);
+        assert_eq!(
+            plain_text(&lines),
+            "● Back from Claude Code · 2 turns made there"
+        );
+        let spans = &lines[0].spans;
+        assert_eq!(spans[0].style, marks::decoration(theme.style(Role::Warn)));
+        assert_eq!(spans[2].style, theme.style(Role::Text));
+        assert_eq!(spans[3].style, theme.style(Role::Dim));
+    }
+
+    #[test]
+    fn an_offer_hangs_under_the_reply_with_its_command_in_the_text_color() {
+        let mut theme = Theme::dark();
+        theme.glyphs = Glyphs::UNICODE;
+        let ctx = RenderCtx::new(100, &theme, Clock::still(Instant::now()));
+        let offer = Notice::offer(
+            "Doing this alone: about 1 file · ",
+            "/crew",
+            " to have Council do it",
+        );
+        let lines = offer.lines(&ctx);
+        assert_eq!(
+            plain_text(&lines),
+            "◆ Doing this alone: about 1 file · /crew to have Council do it"
+        );
+        let spans = &lines[0].spans;
+        assert_eq!(spans[0].style, marks::decoration(theme.style(Role::Accent)));
+        assert_eq!(spans[2].style, theme.style(Role::Dim));
+        assert_eq!(spans[3].style, theme.style(Role::Text));
+        assert_eq!(spans[4].style, theme.style(Role::Dim));
+        assert!(offer.continues_previous());
+        assert!(!Notice::new(Tone::Dim, "a line of its own").continues_previous());
+    }
+
+    #[test]
+    fn a_headline_is_bold_in_its_tone_after_a_plain_bullet() {
+        let mut theme = Theme::dark();
+        theme.glyphs = Glyphs::UNICODE;
+        let ctx = RenderCtx::new(100, &theme, Clock::still(Instant::now()));
+        let lines = Notice::headline(
+            Tone::Error,
+            "The run ended",
+            Some("Nothing was merged".to_owned()),
+        )
+        .lines(&ctx);
+        assert_eq!(plain_text(&lines), "● The run ended · Nothing was merged");
+        let spans = &lines[0].spans;
+        assert_eq!(spans[0].style, marks::decoration(theme.style(Role::Text)));
+        assert_eq!(
+            spans[2].style,
+            theme.style(Role::Danger).add_modifier(Modifier::BOLD)
+        );
+        assert_eq!(spans[3].style, theme.style(Role::Dim));
+    }
+
+    #[test]
+    fn without_color_warnings_and_errors_say_so() {
+        let mut theme = Theme::dark().with_level(crate::base::theme::ColorLevel::None);
+        theme.glyphs = Glyphs::UNICODE;
+        let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now()));
+        let warning = Notice::new(Tone::Warning, "Codex is logged out").lines(&ctx);
+        assert_eq!(plain_text(&warning), "● warning: Codex is logged out");
+        let error = Notice::new(Tone::Error, "agy stopped").lines(&ctx);
+        assert_eq!(plain_text(&error), "● error: agy stopped");
+        assert!(
+            error[0].spans[2]
+                .style
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
+    }
+
+    #[test]
+    fn notices_color_their_text_by_tone() {
+        let mut theme = Theme::dark();
+        theme.glyphs = Glyphs::UNICODE;
+        let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now()));
+        let info = Notice::new(Tone::Dim, "Saved.").lines(&ctx);
+        assert_eq!(info[0].spans[2].style, theme.style(Role::Dim));
+        let warning = Notice::new(Tone::Warning, "Codex is logged out").lines(&ctx);
+        assert_eq!(warning[0].spans[2].style, theme.style(Role::Warn));
+        let done = Notice::new(Tone::Success, "Set ui.theme = dark").lines(&ctx);
+        assert_eq!(done[0].spans[2].style, theme.style(Role::Text));
+    }
+
+    #[test]
+    fn a_symbol_gives_way_to_the_bullet_in_ascii() {
+        let mut theme = Theme::dark();
+        theme.glyphs = Glyphs::ASCII;
+        let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now()));
+        let paused = Notice::new(Tone::Warning, "Paused").with_glyph("■");
+        let bullet = theme.glyphs.bullet;
+        assert_eq!(plain_text(&paused.lines(&ctx)), format!("{bullet} Paused"));
+        theme.glyphs = Glyphs::UNICODE;
+        let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now()));
+        assert_eq!(plain_text(&paused.lines(&ctx)), "■ Paused");
+    }
+
+    #[test]
+    fn a_result_line_hangs_under_the_item_before_it() {
+        let mut theme = Theme::dark();
+        theme.glyphs = Glyphs::UNICODE;
+        let ctx = RenderCtx::new(40, &theme, Clock::still(Instant::now()));
+        let line = ResultLine::new(
+            Tone::Dim,
+            "Interrupted · What should Argonauts Code do instead?",
+        );
+        assert!(line.continues_previous());
+        assert_eq!(
+            plain_text(&line.lines(&ctx)),
+            "  ⎿  Interrupted · What should Argonauts\n     Code do instead?"
+        );
+    }
+
+    #[test]
+    fn exit_lines_are_dim_at_column_zero() {
+        let mut theme = Theme::dark();
+        theme.glyphs = Glyphs::UNICODE;
+        let ctx = RenderCtx::new(80, &theme, Clock::still(Instant::now()));
+        let note = ExitNote::new(vec![
+            "run-01 keeps going · 3 agents working · $7.40 spent".into(),
+            "Reattach with: argonauts\x1b[2J".into(),
+        ]);
+        let lines = note.lines(&ctx);
+        assert_eq!(
+            plain_text(&lines),
+            "run-01 keeps going · 3 agents working · $7.40 spent\nReattach with: argonauts"
+        );
+        assert_eq!(lines[1].spans[0].style, theme.style(Role::Dim));
+    }
+}

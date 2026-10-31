@@ -6,26 +6,26 @@ use std::sync::Arc;
 use serde::de::DeserializeOwned;
 use serde_json::json;
 
-use argonauts_core::engine::RepoContext;
-use argonauts_core::events::task::{ReviewEvent, TaskEvent, TaskKind, TaskLimit, TaskSpec};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::ModelRef;
-use argonauts_core::names::WorkflowId;
-use argonauts_core::session_runner::{Access, SessionRunner, SessionSpec};
+use argonauts_core::agents::session_runner::{Access, SessionRunner, SessionSpec};
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::base::names::WorkflowId;
+use argonauts_core::runs::engine::RepoContext;
+use argonauts_core::runs::events::task::{ReviewEvent, TaskEvent, TaskKind, TaskLimit, TaskSpec};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::crew::CrewSettings;
-use argonauts_core::steps::StepName;
-use argonauts_core::steps::task::AcceptanceTestsInput;
-use argonauts_core::workflow::{StandardPhase, Step, StepRef};
+use argonauts_core::workflows::steps::StepName;
+use argonauts_core::workflows::steps::task::AcceptanceTestsInput;
+use argonauts_core::workflows::workflow::{StandardPhase, Step, StepRef};
 use argonauts_core::{RepoId, RunId, TaskId};
 use argonauts_crew::engine::host::Host;
 use argonauts_crew::review::{self, Verdict, endpoint_tests};
 use argonauts_crew::state::RunState;
 use argonauts_crew::task::worktree;
 use argonauts_crew::workflow::{StepAt, StepCall};
-use argonauts_testkit::repo::TempRepo;
-use argonauts_testkit::runner::{FakeRunner, FakeSession};
-use argonauts_testkit::services::{FakeServices, MemorySink, engine_context_in};
+use argonauts_testkit::engine::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::engine::services::{FakeServices, MemorySink, engine_context_in};
+use argonauts_testkit::home::repo::TempRepo;
 
 use crate::support::shared_in;
 
@@ -114,7 +114,7 @@ impl Bench {
 /// The run's first event, as the run host writes it, based on the repo's first commit.
 fn started(repo: &TempRepo) -> anyhow::Result<RunEvent> {
     let head = repo.git(&["rev-parse", "HEAD"])?;
-    let started: argonauts_core::events::run::RunStarted = serde_json::from_value(json!({
+    let started: argonauts_core::runs::events::run::RunStarted = serde_json::from_value(json!({
         "request": "Rate limit the API",
         "title": "Rate limit the API",
         "mode": "crew",
@@ -142,7 +142,7 @@ fn started(repo: &TempRepo) -> anyhow::Result<RunEvent> {
         task_id: None,
         session: None,
         source: "run-host".to_owned(),
-        kind: RunEventKind::Run(argonauts_core::events::run::RunLifecycle::Started(
+        kind: RunEventKind::Run(argonauts_core::runs::events::run::RunLifecycle::Started(
             Box::new(started),
         )),
     })

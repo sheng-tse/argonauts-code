@@ -4,12 +4,12 @@
 
 use std::path::Path;
 
-use argonauts_core::asking::AskReply;
-use argonauts_core::events::approval::AnswerOption;
-use argonauts_core::outside::forms;
+use argonauts_core::runs::asking::AskReply;
+use argonauts_core::runs::events::approval::AnswerOption;
+use argonauts_core::safety::outside::forms;
 use serde_json::Value;
 
-use crate::choices::{choose, option};
+use crate::setup::choices::{choose, option};
 
 /// Claude Code's tools that change a file.
 const EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "NotebookEdit"];
@@ -80,7 +80,7 @@ impl Question {
                 title: "Run this command?".to_owned(),
                 body,
                 grant,
-                about: crate::controller::recap::title_from_request(first),
+                about: crate::controller::turns::recap::title_from_request(first),
             };
         }
         if tool == OUTSIDE_TOOL {

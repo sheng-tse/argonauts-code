@@ -7,17 +7,17 @@ use std::collections::BTreeMap;
 use futures::future::join_all;
 
 use argonauts_core::RunId;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::plan::{JudgingResult, PlanEvent, PlanTally};
-use argonauts_core::names::{ModelRef, PlanLabel, RoleName};
-use argonauts_core::session_runner::Access;
+use argonauts_core::agents::session_runner::Access;
+use argonauts_core::base::names::{ModelRef, PlanLabel, RoleName};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::plan::{JudgingResult, PlanEvent, PlanTally};
 use argonauts_core::settings::protocol::JudgingMethod;
-use argonauts_core::steps::plan::{ExperimentReport, Judge, JudgeInput, LabeledPlan};
-use argonauts_core::workflow::{Step, StepModels};
+use argonauts_core::workflows::steps::plan::{ExperimentReport, Judge, JudgeInput, LabeledPlan};
+use argonauts_core::workflows::workflow::{Step, StepModels};
 use argonauts_core::{Note, NoteLevel};
 
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::{Ask, Host};
-use crate::error::{EngineError, EngineResult};
 use crate::plan::context::{self, crew_for, providers};
 use crate::plan::judging::{self, Authors, Score};
 use crate::plan::{decisions, drafts, experiments, scan};
@@ -402,7 +402,7 @@ fn recorded_scores(host: &Host) -> Vec<Score> {
 
 /// The rubric the judges score by: your `prompts/plan/rubric.md` when you wrote one, else the
 /// built-in.
-fn rubric_of(host: &Host) -> Vec<argonauts_core::steps::plan::RubricCriterion> {
+fn rubric_of(host: &Host) -> Vec<argonauts_core::workflows::steps::plan::RubricCriterion> {
     judging::rubric_in(crate::prompts::files::text(
         host,
         crate::prompts::plan::RUBRIC,

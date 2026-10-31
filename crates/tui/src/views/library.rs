@@ -4,22 +4,22 @@
 //! With no run to show, `/workflows` and Ctrl+T open it. The workflow view has no tab for it,
 //! as Claude Code's has none.
 
+use argonauts_core::app::views::{WorkflowFile, WorkflowOrigin};
 use argonauts_core::app::{UiCommand, ViewData, ViewRequest};
+use argonauts_core::base::text::shown_name;
 use argonauts_core::input::{SlashCommand, WorkflowAction};
-use argonauts_core::text::shown_name;
-use argonauts_core::views::{WorkflowFile, WorkflowOrigin};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 
-use crate::text::sanitize_line;
-use crate::theme::{Role, Theme};
+use crate::base::text::sanitize_line;
+use crate::base::theme::{Role, Theme};
 
-use super::list::{self, Column, ListState, fit_columns};
-use super::pager::{Pager, position_mark};
-use super::panes::{self, Footer, Header, Marks, Side};
-use super::{View, ViewCtx, ViewOutcome};
+use super::super::base::draw::panes::{self, Footer, Header, Marks, Side};
+use super::super::frame::view::list::{self, Column, ListState, fit_columns};
+use super::super::frame::view::pager::{Pager, position_mark};
+use crate::frame::view::{View, ViewCtx, ViewOutcome};
 
 /// Cells between columns.
 const GAP: usize = 2;
@@ -333,7 +333,7 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
-    use crate::state::AppState;
+    use crate::frame::state::AppState;
 
     fn file(name: &str, origin: WorkflowOrigin, edited: Option<bool>) -> WorkflowFile {
         WorkflowFile {

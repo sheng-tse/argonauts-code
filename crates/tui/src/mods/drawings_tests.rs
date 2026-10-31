@@ -10,12 +10,12 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-use super::draw;
 use super::list::ModsScreen;
-use crate::approved_screen;
-use crate::kit::Kit;
-use crate::state::AppState;
-use crate::views::{View, ViewCtx};
+use crate::base::kit::Kit;
+use crate::frame::state::AppState;
+use crate::frame::view::{View, ViewCtx};
+use crate::panels::mods::draw;
+use crate::testing::pictures::approved_screen;
 
 const SIZES: [(u16, u16); 2] = [(120, 38), (177, 40)];
 

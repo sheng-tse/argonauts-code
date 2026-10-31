@@ -4,7 +4,7 @@ use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
 
-use argonauts_core::workflow::{Workflow, WorkflowRef};
+use argonauts_core::workflows::workflow::{Workflow, WorkflowRef};
 
 use super::check::{MAX_DEPTH, check_workflow};
 use super::list::known_names;

@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use argonauts_core::events::AgentStatusEvent;
-use argonauts_core::limits::{AgentHealth, HealthSignal, PlanUsageReading};
+use argonauts_core::models::limits::{AgentHealth, HealthSignal, PlanUsageReading};
+use argonauts_core::runs::events::AgentStatusEvent;
 use tokio::sync::{mpsc, oneshot};
 
 use super::context::Context;
@@ -156,8 +156,8 @@ fn tell(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::limits::{PlanUsageSource, PlanUsageStatus};
-    use argonauts_core::names::AgentId;
+    use argonauts_core::base::names::AgentId;
+    use argonauts_core::models::limits::{PlanUsageSource, PlanUsageStatus};
     use time::OffsetDateTime;
 
     fn reading(agent_id: &str, at: i64) -> PlanUsageReading {

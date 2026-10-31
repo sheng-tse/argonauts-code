@@ -3,18 +3,18 @@
 //! line, or after you said yes. Two answers from one CLI are less independent than two from
 //! two, which is why it comes last, just before the run stops.
 
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::approval::{
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::events::approval::{
     AnswerAction, AnswerOption, ApprovalKind, ApprovalPacket, FreeText, SecondAgentPacket,
 };
-use argonauts_core::names::ModelRef;
-use argonauts_core::policy::EvidenceFacts;
+use argonauts_core::safety::policy::EvidenceFacts;
 use argonauts_runner::{AgentCall, AgentEnd};
 
 use super::{Bridge, lock};
 use crate::approvals::{self, ApprovalRequest, autopilot};
+use crate::engine::error::{EngineError, Stall};
 use crate::engine::job_fallback;
-use crate::error::{EngineError, Stall};
 use crate::roles::display_name;
 
 const YES: &str = "yes";
@@ -127,7 +127,7 @@ impl Bridge<'_> {
             kind: ApprovalKind::Question,
             title: format!(
                 "{} for {}?",
-                argonauts_core::text::sentence_case(second),
+                argonauts_core::base::text::sentence_case(second),
                 call.label
             ),
             task: None,

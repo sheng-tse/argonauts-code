@@ -200,8 +200,7 @@ mod tests {
         std::fs::write(hidden.join("HEAD"), "ref: refs/heads/your-folder\n").unwrap();
         std::fs::write(folder.join("src/cli.js"), "one\ntwo\nthree\nfour\nfive\n").unwrap();
         std::fs::write(folder.join("notes.md"), "todo\n").unwrap();
-        let git =
-            Git::with_env(crate::testutil::git_test_env()).with_hidden(folder.clone(), hidden);
+        let git = Git::with_env(crate::testing::git_test_env()).with_hidden(folder.clone(), hidden);
         let base = record(&git, &folder).await.unwrap();
         (root, folder, git, base)
     }

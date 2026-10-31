@@ -10,9 +10,9 @@ pub(crate) mod storm;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use argonauts_core::behavior_world::WorldFacts;
-use argonauts_core::display_names::DisplayNames;
-use argonauts_tui::format::WallClock;
+use argonauts_core::behaviors::behavior_world::WorldFacts;
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_tui::base::format::WallClock;
 use time::{Date, Duration, OffsetDateTime};
 
 use super::read::Recorded;
@@ -162,7 +162,5 @@ fn behavior_of(recorded: &Recorded) -> String {
 
 #[cfg(test)]
 mod made_up;
-#[cfg(test)]
-mod made_up_tests;
 #[cfg(test)]
 mod tests;

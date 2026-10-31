@@ -7,11 +7,11 @@
 //! ends, what the server says of the model is noted.
 
 use argonauts_core::Paths;
-use argonauts_core::model_memory::{Holder, Server};
-use argonauts_core::runtimes::{RuntimeKind, local_route};
-use argonauts_core::server_requests::ServerRequests;
-use argonauts_core::session::SessionRequest;
-use argonauts_core::session_runner::SessionSpec;
+use argonauts_core::agents::runtimes::{RuntimeKind, local_route};
+use argonauts_core::agents::session::SessionRequest;
+use argonauts_core::agents::session_runner::SessionSpec;
+use argonauts_core::models::model_memory::{Holder, Server};
+use argonauts_core::models::server_requests::ServerRequests;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::agents::EndpointSettings;
 use argonauts_core::settings::endpoints::{endpoint_settings, requests_at_once};
@@ -66,10 +66,10 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use argonauts_core::events::session::EndReason;
-    use argonauts_core::future::BoxFuture;
-    use argonauts_core::model_memory::{Hold, ModelMemory};
-    use argonauts_core::session_runner::SessionRunner;
+    use argonauts_core::agents::session_runner::SessionRunner;
+    use argonauts_core::base::future::BoxFuture;
+    use argonauts_core::models::model_memory::{Hold, ModelMemory};
+    use argonauts_core::runs::events::session::EndReason;
     use argonauts_core::{AgentEvent, RunId};
 
     use super::*;

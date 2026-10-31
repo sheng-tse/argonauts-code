@@ -7,16 +7,16 @@
 use std::path::PathBuf;
 
 use argonauts_core::TaskId;
-use argonauts_core::events::approval::TaskSeat;
-use argonauts_core::events::council::TextPart;
-use argonauts_core::events::task::{TaskEvent, TaskSpec};
-use argonauts_core::names::{ModelRef, SeatId, SessionKey};
-use argonauts_core::paths::create_private_dir_all;
-use argonauts_core::workflow::StepRef;
+use argonauts_core::base::names::{ModelRef, SeatId, SessionKey};
+use argonauts_core::base::paths::create_private_dir_all;
+use argonauts_core::runs::events::approval::TaskSeat;
+use argonauts_core::runs::events::council::TextPart;
+use argonauts_core::runs::events::task::{TaskEvent, TaskSpec};
+use argonauts_core::workflows::workflow::StepRef;
 
 use crate::council::seats;
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::Host;
-use crate::error::{EngineError, EngineResult};
 use crate::merge::branch::{ensure_run_branch, run_base, run_branch, task_branch};
 use crate::task::support::{record_of, record_task};
 
@@ -299,7 +299,7 @@ pub fn seat_of(host: &Host, task: &TaskId) -> Option<(StepRef, SeatId)> {
 pub fn session_to_carry_on(host: &Host, task: &TaskId, worker: &ModelRef) -> Option<SessionKey> {
     let (talk, seat) = seat_of(host, task)?;
     host.read(|state| {
-        let key = crate::lifetime::seat_session(state, &talk, &seat)?;
+        let key = crate::sessions::lifetime::seat_session(state, &talk, &seat)?;
         let session = state.sessions.get(&key)?;
         (session.asked_worker() == worker && session.cli_session.is_some()).then_some(key)
     })
@@ -307,7 +307,7 @@ pub fn session_to_carry_on(host: &Host, task: &TaskId, worker: &ModelRef) -> Opt
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::council::{Seat, SeatRole, Seating};
+    use argonauts_core::runs::events::council::{Seat, SeatRole, Seating};
 
     use super::*;
 

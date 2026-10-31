@@ -9,11 +9,11 @@ use std::time::{Duration, Instant};
 
 use argonauts_core::AgentEvent;
 use argonauts_core::RunId;
+use argonauts_core::app::views::{AgentRow, InnerAgent, conversation_run};
 use argonauts_core::app::{AppEvent, ConversationEvent, UiCommand, ViewData, ViewRequest};
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::session::SessionEvent;
-use argonauts_core::names::{SessionKey, WorkflowId};
-use argonauts_core::views::{AgentRow, InnerAgent, conversation_run};
+use argonauts_core::base::names::{SessionKey, WorkflowId};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::session::SessionEvent;
 
 /// Events that stream in, such as agent output, ask again at most this often.
 const EVERY: Duration = Duration::from_secs(1);
@@ -246,9 +246,9 @@ fn settles_rows(kind: &RunEventKind) -> bool {
 #[cfg(test)]
 mod tests {
     use argonauts_core::AgentEvent;
-    use argonauts_core::events::RunEvent;
-    use argonauts_core::events::run::{Party, RunLifecycle};
-    use argonauts_core::views::WorkflowView as WorkflowData;
+    use argonauts_core::app::views::WorkflowView as WorkflowData;
+    use argonauts_core::runs::events::RunEvent;
+    use argonauts_core::runs::events::run::{Party, RunLifecycle};
     use time::OffsetDateTime;
 
     use super::*;

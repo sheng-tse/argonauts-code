@@ -7,9 +7,9 @@ mod runs;
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
 
-use argonauts_core::behavior_world::Wonder;
+use argonauts_core::behaviors::behavior_world::Wonder;
 use argonauts_core::behaviors::{Behavior, Label};
-use argonauts_core::model_catalog::ModelCatalog;
+use argonauts_core::models::model_catalog::ModelCatalog;
 use time::OffsetDateTime;
 
 use super::store::KeptRun;

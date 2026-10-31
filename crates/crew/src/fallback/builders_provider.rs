@@ -7,22 +7,22 @@
 //! the one that asked, so what was asked and answered is read from the run's log each time.
 
 use argonauts_core::TaskId;
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::agent_status::{FallbackEvent, JobKeeper, JobWait};
-use argonauts_core::events::approval::{
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::agent_status::{FallbackEvent, JobKeeper, JobWait};
+use argonauts_core::runs::events::approval::{
     AgentDownPacket, AnswerAction, AnswerOption, ApprovalDecided, ApprovalKind, ApprovalOpened,
     ApprovalPacket, FreeText, PausedTask,
 };
-use argonauts_core::events::run::Party;
-use argonauts_core::names::{ModelRef, RoleName};
-use argonauts_core::policy::EvidenceFacts;
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::safety::policy::EvidenceFacts;
 use time::OffsetDateTime;
 
 use crate::approvals::{self, ApprovalRequest, Opening};
+use crate::engine::error::EngineResult;
 use crate::engine::host::Host;
 use crate::engine::job_fallback::{verb_of, work_of};
-use crate::error::EngineResult;
 use crate::fallback::down::{listed_as, report};
 use crate::fallback::rules;
 use crate::roles::display_name;
@@ -209,7 +209,7 @@ fn request(
     let theirs = |model: &ModelRef| providers.contains(&host.services().registry.provider(model));
     let packet = AgentDownPacket {
         agent_id: wait.stopped.agent_id(),
-        evidence: argonauts_core::text::sentence_case(&evidence),
+        evidence: argonauts_core::base::text::sentence_case(&evidence),
         test_at,
         paused: vec![PausedTask {
             task: listed.task.clone(),
@@ -259,7 +259,7 @@ fn request(
     } else {
         format!(
             "{} · {} waits for it",
-            argonauts_core::text::sentence_case(why),
+            argonauts_core::base::text::sentence_case(why),
             wait.title.trim()
         )
     };

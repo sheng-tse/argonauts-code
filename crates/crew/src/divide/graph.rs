@@ -4,10 +4,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use argonauts_core::events::task::{TaskKind, TaskLimit, TaskSpec};
-use argonauts_core::labels;
+use argonauts_core::look::labels;
+use argonauts_core::runs::events::task::{TaskKind, TaskLimit, TaskSpec};
 use argonauts_core::settings::Settings;
-use argonauts_core::steps::plan::{ProposedKind, TaskGraphProposal};
+use argonauts_core::workflows::steps::plan::{ProposedKind, TaskGraphProposal};
 use argonauts_core::{RunId, TaskId};
 
 use super::paths;
@@ -222,7 +222,7 @@ fn trimmed(values: &[String]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::steps::plan::TaskProposal;
+    use argonauts_core::workflows::steps::plan::TaskProposal;
 
     use super::*;
 

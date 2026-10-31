@@ -6,21 +6,20 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use tokio_util::sync::CancellationToken;
 
-use argonauts_core::events::session::{
+use argonauts_core::agents::session_runner::RunnerKind;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::models::limits::{FallbackNote, RecoveryAction};
+use argonauts_core::runs::events::session::{
     EndReason, InputPart, SessionEnd, loaded_words, stuck_words,
 };
-use argonauts_core::events::task::{TaskEvent, TaskKind, TaskState, TryCause};
-use argonauts_core::limits::{FallbackNote, RecoveryAction};
-use argonauts_core::names::ModelRef;
-use argonauts_core::session_runner::RunnerKind;
-use argonauts_core::steps::task::ReportStatus;
+use argonauts_core::runs::events::task::{TaskEvent, TaskKind, TaskState, TryCause};
+use argonauts_core::workflows::steps::task::ReportStatus;
 use argonauts_core::{ErrorCategory, TaskId};
 
 use crate::blackboard;
-use crate::captain;
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::Host;
 use crate::engine::shared::lock;
-use crate::error::{EngineError, EngineResult};
 use crate::fallback;
 use crate::fallback::on_return::Applied;
 use crate::goal;
@@ -28,6 +27,7 @@ use crate::goal::task::AfterTry;
 use crate::merge::{self, TaskMerge, task_merge};
 use crate::plan::context::providers;
 use crate::review::{self, endpoint_tests};
+use crate::roles::captain;
 use crate::state::RunState;
 use crate::state::tasks::TaskEntry;
 use crate::task::asked_anyway;
@@ -844,7 +844,7 @@ async fn reviewing(host: &Host, task: &TaskId, carry: &mut Option<Carry>) -> Eng
     if let Some(nobody) = review::nobody_to_review(host, task) {
         let reason = format!(
             "{}, so it goes to the merge unreviewed",
-            argonauts_core::text::clause_case(&nobody)
+            argonauts_core::base::text::clause_case(&nobody)
         );
         transition(host, task, Trigger::NobodyToReview, &reason)?;
         return Ok(Step::Moved);
@@ -976,7 +976,7 @@ async fn needs_you(
     carry: &mut Option<Carry>,
 ) -> EngineResult<Step> {
     let snapshot = host.read(Clone::clone);
-    if snapshot.run.mode == Some(argonauts_core::events::run::RunMode::Captain)
+    if snapshot.run.mode == Some(argonauts_core::runs::events::run::RunMode::Captain)
         && captain::moves_to_crew(&snapshot, host)
     {
         return Ok(Step::Wait);
@@ -1088,7 +1088,7 @@ fn end_text(reason: &EndReason) -> String {
         EndReason::ContextFull => "context full".to_owned(),
         EndReason::ModelUnavailable { model } => format!(
             "{} is unavailable",
-            argonauts_core::model_catalog::display_name_from_id(model)
+            argonauts_core::models::model_catalog::display_name_from_id(model)
         ),
         EndReason::AdapterBroken { detail } => format!("adapter broken: {detail}"),
         EndReason::IsolationBroken { plugins, skills } => {
@@ -1102,7 +1102,7 @@ fn end_text(reason: &EndReason) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::task_spec;
+    use crate::testing::task_spec;
 
     fn state_with(tasks: &[(&str, &[&str], TaskState)]) -> RunState {
         let mut state = RunState::default();
@@ -1137,9 +1137,9 @@ mod tests {
         assert_eq!(failure_summary(&record, None), "it failed");
         record
             .checks
-            .push(argonauts_core::events::task::CheckOutcome {
+            .push(argonauts_core::runs::events::task::CheckOutcome {
                 name: "test".into(),
-                kind: argonauts_core::events::task::CheckKind::Command,
+                kind: argonauts_core::runs::events::task::CheckKind::Command,
                 passed: false,
                 command: None,
                 exit_code: Some(1),

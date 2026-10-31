@@ -9,12 +9,12 @@ use std::sync::Arc;
 
 use argonauts_core::StopSignal;
 use argonauts_core::agents::AgentGroup;
-use argonauts_core::names::SessionKey;
+use argonauts_core::base::names::SessionKey;
 
 use super::context::Context;
 use super::outbox::Outbox;
-use crate::agents::{self, AgentEntry, Registration};
-use crate::cpu::{CpuSampler, CpuWatch};
+use crate::process::agents::{self, AgentEntry, Registration};
+use crate::process::cpu::{CpuSampler, CpuWatch};
 use crate::process::{AgentProcess, signal_group, write_process_file};
 use crate::reaper::{self, ExitGuard, TreeSnapshot};
 
@@ -193,7 +193,7 @@ fn kill_tree(
         },
         // The head was gone before it was recorded, so a process with its pid now is another
         // one, maybe leading a group with the same id.
-        None if crate::liveness::start_time(pgid).is_none() => {
+        None if crate::process::liveness::start_time(pgid).is_none() => {
             if let Err(err) = signal_group(pgid, StopSignal::Kill) {
                 problems.push(format!("could not kill the agent's process group: {err}"));
             }

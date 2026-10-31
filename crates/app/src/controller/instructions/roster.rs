@@ -1,9 +1,9 @@
 //! The agents a request may name, and their models and efforts, as Argonauts Code knows them now.
 
-use argonauts_core::cheapest::{cheapest_listed, price_of};
+use argonauts_core::base::names::ModelRef;
 use argonauts_core::input::EFFORT_LEVELS;
-use argonauts_core::names::ModelRef;
-use argonauts_core::registry::{ModelRegistry, RegistryKind, known_efforts};
+use argonauts_core::models::cheapest::{cheapest_listed, price_of};
+use argonauts_core::models::registry::{ModelRegistry, RegistryKind, known_efforts};
 
 use super::words::{first_word, key};
 use crate::controller::Ctx;
@@ -93,7 +93,7 @@ impl Roster {
                         .any(|entry| entry.id.agent == id && entry.kind == RegistryKind::Endpoint);
                 let enabled = settings.agents.get(&id).is_none_or(|agent| agent.enabled);
                 let state = if available.iter().any(|worker| worker.agent == id) {
-                    if crate::controller::turn::agent_out(ctx, &bare) {
+                    if crate::controller::turns::turn::agent_out(ctx, &bare) {
                         AgentState::Down
                     } else {
                         AgentState::Ready

@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, PoisonError};
 
-use argonauts_core::answer_format::mended;
+use argonauts_core::workflows::answer_format::mended;
 use jsonschema::Validator;
 use rmcp::model::JsonObject;
 use serde_json::{Value, json};

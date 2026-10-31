@@ -7,13 +7,13 @@ use std::path::{Path, PathBuf};
 use anyhow::Context as _;
 use argonauts_core::NoteLevel;
 use argonauts_core::app::AppEvent;
-use argonauts_core::events::run::RunMode;
+use argonauts_core::runs::events::run::RunMode;
 use time::OffsetDateTime;
 
 use super::excerpt::{Exchange, cut, reply_text};
 use super::past::{self, PastConversation};
 use super::{ConversationState, handover, planned, run_request, settled};
-use crate::controller::workspace::resolve_path;
+use crate::controller::folders::workspace::resolve_path;
 use crate::controller::{Ctx, Effect};
 
 /// How many of the last exchanges a forked run is told, and how long each part may be.

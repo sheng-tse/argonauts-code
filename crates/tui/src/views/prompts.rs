@@ -2,22 +2,22 @@
 //! to edit, `w` picks who writes a role's instructions, and `r` goes back to the built-in.
 //! Nothing is locked, so every row takes the same keys.
 
+use argonauts_core::app::prompt_list::{PromptList, PromptRow, WriterChoice, heading};
 use argonauts_core::app::{UiCommand, ViewData};
 use argonauts_core::input::{PromptsAction, SlashCommand};
-use argonauts_core::prompt_list::{PromptList, PromptRow, WriterChoice, heading};
-use argonauts_core::prompt_parts::Readers;
+use argonauts_core::prompts::prompt_parts::Readers;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 
-use crate::text::{sanitize_line, str_width, wrap_text};
-use crate::theme::{Role, Theme};
+use crate::base::text::{sanitize_line, str_width, wrap_text};
+use crate::base::theme::{Role, Theme};
 
-use super::list::{self, Column, ListState, fit_columns};
-use super::pager::position_mark;
-use super::panes::{self, Footer, Header, Marks, Side};
-use super::{View, ViewCtx, ViewOutcome};
+use super::super::base::draw::panes::{self, Footer, Header, Marks, Side};
+use super::super::frame::view::list::{self, Column, ListState, fit_columns};
+use super::super::frame::view::pager::position_mark;
+use crate::frame::view::{View, ViewCtx, ViewOutcome};
 
 /// Cells between columns.
 const GAP: usize = 2;
@@ -663,10 +663,10 @@ fn whole_sentences(text: &str, width: usize) -> String {
 mod tests {
     use std::time::Instant;
 
-    use argonauts_core::prompt_list::{CHANGED, INSTRUCTIONS};
+    use argonauts_core::app::prompt_list::{CHANGED, INSTRUCTIONS};
 
     use super::*;
-    use crate::state::AppState;
+    use crate::frame::state::AppState;
 
     fn row(role: &str, part: &str, written_by: &str, yours: &str, name: Option<&str>) -> PromptRow {
         PromptRow {

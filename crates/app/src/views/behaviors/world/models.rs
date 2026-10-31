@@ -4,10 +4,10 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 
-use argonauts_core::behavior_world::{
+use argonauts_core::behaviors::behavior_world::{
     CliFailure, MixedRun, ModelBehavior, ModelFacts, ModelPair, NewerModel,
 };
-use argonauts_core::display_names::DisplayNames;
+use argonauts_core::look::display_names::DisplayNames;
 use argonauts_core::settings::Settings;
 use time::{Duration, OffsetDateTime};
 

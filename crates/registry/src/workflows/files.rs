@@ -8,15 +8,15 @@ use std::path::{Path, PathBuf};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::workflows::WORKFLOW_FILE_KEYS;
 use argonauts_core::sha256_hex;
-use argonauts_core::workflow_files::{PARAMS_TABLE, PHASES_TABLE, STEP_TABLE};
+use argonauts_core::workflows::workflow_files::{PARAMS_TABLE, PHASES_TABLE, STEP_TABLE};
 use toml::{Table, Value};
 
 use super::builtin::{BuiltinWorkflow, builtins};
 use super::choices::toml_workflow_files;
 use super::{BASE_WORKFLOW, DEFAULT_WORKFLOW, builtin};
-use crate::catalog::setting_meta;
-use crate::resolve::leaves;
-use crate::write::{io_error, lock_folder, real_path, write_replacing};
+use crate::settings::catalog::setting_meta;
+use crate::settings::resolve::leaves;
+use crate::settings::write::{io_error, lock_folder, real_path, write_replacing};
 use crate::{SettingsError, WorkflowUpgrade, WorkflowUpgradeOutcome};
 
 /// The keys a workflow file shows, in the order the protocol runs.

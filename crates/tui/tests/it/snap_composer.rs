@@ -1,12 +1,12 @@
 use crate::common;
-use argonauts_core::keywords::{Keyword, KeywordLook};
+use argonauts_core::look::keywords::{Keyword, KeywordLook};
 use argonauts_tui::HistoryCell;
+use argonauts_tui::app::model::{BottomState, MenuItem, UserMessage, VimMode};
+use argonauts_tui::base::input::prompt_history::PromptEntry;
+use argonauts_tui::base::stability::{self, samples};
+use argonauts_tui::base::theme::{ColorLevel, Glyphs, Theme};
 use argonauts_tui::bottom::HistorySearch;
-use argonauts_tui::commands::command_items;
-use argonauts_tui::model::{BottomState, MenuItem, UserMessage, VimMode};
-use argonauts_tui::prompt_history::PromptEntry;
-use argonauts_tui::stability::{self, samples};
-use argonauts_tui::theme::{ColorLevel, Glyphs, Theme};
+use argonauts_tui::bottom::menu::commands::command_items;
 use common::{assert_fits, ctx, still, styled, text, theme};
 use crossterm::event::{KeyCode, KeyEvent};
 
@@ -106,10 +106,10 @@ fn slash_menu_under_input() {
 
 #[test]
 fn slash_menu_with_the_main_agents_commands() {
-    use argonauts_core::cli_commands::{
+    use argonauts_core::agents::cli_commands::{
         CliCommand, CliCommandSet, CommandKind, CommandScope, CommandSource,
     };
-    use argonauts_core::names::AgentId;
+    use argonauts_core::base::names::AgentId;
     let command = |name: &str, args: &str, help: &str, source: CommandSource| CliCommand {
         name: name.into(),
         aliases: Vec::new(),
@@ -197,7 +197,7 @@ fn shell_mode_input_and_bottom_row() {
 
     let theme = theme();
     let lines = typed.render(&ctx(&theme, 80, 0.0)).lines;
-    let pink = common::fg(argonauts_tui::theme::Role::Shell);
+    let pink = common::fg(argonauts_tui::base::theme::Role::Shell);
     let marker = common::style_of(&lines, "! ").expect("the input row");
     assert_eq!(marker.fg, pink, "the ! is pink");
     let mode = common::style_of(&lines, "! for shell mode").expect("the bottom line");

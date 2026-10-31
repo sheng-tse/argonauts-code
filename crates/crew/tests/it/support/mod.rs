@@ -11,26 +11,26 @@ use anyhow::{Context, bail};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
-use argonauts_core::api::ApprovalAnswer;
-use argonauts_core::clock::Clock;
-use argonauts_core::engine::{EngineCommand, EngineContext, EngineExit, RepoContext};
-use argonauts_core::events::approval::{AnswerAction, ApprovalEvent, ApprovalKind};
-use argonauts_core::events::run::{RunLifecycle, RunMode, RunStarted};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::paths::Paths;
-use argonauts_core::session_runner::{RunnerEvent, SessionRunner, SessionSpec};
+use argonauts_core::agents::session_runner::{RunnerEvent, SessionRunner, SessionSpec};
+use argonauts_core::base::clock::Clock;
+use argonauts_core::base::paths::Paths;
+use argonauts_core::runs::api::ApprovalAnswer;
+use argonauts_core::runs::engine::{EngineCommand, EngineContext, EngineExit, RepoContext};
+use argonauts_core::runs::events::approval::{AnswerAction, ApprovalEvent, ApprovalKind};
+use argonauts_core::runs::events::run::{RunLifecycle, RunMode, RunStarted};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::fallback::Retry;
 use argonauts_core::settings::workflows::AdaptWith;
 use argonauts_core::settings::{Settings, Span};
-use argonauts_core::steps::StepName;
+use argonauts_core::workflows::steps::StepName;
 use argonauts_core::{AgentEvent, RepoId, RunId};
 use argonauts_crew::engine::host::Host;
 use argonauts_crew::engine::shared::{Shared, building_with_git_env, with_git_env};
 use argonauts_crew::prompts::trust;
 use argonauts_crew::state::RunState;
-use argonauts_testkit::repo::TempRepo;
-use argonauts_testkit::runner::{FakeRunner, FakeSession};
-use argonauts_testkit::services::{FakeServices, MemorySink, TEST_RUN, engine_context_in};
+use argonauts_testkit::engine::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::engine::services::{FakeServices, MemorySink, TEST_RUN, engine_context_in};
+use argonauts_testkit::home::repo::TempRepo;
 
 /// A crew of fake workers, the fake services, and a temp repo with one commit.
 pub struct Crew {
@@ -41,7 +41,7 @@ pub struct Crew {
     /// in for one, such as `gh`.
     pub path: Option<String>,
     /// What the orchestrator begins from, as a run your words in a conversation records it.
-    pub starts_from: Option<argonauts_core::events::run::StartsFrom>,
+    pub starts_from: Option<argonauts_core::runs::events::run::StartsFrom>,
 }
 
 /// A run going on in its own task.
@@ -70,7 +70,7 @@ impl Crew {
     /// scenarios of a workflow's own steps ask for the script.
     pub fn new() -> anyhow::Result<Self> {
         let mut settings = Settings {
-            workflow: argonauts_core::workflow_files::BASE.0.to_owned(),
+            workflow: argonauts_core::workflows::workflow_files::BASE.0.to_owned(),
             ..Settings::default()
         };
         settings.crew.clear();
@@ -240,7 +240,7 @@ impl Crew {
     /// The repo's head, or the head of the history Argonauts Code keeps for a folder with no git.
     pub fn base_commit(&self) -> anyhow::Result<String> {
         let state_dir = self.repo_context()?.state_dir().to_path_buf();
-        match argonauts_core::hidden_git::of(self.repo.root(), &state_dir) {
+        match argonauts_core::runs::hidden_git::of(self.repo.root(), &state_dir) {
             Some(hidden) => {
                 let git_dir = format!("--git-dir={}", hidden.display());
                 self.repo.git(&[&git_dir, "rev-parse", "HEAD"])

@@ -10,21 +10,22 @@
 
 use argonauts_core::RunId;
 use argonauts_core::app::ViewRequest;
-use argonauts_core::events::run::{RunMode, WaitReason};
-use argonauts_core::names::{RoleName, SessionKey};
-use argonauts_core::steps::StepName;
+use argonauts_core::base::names::{RoleName, SessionKey};
+use argonauts_core::runs::events::run::{RunMode, WaitReason};
+use argonauts_core::workflows::steps::StepName;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 
-use super::dock::{self, Heading};
-use super::panes::{self, Footer};
+use super::super::base::draw::panes::{self, Footer};
+use super::super::frame::view::dock::{self, Heading};
+use super::super::frame::view::list;
 use super::session::SessionView;
-use super::{Follow, View, ViewCtx, ViewOutcome, list};
-use crate::state::{AppState, RunState, SessionState};
-use crate::text::sanitize_line;
-use crate::theme::{Role, Theme};
+use crate::base::text::sanitize_line;
+use crate::base::theme::{Role, Theme};
+use crate::frame::state::{AppState, RunState, SessionState};
+use crate::frame::view::{Follow, View, ViewCtx, ViewOutcome};
 
 /// What Enter on a run's row opens.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,7 +40,7 @@ pub enum RunEntry {
     Writing,
 }
 
-pub use argonauts_core::views::BEING_WRITTEN;
+pub use argonauts_core::app::views::BEING_WRITTEN;
 
 /// What Enter on a run's row opens. A run this screen doesn't hold goes to the controller,
 /// which knows it from its log.
@@ -319,7 +320,7 @@ pub(crate) mod fixture {
     use argonauts_core::app::AppEvent;
     use serde_json::{Value, json};
 
-    use crate::state::AppState;
+    use crate::frame::state::AppState;
 
     pub(crate) const RUN: &str = "run-20261004-165413-8d01";
 
@@ -471,7 +472,7 @@ mod tests {
 
     use super::fixture::{RunLog, run_id};
     use super::*;
-    use crate::state::AppState;
+    use crate::frame::state::AppState;
 
     fn session(key: &str) -> RunEntry {
         RunEntry::Session(SessionKey::parse(key).unwrap())

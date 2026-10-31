@@ -5,26 +5,28 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use argonauts_core::events::run::Party;
-use argonauts_core::events::session::{
-    Delivery, EndReason, InputPart, InputPartKind, PromptVia, QueuedMessage, SessionEnd,
-    SessionEvent,
+use argonauts_core::agents::session_runner::{
+    Access, RunnerError, RunnerEvent, SessionControl, SessionRunner, SessionSpec, SteerSupport,
 };
+use argonauts_core::base::names::{AgentId, MessageId, ModelRef};
 use argonauts_core::input::MentionTarget;
-use argonauts_core::limits::{
+use argonauts_core::models::limits::{
     HealthBoard, HealthState, ModelState, PlanUsageBoard, PlanUsageStatus,
 };
-use argonauts_core::names::{AgentId, MessageId, ModelRef};
-use argonauts_core::registry::ModelEntry;
-use argonauts_core::session_runner::{
-    Access, RunnerError, RunnerEvent, SessionControl, SessionRunner, SessionSpec, SteerSupport,
+use argonauts_core::models::registry::ModelEntry;
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::runs::events::session::{
+    Delivery, EndReason, InputPart, InputPartKind, PromptVia, QueuedMessage, SessionEnd,
+    SessionEvent,
 };
 use argonauts_core::settings::Span;
 use argonauts_core::settings::agents::{EndpointApi, EndpointSettings, StructuredMode};
 use argonauts_core::{AgentEvent, ErrorCategory, RetryReason};
 use argonauts_endpoints::EndpointRunner;
-use argonauts_testkit::runner::{drain, session_spec};
-use argonauts_testkit::services::{MemoryHealthBoard, MemoryPlanUsageBoard, StaticRegistry};
+use argonauts_testkit::engine::runner::{drain, session_spec};
+use argonauts_testkit::engine::services::{
+    MemoryHealthBoard, MemoryPlanUsageBoard, StaticRegistry,
+};
 use argonauts_testkit::{FakeOpenAi, FakeReply};
 use serde_json::{Value, json};
 

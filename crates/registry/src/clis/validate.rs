@@ -2,10 +2,10 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use argonauts_core::adapter::Transport;
-use argonauts_core::registry::CliManifest;
-use argonauts_core::registry::acp::{AcpProfile, ModelRoute, PlanUsageRoute};
-use argonauts_core::registry::cli::{OutputKind, PromptChannel};
+use argonauts_core::agents::adapter::Transport;
+use argonauts_core::models::registry::CliManifest;
+use argonauts_core::models::registry::acp::{AcpProfile, ModelRoute, PlanUsageRoute};
+use argonauts_core::models::registry::cli::{OutputKind, PromptChannel};
 use regex::Regex;
 
 use super::refusals::{

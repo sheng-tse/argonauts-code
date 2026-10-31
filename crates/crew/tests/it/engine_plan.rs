@@ -9,39 +9,40 @@ use anyhow::Context;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-use argonauts_core::api::ApprovalAnswer;
-use argonauts_core::engine::RepoContext;
-use argonauts_core::events::approval::{
+use argonauts_core::agents::session_runner::{Access, SessionSpec};
+use argonauts_core::base::names::{ModelRef, PlanLabel, RoleName, WorkflowId};
+use argonauts_core::models::limits::HealthState;
+use argonauts_core::runs::api::ApprovalAnswer;
+use argonauts_core::runs::engine::RepoContext;
+use argonauts_core::runs::events::approval::{
     AnswerAction, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket, PlanPacket,
 };
-use argonauts_core::events::goal::{Criterion, GoalEvent, GoalFile, GoalSource};
-use argonauts_core::events::plan::{DivideEvent, JudgingResult, PlanEvent};
-use argonauts_core::events::run::{Party, PhaseChange, RunLifecycle, RunPhase};
-use argonauts_core::events::session::{EndReason, SessionEvent};
-use argonauts_core::events::task::TaskKind;
-use argonauts_core::events::workflow::StepEnd;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::limits::HealthState;
-use argonauts_core::names::{ModelRef, PlanLabel, RoleName, WorkflowId};
-use argonauts_core::session_runner::{Access, SessionSpec};
+use argonauts_core::runs::events::goal::{Criterion, GoalEvent, GoalFile, GoalSource};
+use argonauts_core::runs::events::plan::{DivideEvent, JudgingResult, PlanEvent};
+use argonauts_core::runs::events::run::{Party, PhaseChange, RunLifecycle, RunPhase};
+use argonauts_core::runs::events::session::{EndReason, SessionEvent};
+use argonauts_core::runs::events::task::TaskKind;
+use argonauts_core::runs::events::workflow::StepEnd;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::{Answerer, ApprovalMode};
 use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::settings::crew::CrewSettings;
 use argonauts_core::settings::fallback::Retry;
 use argonauts_core::settings::protocol::RoutingAlgorithm;
-use argonauts_core::steps::StepName;
-use argonauts_core::steps::plan::{JudgeInput, LabeledPlan, MapInput, OrchestrateInput};
-use argonauts_core::workflow::{StandardPhase, Step, StepRef};
+use argonauts_core::workflows::steps::StepName;
+use argonauts_core::workflows::steps::plan::{JudgeInput, LabeledPlan, MapInput, OrchestrateInput};
+use argonauts_core::workflows::workflow::{StandardPhase, Step, StepRef};
 use argonauts_core::{PhaseStatus, RepoId, RunId, sha256_hex};
 use argonauts_crew::engine::host::Host;
+use argonauts_crew::roles::{orchestrated, tie_breaker};
 use argonauts_crew::state::RunState;
 use argonauts_crew::workflow::{Flow, StepAt, StepCall, StepDone, runner, yaml};
-use argonauts_crew::{approvals, divide, orchestrated, plan, tie_breaker};
-use argonauts_testkit::deadline;
-use argonauts_testkit::repo::TempRepo;
-use argonauts_testkit::runner::{FakeRunner, FakeSession};
-use argonauts_testkit::services::{FakeServices, MemorySink, engine_context_in};
+use argonauts_crew::{approvals, divide, plan};
+use argonauts_testkit::engine::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::engine::services::{FakeServices, MemorySink, engine_context_in};
+use argonauts_testkit::home::repo::TempRepo;
+use argonauts_testkit::pty::deadline;
 
 use crate::support::shared_in;
 
@@ -237,7 +238,7 @@ fn plan_packet(opened: &ApprovalOpened) -> anyhow::Result<&PlanPacket> {
 }
 
 fn added_ref(worker: &FakeRunner) -> ModelRef {
-    use argonauts_core::session_runner::SessionRunner;
+    use argonauts_core::agents::session_runner::SessionRunner;
     worker.model_ref().clone()
 }
 
@@ -269,7 +270,7 @@ fn call(kind: &str, role: &str, extra: Value, index: u32) -> anyhow::Result<Step
 /// The run's first event, as the run host writes it, based on the repo's first commit.
 fn started(repo: &TempRepo) -> anyhow::Result<RunEvent> {
     let head = repo.git(&["rev-parse", "HEAD"])?;
-    let started: argonauts_core::events::run::RunStarted = serde_json::from_value(json!({
+    let started: argonauts_core::runs::events::run::RunStarted = serde_json::from_value(json!({
         "request": "Rate limit the API",
         "title": "Rate limit the API",
         "mode": "crew",
@@ -297,7 +298,7 @@ fn started(repo: &TempRepo) -> anyhow::Result<RunEvent> {
         task_id: None,
         session: None,
         source: "run-host".to_owned(),
-        kind: RunEventKind::Run(argonauts_core::events::run::RunLifecycle::Started(
+        kind: RunEventKind::Run(argonauts_core::runs::events::run::RunLifecycle::Started(
             Box::new(started),
         )),
     })
@@ -1066,7 +1067,7 @@ async fn plan_experiment_within_limit() -> anyhow::Result<()> {
     let merged = bench.sink.events().into_iter().any(|e| {
         matches!(
             &e.kind,
-            RunEventKind::Merge(argonauts_core::events::task::MergeEvent::Merged {
+            RunEventKind::Merge(argonauts_core::runs::events::task::MergeEvent::Merged {
                 task, ..
             }) if task.as_str().starts_with("experiment-")
         )
@@ -1411,7 +1412,7 @@ fn sealed_and_said(bench: &Bench) -> (Vec<String>, Vec<String>) {
 async fn two_fallbacks_draft_at_once_and_a_judge_picks_the_drafting_agents_plan()
 -> anyhow::Result<()> {
     let bench = bench_with_two_fallbacks(answers("ALPHA", "Redis", false, OSS_WINS))?;
-    let claude_code = argonauts_core::names::AgentId("claude-code".to_owned());
+    let claude_code = argonauts_core::base::names::AgentId("claude-code".to_owned());
     bench
         .services
         .health
@@ -1491,7 +1492,7 @@ async fn a_second_fallback_joins_the_one_that_took_a_drafting_agents_place_midwa
 async fn with_no_judge_to_ask_the_first_fallbacks_draft_is_kept() -> anyhow::Result<()> {
     let bench = bench_with_two_fallbacks(answers("ALPHA", "Redis", false, OSS_WINS))?;
     for out in ["claude-code", "codex", "antigravity-cli"] {
-        let agent_id = argonauts_core::names::AgentId(out.to_owned());
+        let agent_id = argonauts_core::base::names::AgentId(out.to_owned());
         bench
             .services
             .health
@@ -1517,7 +1518,7 @@ async fn with_no_judge_to_ask_the_first_fallbacks_draft_is_kept() -> anyhow::Res
 
 #[tokio::test]
 async fn tie_breaker_rotates_by_phase() -> anyhow::Result<()> {
-    use argonauts_core::events::task::{TaskKind, TaskLimit, TaskSpec, TaskState};
+    use argonauts_core::runs::events::task::{TaskKind, TaskLimit, TaskSpec, TaskState};
     use tie_breaker::TaskView;
 
     let spec = |id: &str, kind: TaskKind, deps: &[&str]| TaskSpec {
@@ -2282,7 +2283,7 @@ async fn in_auto_a_near_tie_goes_to_the_top_scored_plan() -> anyhow::Result<()> 
 #[tokio::test]
 async fn in_auto_a_plan_the_judge_turns_down_goes_another_round_without_asking()
 -> anyhow::Result<()> {
-    use argonauts_core::policy::{AutoPreviewRecord, PolicyOutcome, Verdict};
+    use argonauts_core::safety::policy::{AutoPreviewRecord, PolicyOutcome, Verdict};
     use argonauts_core::settings::approvals::DecideWith;
 
     let bench = Bench::new(three(true, CLAUDE_WINS), |_| {}, vec![approved_goal()?])?;

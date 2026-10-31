@@ -11,21 +11,25 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::session::{EndReason, InputPartKind, loaded_words};
-use argonauts_core::future::BoxFuture;
-use argonauts_core::layout::{repo_state, run_files};
-use argonauts_core::names::{ModelRef, RoleName};
-use argonauts_core::policy::{DecisionPoint, EvidencePacket, Verdict};
-use argonauts_core::registry::ModelRegistry;
-use argonauts_core::session_runner::RunnerDirectory;
+use argonauts_core::agents::session_runner::RunnerDirectory;
+use argonauts_core::base::future::BoxFuture;
+use argonauts_core::base::layout::{repo_state, run_files};
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::models::registry::ModelRegistry;
+use argonauts_core::runs::events::session::{EndReason, InputPartKind, loaded_words};
+use argonauts_core::safety::policy::{DecisionPoint, EvidencePacket, Verdict};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::crew::CrewRole;
-use argonauts_core::steps::judgment::{ModelJudge, ModelJudgeDecision, ModelJudgeVerdict};
-use argonauts_core::steps::{StepError, StepName, StepRequest, StepRunner, decode, output_schema};
+use argonauts_core::workflows::steps::judgment::{
+    ModelJudge, ModelJudgeDecision, ModelJudgeVerdict,
+};
+use argonauts_core::workflows::steps::{
+    StepError, StepName, StepRequest, StepRunner, decode, output_schema,
+};
 
-use crate::parts::{Approve, ModelVerdict};
-use crate::session::{
+use crate::approvals::parts::{Approve, ModelVerdict};
+use crate::sessions::session::{
     self, NoToolsSession, TimedOut, claim_session, clean_text, no_tools_spec, part, run_step,
 };
 
@@ -385,7 +389,7 @@ impl StepJudge {
             part(
                 InputPartKind::Prompt,
                 "judge",
-                crate::templates::text(&crate::templates::JUDGE),
+                crate::sessions::templates::text(&crate::sessions::templates::JUDGE),
             ),
             part(
                 InputPartKind::Rules,
@@ -586,12 +590,12 @@ mod tests {
     use std::fs;
     use std::sync::Mutex;
 
-    use argonauts_core::events::approval::ApprovalKind;
-    use argonauts_core::names::ApprovalId;
-    use argonauts_core::policy::{EvidenceDocument, EvidenceFacts};
-    use argonauts_core::session_runner::{Access, SandboxMode, SessionSpec};
+    use argonauts_core::agents::session_runner::{Access, SandboxMode, SessionSpec};
+    use argonauts_core::base::names::ApprovalId;
+    use argonauts_core::runs::events::approval::ApprovalKind;
+    use argonauts_core::safety::policy::{EvidenceDocument, EvidenceFacts};
     use argonauts_core::settings::approvals::Decides;
-    use argonauts_core::steps::SchemaStepRunner;
+    use argonauts_core::workflows::steps::SchemaStepRunner;
     use argonauts_core::{ErrorCategory, RunId, sha256_hex};
     use argonauts_testkit::{FakeDirectory, FakeRunner, FakeSession};
     use serde_json::{Value, json};
@@ -1163,7 +1167,7 @@ mod tests {
         assert!(reason.chars().count() <= REASON_MAX + 1, "{reason}");
         assert_eq!(
             end_kind(&EndReason::Stuck {
-                watchdog: argonauts_core::events::session::Watchdog::Repeat,
+                watchdog: argonauts_core::runs::events::session::Watchdog::Repeat,
                 calls: None
             }),
             "it got stuck"

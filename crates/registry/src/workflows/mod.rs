@@ -2,6 +2,7 @@
 //! built-ins, which the crew engine ships and the app passes in. Looked up in turn:
 //! project, then global, then built-in. Simple workflows are YAML; Starlark comes later.
 
+pub(crate) mod always;
 mod builtin;
 mod check;
 mod choices;
@@ -17,7 +18,7 @@ mod tests;
 
 use std::path::{Path, PathBuf};
 
-use argonauts_core::workflow::Workflow;
+use argonauts_core::workflows::workflow::Workflow;
 
 pub(crate) use builtin::{BASE_WORKFLOW, DEFAULT_WORKFLOW, builtin};
 pub use check::{MAX_DEPTH, check_workflow};

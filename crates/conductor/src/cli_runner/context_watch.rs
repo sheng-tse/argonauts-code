@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use argonauts_core::events::context::ContextDetail;
-use argonauts_core::events::session::SessionEvent;
+use argonauts_core::runs::events::context::ContextDetail;
+use argonauts_core::runs::events::session::SessionEvent;
 
 /// The fastest a watched session is asked again. Each fill would otherwise ask, and a busy
 /// session fills several times a second.

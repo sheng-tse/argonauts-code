@@ -7,27 +7,29 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use argonauts_core::engine::RepoContext;
-use argonauts_core::events::plan::{DesignDecision, PlanEvent};
-use argonauts_core::events::run::{PhaseChange, RunLifecycle, RunMode, RunPhase, RunStarted};
-use argonauts_core::events::shared::RunReviewEvent;
-use argonauts_core::events::task::{
+use argonauts_core::agents::session_runner::SessionSpec;
+use argonauts_core::base::names::{DecisionId, ModelRef};
+use argonauts_core::runs::engine::RepoContext;
+use argonauts_core::runs::events::plan::{DesignDecision, PlanEvent};
+use argonauts_core::runs::events::run::{PhaseChange, RunLifecycle, RunMode, RunPhase, RunStarted};
+use argonauts_core::runs::events::shared::RunReviewEvent;
+use argonauts_core::runs::events::task::{
     CheckKind, CheckOutcome, TaskEvent, TaskKind, TaskLimit, TaskSpec, TaskState, TryCause,
 };
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::names::{DecisionId, ModelRef};
-use argonauts_core::session_runner::SessionSpec;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::Settings;
-use argonauts_core::steps::StepName;
-use argonauts_core::steps::task::{MemoryProposal, Predictions, ReportStatus, TaskReport};
+use argonauts_core::workflows::steps::StepName;
+use argonauts_core::workflows::steps::task::{
+    MemoryProposal, Predictions, ReportStatus, TaskReport,
+};
 use argonauts_core::{PhaseStatus, RepoId, RunId, TaskId};
 use argonauts_crew::engine::host::Host;
 use argonauts_crew::merge::branch;
 use argonauts_crew::run_review;
 use argonauts_crew::state::RunState;
-use argonauts_testkit::repo::TempRepo;
-use argonauts_testkit::runner::{FakeRunner, FakeSession};
-use argonauts_testkit::services::{FakeServices, engine_context_in};
+use argonauts_testkit::engine::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::engine::services::{FakeServices, engine_context_in};
+use argonauts_testkit::home::repo::TempRepo;
 
 use crate::support::shared_in;
 

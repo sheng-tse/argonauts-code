@@ -11,12 +11,12 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use argonauts_core::layout::repo_state;
-use argonauts_core::names::ModelRef;
-use argonauts_core::steps::task::MemoryProposal;
+use argonauts_core::base::layout::repo_state;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::workflows::steps::task::MemoryProposal;
 use argonauts_core::{RunId, TaskId};
+use argonauts_learning::export::scan::Finding;
 use argonauts_learning::memory::{self, Source};
-use argonauts_learning::scan::Finding;
 
 /// Notes a repository keeps itself, from its root.
 pub const NOTES_DIR: &str = ".argonauts/notes";

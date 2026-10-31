@@ -4,8 +4,8 @@
 
 use std::path::{Path, PathBuf};
 
-use argonauts_core::driver::PermissionScope;
-use argonauts_core::session_runner::{Access, SandboxProfile};
+use argonauts_core::agents::driver::PermissionScope;
+use argonauts_core::agents::session_runner::{Access, SandboxProfile};
 
 use super::profile::{outside_reach, resolve_path};
 
@@ -91,7 +91,7 @@ pub fn permission_scope(
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::layout::session_files;
+    use argonauts_core::base::layout::session_files;
 
     use super::super::profile::{ProfileInput, can_read, session_profile};
     use super::*;
@@ -157,8 +157,8 @@ mod tests {
     /// it nothing outside, its workdir is its only root.
     #[test]
     fn a_session_that_reads_outside_has_every_folder_as_a_root() {
-        use argonauts_core::outside::Outside;
-        use argonauts_core::session_runner::SandboxMode;
+        use argonauts_core::agents::session_runner::SandboxMode;
+        use argonauts_core::safety::outside::Outside;
         use argonauts_core::settings::approvals::ApprovalMode;
         use argonauts_core::settings::outside::OutsideSettings;
 

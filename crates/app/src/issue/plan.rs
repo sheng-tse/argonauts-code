@@ -2,11 +2,11 @@
 //! someone else wrote can only describe the task: what the crew is asked to do is the plan in
 //! the main agent's words, as you approved it.
 
-use argonauts_core::api::StartRun;
 use argonauts_core::app::{AppChoice, ChoiceKind};
-use argonauts_core::events::approval::{AnswerAction, AnswerOption, FreeText};
-use argonauts_core::events::run::RunMode;
-use argonauts_core::names::ChoiceId;
+use argonauts_core::base::names::ChoiceId;
+use argonauts_core::runs::api::StartRun;
+use argonauts_core::runs::events::approval::{AnswerAction, AnswerOption, FreeText};
+use argonauts_core::runs::events::run::RunMode;
 use argonauts_core::settings::Settings;
 
 use super::read::IssueRead;
@@ -40,7 +40,7 @@ pub(crate) fn reading_back_prompt(read: &IssueRead, workflow: &str) -> String {
 pub(crate) fn workflow_named(settings: &Settings) -> String {
     match settings.workflow.trim() {
         "" | "captain" => "Council".to_owned(),
-        workflow => argonauts_core::text::title_words(workflow),
+        workflow => argonauts_core::base::text::title_words(workflow),
     }
 }
 
@@ -199,7 +199,7 @@ mod tests {
         settings.workflow = "spec-first".to_owned();
         assert_eq!(
             workflow_named(&settings),
-            argonauts_core::text::title_words("spec-first")
+            argonauts_core::base::text::title_words("spec-first")
         );
         assert_ne!(workflow_named(&settings), "spec-first");
     }

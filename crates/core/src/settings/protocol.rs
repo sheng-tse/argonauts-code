@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::Span;
-use crate::names::RoleName;
+use crate::base::names::RoleName;
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
@@ -93,7 +93,7 @@ pub struct CaptainSettings {
     /// Captain you choose: the main session in your checkout, like its CLI, or a checked worktree.
     pub kind: CaptainKind,
     /// What a direct turn asks you in supervised mode.
-    pub asks: crate::session::Asks,
+    pub asks: crate::agents::session::Asks,
     /// A snapshot before each direct turn, for `/rewind`.
     pub rewind: bool,
     /// Untracked files bigger than this can't be restored by `/rewind`.
@@ -129,7 +129,7 @@ impl Default for CaptainSettings {
     fn default() -> Self {
         Self {
             kind: CaptainKind::Direct,
-            asks: crate::session::Asks::LikeCli,
+            asks: crate::agents::session::Asks::LikeCli,
             rewind: true,
             rewind_max_mb: 50,
             start_workflow_tool: true,

@@ -17,21 +17,21 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, bail};
 use argonauts_core::Paths;
-use argonauts_core::api::day_format;
-use argonauts_core::paths::write_private_file;
+use argonauts_core::base::paths::write_private_file;
+use argonauts_core::runs::api::day_format;
 use argonauts_core::settings::Settings;
-use argonauts_tui::theme::{ColorEnv, Theme};
+use argonauts_tui::base::theme::{ColorEnv, Theme};
 use serde::{Deserialize, Serialize};
 use time::{Date, Duration, OffsetDateTime};
 
-use argonauts_conductor::cli_versions::CliVersions;
+use argonauts_conductor::boards::cli_versions::CliVersions;
 use argonauts_conductor::{DoctorReport, doctor};
 
-use crate::adapters::builtin_adapters;
+use crate::agents::adapters::builtin_adapters;
 use crate::behaviors::{self, records::Records};
-use crate::env::{AppEnv, FolderGit};
-use crate::usage_ledger::{UsageLedger, local_day};
-use crate::work_ledger::WorkLedger;
+use crate::startup::env::{AppEnv, FolderGit};
+use crate::usage::usage_ledger::{UsageLedger, local_day};
+use crate::usage::work_ledger::WorkLedger;
 pub(crate) use event::Found;
 use event::{DailyUsage, Machine};
 use send::Sender;
@@ -276,7 +276,7 @@ fn show(
         Theme::dark()
     };
     let lines = show::lines(&usage, &state.due(now), held, &theme);
-    argonauts_tui::welcome::printed(&lines, colour && theme.has_color())
+    argonauts_tui::cells::welcome::printed(&lines, colour && theme.has_color())
 }
 
 fn turn_on(paths: &Paths, now: OffsetDateTime) -> anyhow::Result<String> {
@@ -385,7 +385,7 @@ impl State {
 
 /// `14:00`, in this computer's time.
 fn clock(at: OffsetDateTime) -> String {
-    let local = argonauts_tui::format::WallClock::default().to_local(at);
+    let local = argonauts_tui::base::format::WallClock::default().to_local(at);
     format!("{:02}:{:02}", local.hour(), local.minute())
 }
 

@@ -7,7 +7,7 @@ use std::borrow::Cow;
 
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::text::{sanitize, str_width};
+use crate::base::text::{sanitize, str_width};
 
 /// A byte range of the text, without its newline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -2,15 +2,15 @@
 //! built from plain facts gathered once, so a source never reads a file or asks a CLI itself.
 
 use argonauts_core::Spend;
-use argonauts_core::api::{RunState, RunSummary};
 use argonauts_core::app::PlanUsageChip;
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::context::ContextKind;
-use argonauts_core::limits::PlanUsageStatus;
+use argonauts_core::app::views::ContextRow;
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::look::window_size;
+use argonauts_core::models::limits::PlanUsageStatus;
+use argonauts_core::runs::api::{RunState, RunSummary};
+use argonauts_core::runs::events::context::ContextKind;
 use argonauts_core::settings::mods::reading::plain_number;
 use argonauts_core::settings::mods::{BuiltinSource, ModColor, ModLevel, ModPart, ModReading};
-use argonauts_core::views::ContextRow;
-use argonauts_core::window_size;
 use time::OffsetDateTime;
 
 /// The most workflows the list shows, newest first.
@@ -299,10 +299,10 @@ fn waiting(numbers: &Numbers) -> ModReading {
 #[cfg(test)]
 mod tests {
     use argonauts_core::RunId;
-    use argonauts_core::events::context::ContextCategory;
-    use argonauts_core::events::run::RunMode;
-    use argonauts_core::limits::{HealthState, PlanUsageReading, PlanUsageSource};
-    use argonauts_core::names::{AgentId, ApprovalId, ModelRef, SessionKey};
+    use argonauts_core::base::names::{AgentId, ApprovalId, ModelRef, SessionKey};
+    use argonauts_core::models::limits::{HealthState, PlanUsageReading, PlanUsageSource};
+    use argonauts_core::runs::events::context::ContextCategory;
+    use argonauts_core::runs::events::run::RunMode;
     use time::Duration;
 
     use super::*;

@@ -11,8 +11,8 @@ use argonauts_core::Adapter;
 use argonauts_core::settings::Settings;
 use serde::Serialize;
 
+use crate::boards::plan_usage::{BinaryError, find_unsandboxed};
 use crate::git::Git;
-use crate::plan_usage::{BinaryError, find_unsandboxed};
 
 pub mod always_on;
 mod command;
@@ -316,7 +316,7 @@ impl fmt::Display for DoctorReport {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use argonauts_core::adapter::Transport;
+    use argonauts_core::agents::adapter::Transport;
     use argonauts_core::settings::sessions::Compaction;
     use argonauts_core::{
         CommandSpec, LaunchTweak, SessionRequest, SetupHints, StopPlan, StreamParser,
@@ -357,7 +357,7 @@ pub(crate) mod tests {
             tested: &'static [&'static str],
         ) -> Self {
             let path = dir.join(format!("{id}-cli"));
-            crate::testutil::write_script(&path, &format!("#!/bin/sh\n{body}\n"));
+            crate::testing::write_script(&path, &format!("#!/bin/sh\n{body}\n"));
             Self {
                 binary: Box::leak(path.display().to_string().into_boxed_str()),
                 tested,
@@ -537,7 +537,7 @@ pub(crate) mod tests {
     impl VersionOnly {
         fn script(dir: &Path, body: &str, tested: &'static [&'static str]) -> Self {
             let path = dir.join("fake-cli");
-            crate::testutil::write_script(&path, &format!("#!/bin/sh\n{body}\n"));
+            crate::testing::write_script(&path, &format!("#!/bin/sh\n{body}\n"));
             let binary: &'static str = Box::leak(path.display().to_string().into_boxed_str());
             Self { binary, tested }
         }

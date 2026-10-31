@@ -6,23 +6,22 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use argonauts_core::api::StatusSummary;
-use argonauts_core::control::{ControlReply, ControlRequest, Frame};
-use argonauts_core::events::approval::{
+use argonauts_core::agents::session_runner::{Access, RunnerKind};
+use argonauts_core::base::names::{AgentId, ApprovalId, MessageId, ModelRef, RoleName, SessionKey};
+use argonauts_core::input::MentionTarget;
+use argonauts_core::runs::api::StatusSummary;
+use argonauts_core::runs::events::approval::{
     AnswerAction, ApprovalDecided, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket,
     FreeText, PlanPacket,
 };
-use argonauts_core::events::plan::{LimitPlan, TaskGraph};
-use argonauts_core::events::run::{Party, RunLifecycle, RunMode, RunStarted};
-use argonauts_core::events::session::{
+use argonauts_core::runs::events::plan::{LimitPlan, TaskGraph};
+use argonauts_core::runs::events::run::{Party, RunLifecycle, RunMode, RunStarted};
+use argonauts_core::runs::events::session::{
     Delivery, EndReason, InputPart, InputPartKind, LaunchRecord, PromptVia, QueuedMessage,
     SessionEnd, SessionEvent, SessionInput, SessionStarted,
 };
-use argonauts_core::events::task::{TaskEvent, TaskKind, TaskLimit, TaskSpec};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::input::MentionTarget;
-use argonauts_core::names::{AgentId, ApprovalId, MessageId, ModelRef, RoleName, SessionKey};
-use argonauts_core::session_runner::{Access, RunnerKind};
+use argonauts_core::runs::events::task::{TaskEvent, TaskKind, TaskLimit, TaskSpec};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 use argonauts_core::settings::asking::WhenDeclined;
 use argonauts_core::settings::limit::{LimitAmount, LimitUnit};
@@ -34,8 +33,9 @@ use tokio::net::UnixListener;
 use tokio_util::sync::CancellationToken;
 
 use super::Launcher;
-use crate::env::AppEnv;
-use crate::wire::{read_frame, write_frame};
+use crate::control::wire::{read_frame, write_frame};
+use crate::control::{ControlReply, ControlRequest, Frame};
+use crate::startup::env::AppEnv;
 
 pub(crate) const FAKE_PID: u32 = 4242;
 
@@ -387,7 +387,7 @@ impl TestHome {
         let run_dir = env.run_dir(run);
         std::fs::create_dir_all(&run_dir).unwrap();
         write_journal(
-            &run_dir.join(argonauts_core::layout::run_files::EVENTS),
+            &run_dir.join(argonauts_core::base::layout::run_files::EVENTS),
             events,
         );
         run_dir
@@ -452,7 +452,7 @@ impl Drop for ServerHandle {
 }
 
 pub(crate) fn serve(run_dir: &Path, run: RunId, script: Arc<Script>) -> ServerHandle {
-    let socket = crate::run_files::socket_path(run_dir);
+    let socket = crate::host::run_files::socket_path(run_dir);
     let _ = std::fs::remove_file(&socket);
     let listener = UnixListener::bind(&socket).unwrap();
     let shutdown = CancellationToken::new();

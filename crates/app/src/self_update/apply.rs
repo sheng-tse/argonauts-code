@@ -527,7 +527,7 @@ fn unused(folder: &Path) -> Option<File> {
 /// one Homebrew or cargo installed, has nothing to mark.
 pub fn hold_this_version(layout: &Layout) {
     static HELD: std::sync::OnceLock<File> = std::sync::OnceLock::new();
-    let Ok(program) = argonauts_core::paths::this_program() else {
+    let Ok(program) = argonauts_core::base::paths::this_program() else {
         return;
     };
     let Some(folder) = program.parent().filter(|folder| layout.holds(folder)) else {
@@ -550,7 +550,7 @@ pub fn hold_this_version(layout: &Layout) {
 /// update keeps at the newest version, when this program is one of the kept versions, else the
 /// path it was started by. Never a version's own file, which a later update removes.
 pub fn program_to_save(layout: &Layout) -> io::Result<PathBuf> {
-    let program = argonauts_core::paths::this_program()?;
+    let program = argonauts_core::base::paths::this_program()?;
     Ok(
         match program.parent().filter(|folder| layout.holds(folder)) {
             Some(_) => layout.link.clone(),

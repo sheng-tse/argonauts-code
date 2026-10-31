@@ -5,11 +5,11 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use argonauts_core::RunId;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::log::{Note, NoteLevel};
+use argonauts_core::base::log::{Note, NoteLevel};
+use argonauts_core::runs::events::RunEventKind;
 
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::Host;
-use crate::error::{EngineError, EngineResult};
 use crate::git::Git;
 use crate::merge::branch::{path_lock, run_branch};
 
@@ -159,7 +159,7 @@ pub async fn paths_by_conductor(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::{TestRepo, git_test_env};
+    use crate::testing::{TestRepo, git_test_env};
 
     fn run() -> RunId {
         RunId::new("run-01").unwrap()

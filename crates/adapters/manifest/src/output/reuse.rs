@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use argonauts_core::registry::CliManifest;
+use argonauts_core::models::registry::CliManifest;
 use argonauts_core::{Adapter, AgentEvent, ErrorCategory, StreamParser};
 
 pub(super) fn parser(

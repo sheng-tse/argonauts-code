@@ -5,8 +5,8 @@
 
 use std::fmt::Debug;
 
-use argonauts_core::future::BoxFuture;
-use argonauts_core::registry::ModelEntry;
+use argonauts_core::base::future::BoxFuture;
+use argonauts_core::models::registry::ModelEntry;
 use argonauts_core::settings::Settings;
 
 /// One CLI's model list, asked for as discovery runs.
@@ -47,8 +47,8 @@ impl Answer {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use argonauts_core::names::ModelRef;
-    use argonauts_core::registry::ModelRegistry;
+    use argonauts_core::base::names::ModelRef;
+    use argonauts_core::models::registry::ModelRegistry;
 
     use super::*;
     use crate::models::{FileRegistry, cli_entry};

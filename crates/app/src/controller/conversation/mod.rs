@@ -17,62 +17,30 @@
 //! `/goal`.
 
 mod agent;
-#[cfg(test)]
-mod agent_tests;
-#[cfg(test)]
-mod autopilot_tests;
 mod carry;
-#[cfg(test)]
-mod carry_tests;
 mod cli;
-#[cfg(test)]
-mod cli_tests;
 mod copies;
 mod crew;
 mod direct;
-#[cfg(test)]
-mod direct_kept_out_tests;
-#[cfg(test)]
-mod direct_outside_tests;
-#[cfg(test)]
-mod direct_tests;
 mod edits;
 mod excerpt;
 mod fork;
 mod goal;
 mod handover;
 pub(crate) mod in_cli;
-#[cfg(test)]
-mod in_cli_tests;
 mod keep;
 mod lifecycle;
 mod live;
-#[cfg(test)]
-mod live_tests;
-#[cfg(test)]
-mod main_session_tests;
-#[cfg(test)]
-mod mention_tests;
 mod mirror;
 mod offer;
 mod past;
-#[cfg(test)]
-mod picture_tests;
 mod prefs;
 pub(crate) mod redraw;
-#[cfg(test)]
-mod request_tests;
-#[cfg(test)]
-mod resume_tests;
 mod run_news;
 mod run_worktree;
-#[cfg(test)]
-mod shared_tests;
 mod side;
 mod standing;
 pub(crate) mod starting;
-#[cfg(test)]
-mod starting_tests;
 mod talk;
 #[cfg(test)]
 mod tests;
@@ -87,26 +55,28 @@ use anyhow::Context as _;
 
 use argonauts_core::NoteLevel;
 use argonauts_core::RunId;
-use argonauts_core::agent_sessions::{AgentSessionRef, Resume};
-use argonauts_core::api::{RunSummary, StartRun};
+use argonauts_core::agents::agent_sessions::{AgentSessionRef, Resume};
+use argonauts_core::agents::cli_commands::CliCommand;
+use argonauts_core::agents::cli_sessions::{CliSession, CliSessionRef};
+use argonauts_core::agents::session_runner::RunnerEvent;
+use argonauts_core::app::views::{ContextRow, InnerAgent};
 use argonauts_core::app::{
     AppEvent, AppMode, CommandReply, ConversationEvent, ConversationSummary, ReplayTurn, UiCommand,
     ViewData,
 };
-use argonauts_core::cli_commands::CliCommand;
-use argonauts_core::cli_sessions::{CliSession, CliSessionRef};
-use argonauts_core::events::context::{ContextDetail, ContextUsage};
-use argonauts_core::events::run::{Party, RunMode};
-use argonauts_core::events::session::CliWorkflowRun;
+use argonauts_core::base::names::{
+    ChoiceId, ConversationId, ModelRef, SessionKey, TurnId, WorkflowId,
+};
 use argonauts_core::input::SlashCommand;
-use argonauts_core::names::{ChoiceId, ConversationId, ModelRef, SessionKey, TurnId, WorkflowId};
-use argonauts_core::pictures::Picture;
-use argonauts_core::session_runner::RunnerEvent;
+use argonauts_core::look::pictures::Picture;
+use argonauts_core::runs::api::{RunSummary, StartRun};
+use argonauts_core::runs::events::context::{ContextDetail, ContextUsage};
+use argonauts_core::runs::events::run::{Party, RunMode};
+use argonauts_core::runs::events::session::CliWorkflowRun;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::workflows::RunStyle;
-use argonauts_core::steps::intake::ChangeEstimate;
-use argonauts_core::steps::{StepError, StepOutcome};
-use argonauts_core::views::{ContextRow, InnerAgent};
+use argonauts_core::workflows::steps::intake::ChangeEstimate;
+use argonauts_core::workflows::steps::{StepError, StepOutcome};
 use tokio_util::sync::CancellationToken;
 
 pub(crate) use self::agent::SessionCache;
@@ -130,16 +100,16 @@ pub(crate) use self::talk::conversation_steps;
 #[cfg(test)]
 pub(crate) use self::tests::checked_captain;
 use super::instructions::{self, Command, Roster};
-use super::recap::{mode_name, title_from_request};
 use super::shell::ShellRan;
-use super::turn::{DirectWords, TurnStep};
-use super::ultra;
+use super::turns::recap::{mode_name, title_from_request};
+use super::turns::turn::{DirectWords, TurnStep};
+use super::turns::ultra;
 use super::{Ctx, Effect};
-use crate::conversation_store::{
+use crate::agents::model_memory;
+use crate::conversation::store::{
     ConversationPlace, ConversationRun, ConversationSession, ConversationStore,
 };
-use crate::model_memory;
-use argonauts_core::events::approval::AnswerAction;
+use argonauts_core::runs::events::approval::AnswerAction;
 
 pub(crate) struct ConversationState {
     id: ConversationId,
@@ -232,7 +202,7 @@ struct Turn {
     /// What the session may reach outside its folder: for the line a refusal of a path on the
     /// never-list leaves, which holds only where the turn works outside, and for the writes
     /// there turned away from a turn that reads outside but writes only its folder.
-    outside: argonauts_core::outside::Outside,
+    outside: argonauts_core::safety::outside::Outside,
     /// What the session takes while it works: your messages, send now, and the screen.
     live: live::Live,
     /// The CLI's last count of the session's context, which the record keeps as the turn ends.

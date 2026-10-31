@@ -7,7 +7,7 @@ use argonauts_core::settings::Settings;
 use toml::{Table, Value};
 
 use crate::SettingsError;
-use crate::resolve::{
+use crate::settings::resolve::{
     GLOBAL, PROJECT, PROJECT_LOCAL, WORKFLOW, is_plain_key, remove_leaf, value_at,
 };
 

@@ -5,22 +5,24 @@ use std::collections::VecDeque;
 
 use serde::Serialize;
 
-use argonauts_core::api::{StatusSummary, TaskBrief};
-use argonauts_core::events::agent_status::{AgentStatusEvent, FallbackEvent, RunSpend, SpendEvent};
-use argonauts_core::events::approval::{AnswerAction, ApprovalEvent, ApprovalPacket};
-use argonauts_core::events::goal::GoalEvent;
-use argonauts_core::events::plan::{DivideEvent, JudgingResult, PlanEvent};
-use argonauts_core::events::run::{Party, PhaseChange, RunLifecycle};
-use argonauts_core::events::shared::{
+use argonauts_core::base::names::{ApprovalId, DecisionId, MessageId};
+use argonauts_core::models::limits::PlanUsageReading;
+use argonauts_core::runs::api::{StatusSummary, TaskBrief};
+use argonauts_core::runs::events::agent_status::{
+    AgentStatusEvent, FallbackEvent, RunSpend, SpendEvent,
+};
+use argonauts_core::runs::events::approval::{AnswerAction, ApprovalEvent, ApprovalPacket};
+use argonauts_core::runs::events::goal::GoalEvent;
+use argonauts_core::runs::events::plan::{DivideEvent, JudgingResult, PlanEvent};
+use argonauts_core::runs::events::run::{Party, PhaseChange, RunLifecycle};
+use argonauts_core::runs::events::shared::{
     BlackboardEvent, BlackboardKind, BlackboardMessage, Recipient,
 };
-use argonauts_core::events::task::{
+use argonauts_core::runs::events::task::{
     CheckOutcome, MergeEvent, ReviewEvent, TaskEvent, TaskSpec, TaskState,
 };
-use argonauts_core::events::workflow::{StepEnd, WorkflowEvent};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::limits::PlanUsageReading;
-use argonauts_core::names::{ApprovalId, DecisionId, MessageId};
+use argonauts_core::runs::events::workflow::{StepEnd, WorkflowEvent};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::protocol::VisibilitySettings;
 use argonauts_core::{PhaseStatus, RunId, TaskId};
 
@@ -778,7 +780,7 @@ pub(crate) fn words<T: Serialize>(value: &T) -> String {
             .unwrap_or_default(),
         _ => String::new(),
     };
-    argonauts_core::text::state_words(&name).replace(['_', '-'], " ")
+    argonauts_core::base::text::state_words(&name).replace(['_', '-'], " ")
 }
 
 fn and_list(items: &[String]) -> String {
@@ -794,9 +796,9 @@ mod tests {
     use serde_json::json;
     use time::OffsetDateTime;
 
-    use argonauts_core::events::workflow::{StepFinished, StepStarted, WorkflowStarted};
-    use argonauts_core::names::{RoleName, WorkflowId};
-    use argonauts_core::workflow::{StandardPhase, StepKind, StepRef, Workflow};
+    use argonauts_core::base::names::{RoleName, WorkflowId};
+    use argonauts_core::runs::events::workflow::{StepFinished, StepStarted, WorkflowStarted};
+    use argonauts_core::workflows::workflow::{StandardPhase, StepKind, StepRef, Workflow};
 
     use super::*;
 
@@ -999,8 +1001,10 @@ mod tests {
 
     #[test]
     fn status_lists_what_the_main_agent_answered_for_you() {
-        use argonauts_core::events::goal::{Assumption, GoalFile, GoalSource, MAIN_AGENT_ANSWER};
-        use argonauts_core::events::run::Party;
+        use argonauts_core::runs::events::goal::{
+            Assumption, GoalFile, GoalSource, MAIN_AGENT_ANSWER,
+        };
+        use argonauts_core::runs::events::run::Party;
 
         let assumption = |text: &str, basis: String| Assumption {
             text: text.to_owned(),

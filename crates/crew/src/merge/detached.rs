@@ -4,17 +4,17 @@
 //! checkout stays where it is: only the branch you named moves. Only you can name it, so no
 //! rule or judge weighs the question, and where nobody is asked the run keeps its branch.
 
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::approval::{
+use argonauts_core::base::names::ApprovalId;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::approval::{
     AnswerAction, AnswerOption, ApprovalKind, ApprovalPacket, FreeText,
 };
-use argonauts_core::names::ApprovalId;
-use argonauts_core::policy::EvidenceFacts;
+use argonauts_core::safety::policy::EvidenceFacts;
 use argonauts_core::{Note, NoteLevel};
 
 use crate::approvals::{self, ApprovalRequest};
+use crate::engine::error::EngineResult;
 use crate::engine::host::Host;
-use crate::error::EngineResult;
 use crate::merge::branch::PREFIX;
 use crate::merge::{in_the_way, merge_packet};
 use crate::state::RunState;

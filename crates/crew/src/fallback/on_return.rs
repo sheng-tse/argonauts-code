@@ -13,29 +13,29 @@
 //! Nothing here is held in memory: what to do is worked out again from the log and the health
 //! board at every safe point, so a choice survives a crash, and applying it twice is harmless.
 
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::approval::{
+use argonauts_core::base::names::{AgentId, ModelRef};
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::approval::{
     AnswerAction, ApprovalKind, ApprovalPacket, FreeText, OriginalReturnedPacket,
 };
-use argonauts_core::events::run::Party;
-use argonauts_core::events::task::{TaskEvent, TaskState};
-use argonauts_core::fallback::{CheckpointTag, QualityDebt};
-use argonauts_core::names::{AgentId, ModelRef};
-use argonauts_core::policy::EvidenceFacts;
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::runs::events::task::{TaskEvent, TaskState};
+use argonauts_core::runs::fallback::{CheckpointTag, QualityDebt};
+use argonauts_core::safety::policy::EvidenceFacts;
 use argonauts_core::settings::fallback::OnReturn;
-use argonauts_core::steps::StepName;
+use argonauts_core::workflows::steps::StepName;
 use argonauts_core::{DiffStat, Note, NoteLevel, TaskId};
 
 use crate::approvals::options;
 use crate::approvals::{self, ApprovalRequest};
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::Host;
 use crate::engine::job_fallback;
-use crate::error::{EngineError, EngineResult};
 use crate::fallback::{assign, rewind, rules, upgrade};
-use crate::labels;
 use crate::review::Verdict;
 use crate::roles::display_name;
+use crate::sessions::labels;
 use crate::state::RunState;
 use crate::state::tasks::TaskEntry;
 use crate::task::machine::Trigger;
@@ -532,7 +532,7 @@ pub(crate) async fn request(
         title: format!(
             "{} is back · {}",
             DisplayNames::default().cli(&back.original.agent_id().0),
-            host.read(|state| crate::labels::task_label(state, task))
+            host.read(|state| crate::sessions::labels::task_label(state, task))
         ),
         task: Some(task.clone()),
         packet: ApprovalPacket::OriginalReturned(packet),

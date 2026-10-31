@@ -14,17 +14,17 @@ use std::time::{Duration, Instant};
 use time::OffsetDateTime;
 
 use argonauts_core::Paths;
-use argonauts_core::api::{ConductorApi as _, StartRun};
-use argonauts_core::events::run::{RunLifecycle, RunMode};
-use argonauts_core::events::session::SessionEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::future::BoxFuture;
-use argonauts_core::limits::CheckRunner;
-use argonauts_core::names::ModelRef;
-use argonauts_core::policy::ApprovalPolicy;
+use argonauts_core::base::future::BoxFuture;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::models::limits::CheckRunner;
+use argonauts_core::runs::api::{ConductorApi as _, StartRun};
+use argonauts_core::runs::events::run::{RunLifecycle, RunMode};
+use argonauts_core::runs::events::session::SessionEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
+use argonauts_core::safety::policy::ApprovalPolicy;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::crew::CrewSettings;
-use argonauts_crew::replay_terms::{self, ReplayTerms};
+use argonauts_crew::engine::replay_terms::{self, ReplayTerms};
 use argonauts_learning::evolution::{self, Action, Candidate, CandidateState, Evolution, Stage};
 use argonauts_learning::learned_workflows::{self, LearnedWorkflowMode};
 use argonauts_learning::replay::{self, ReplayRequest, ReplayRun, ReplayRunner, ReplaySet};
@@ -34,7 +34,7 @@ use argonauts_registry::LearnedWorkflowOverlay;
 use super::learned_workflow::ForRun;
 use super::promotion::{self, Promotion};
 use crate::client::{Client, Launcher};
-use crate::env::AppEnv;
+use crate::startup::env::AppEnv;
 
 /// How often a replay's log is read while it runs.
 const POLL: Duration = Duration::from_secs(2);
@@ -70,8 +70,8 @@ impl SupervisedReplays {
             let log = self
                 .runs
                 .join(request.entry.run.as_str())
-                .join(argonauts_core::layout::run_files::EVENTS);
-            match argonauts_core::journal::read_all(&log) {
+                .join(argonauts_core::base::layout::run_files::EVENTS);
+            match argonauts_core::runs::journal::read_all(&log) {
                 Ok(back) => replay_terms::recorded(&back.events, from),
                 Err(err) => {
                     tracing::debug!("{} runs whole: {err}", request.entry.id);
@@ -134,7 +134,7 @@ impl SupervisedReplays {
             End::Finished => {
                 let state = argonauts_crew::state::RunState::fold(&events);
                 argonauts_crew::merge::merge_packet::landing_branch_of(&state).and_then(|branch| {
-                    argonauts_learning::git::run(
+                    argonauts_learning::store::git::run(
                         &request.repo,
                         &["rev-parse", "--verify", &format!("{branch}^{{commit}}")],
                     )
@@ -316,8 +316,8 @@ async fn wait_for_end(events: &Path, poll: Duration, give_up: Duration) -> End {
 
 /// Whether `event` ends a replay's try.
 fn ends(event: &RunEvent) -> Option<End> {
-    use argonauts_core::events::approval::ApprovalEvent;
-    use argonauts_core::policy::Verdict;
+    use argonauts_core::runs::events::approval::ApprovalEvent;
+    use argonauts_core::safety::policy::Verdict;
     match &event.kind {
         RunEventKind::Run(RunLifecycle::Finished { .. }) => Some(End::Finished),
         RunEventKind::Run(RunLifecycle::Waiting { .. }) => Some(End::Asked),
@@ -469,7 +469,7 @@ pub(crate) async fn consider_merged(
     settings: &Settings,
     checks: Arc<dyn CheckRunner>,
 ) -> anyhow::Result<Vec<String>> {
-    use argonauts_core::events::run::RunOutcome;
+    use argonauts_core::runs::events::run::RunOutcome;
     use argonauts_learning::outcomes::{self, LogLine};
     let path = store.replay_dir().join(CONSIDERED);
     let mut considered: std::collections::BTreeSet<String> = match std::fs::read(&path) {
@@ -566,16 +566,16 @@ mod tests {
     use std::sync::Mutex;
 
     use argonauts_core::RunId;
-    use argonauts_core::events::run::RunOutcome;
-    use argonauts_core::names::ModelRef;
+    use argonauts_core::base::names::ModelRef;
+    use argonauts_core::runs::events::run::RunOutcome;
     use argonauts_core::settings::agents::EndpointSettings;
-    use argonauts_core::steps::task::ProcessChange;
+    use argonauts_core::workflows::steps::task::ProcessChange;
     use argonauts_learning::learned_workflows::{
         ChangeClass, LearnedWorkflow, LoadedLearnedWorkflow, Match,
     };
     use argonauts_learning::replay::{Check, Entry, Proposal, holdout_draw};
     use argonauts_learning::{LearnedWorkflowRef, RunRecord};
-    use argonauts_testkit::repo::TempRepo;
+    use argonauts_testkit::home::repo::TempRepo;
 
     use super::*;
 
@@ -981,13 +981,13 @@ mod tests {
 
     /// The log of a run whose Understand phase asked one reader, which answered.
     fn answered_run(env: &AppEnv, run: &RunId) {
-        use argonauts_core::events::session::{EndReason, SessionEnd, SessionStarted};
-        use argonauts_core::events::workflow::{StepStarted, WorkflowEvent, WorkflowStarted};
-        use argonauts_core::names::{AgentId, RoleName, SessionKey, WorkflowId};
-        use argonauts_core::session_runner::{Access, RunnerKind};
+        use argonauts_core::agents::session_runner::{Access, RunnerKind};
+        use argonauts_core::base::names::{AgentId, RoleName, SessionKey, WorkflowId};
+        use argonauts_core::runs::events::session::{EndReason, SessionEnd, SessionStarted};
+        use argonauts_core::runs::events::workflow::{StepStarted, WorkflowEvent, WorkflowStarted};
         use argonauts_core::settings::sessions::SessionLifetime;
-        use argonauts_core::steps::StepName;
-        use argonauts_core::workflow::{StandardPhase, StepKind, StepRef};
+        use argonauts_core::workflows::steps::StepName;
+        use argonauts_core::workflows::workflow::{StandardPhase, StepKind, StepRef};
         let id = WorkflowId::numbered(1);
         let step = StepRef {
             workflow: id.clone(),
@@ -1052,7 +1052,11 @@ mod tests {
             log.push_str(&serde_json::to_string(&event).unwrap());
             log.push('\n');
         }
-        std::fs::write(dir.join(argonauts_core::layout::run_files::EVENTS), log).unwrap();
+        std::fs::write(
+            dir.join(argonauts_core::base::layout::run_files::EVENTS),
+            log,
+        )
+        .unwrap();
     }
 
     /// A replay's tasks always keep the request's hidden paths. With a phase to start from, it
@@ -1060,7 +1064,7 @@ mod tests {
     /// a run whose log is gone, or one asked to replay whole, reuses nothing.
     #[test]
     fn a_replay_hides_its_tests_and_reuses_its_tasks_answers() {
-        use argonauts_core::workflow::StandardPhase;
+        use argonauts_core::workflows::workflow::StandardPhase;
         let repo = TempRepo::new().unwrap();
         let env = AppEnv::for_repo(Paths::new(repo.home()), repo.root(), false).unwrap();
         let launcher: Arc<dyn Launcher> =
@@ -1117,7 +1121,7 @@ mod tests {
     /// settings' own.
     #[test]
     fn a_replay_runs_only_its_workers_and_answers_to_rules() {
-        use argonauts_core::names::RoleName;
+        use argonauts_core::base::names::RoleName;
         use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
         use argonauts_core::settings::crew::CrewRole;
         use argonauts_core::settings::fallback::FallbackEntry;
@@ -1210,16 +1214,16 @@ mod tests {
     /// for the rest of it.
     #[tokio::test]
     async fn a_replay_try_ends_at_the_first_approval_that_asks() {
-        use argonauts_core::events::approval::ApprovalEvent;
-        use argonauts_core::events::run::RunOutcome;
-        use argonauts_core::names::ApprovalId;
-        use argonauts_core::policy::Verdict;
+        use argonauts_core::base::names::ApprovalId;
+        use argonauts_core::runs::events::approval::ApprovalEvent;
+        use argonauts_core::runs::events::run::RunOutcome;
+        use argonauts_core::safety::policy::Verdict;
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("events.jsonl");
         let poll = Duration::from_millis(5);
         let check = |verdict: Verdict, auto_preview: bool| {
             line(RunEventKind::Approval(ApprovalEvent::Checked(
-                argonauts_core::events::approval::PolicyCheck {
+                argonauts_core::runs::events::approval::PolicyCheck {
                     id: ApprovalId::numbered(1),
                     violations: Vec::new(),
                     verdict: Some(verdict),
@@ -1276,8 +1280,8 @@ mod tests {
     impl CheckRunner for ShellChecks {
         fn run(
             &self,
-            request: argonauts_core::limits::CheckRequest,
-        ) -> BoxFuture<'_, argonauts_core::events::CheckOutcome> {
+            request: argonauts_core::models::limits::CheckRequest,
+        ) -> BoxFuture<'_, argonauts_core::runs::events::CheckOutcome> {
             let output = request.command.split_first().map(|(program, args)| {
                 std::process::Command::new(program)
                     .args(args)
@@ -1285,9 +1289,9 @@ mod tests {
                     .output()
             });
             let passed = matches!(output, Some(Ok(ref output)) if output.status.success());
-            let outcome = argonauts_core::events::CheckOutcome {
+            let outcome = argonauts_core::runs::events::CheckOutcome {
                 name: request.name.clone(),
-                kind: argonauts_core::events::task::CheckKind::Command,
+                kind: argonauts_core::runs::events::task::CheckKind::Command,
                 passed,
                 command: Some(request.command.clone()),
                 exit_code: Some(i32::from(!passed)),
@@ -1305,12 +1309,12 @@ mod tests {
     /// Commits a feature and its test as one merged change, and leaves what the run that merged
     /// it leaves: its journal and its run line.
     fn merged_run(repo: &TempRepo, store: &Store, n: u32, name: &str) -> RunId {
-        use argonauts_core::events::agent_status::RunSpend;
-        use argonauts_core::events::run::RunStarted;
-        use argonauts_core::events::task::CheckKind;
-        use argonauts_core::events::{CheckOutcome, MergeEvent, ReviewEvent, SpendEvent};
-        use argonauts_core::meter::Spend;
-        use argonauts_core::steps::intake::ChangeEstimate;
+        use argonauts_core::models::meter::Spend;
+        use argonauts_core::runs::events::agent_status::RunSpend;
+        use argonauts_core::runs::events::run::RunStarted;
+        use argonauts_core::runs::events::task::CheckKind;
+        use argonauts_core::runs::events::{CheckOutcome, MergeEvent, ReviewEvent, SpendEvent};
+        use argonauts_core::workflows::steps::intake::ChangeEstimate;
         let request = format!("Add the {name} feature in src/{name}.txt");
         let test = format!("tests/{name}.sh");
         let base = repo.head().unwrap();
@@ -1432,8 +1436,8 @@ mod tests {
     #[tokio::test]
     async fn merged_runs_are_checked_once_and_wait_for_you() {
         use super::super::act::{Asker, act};
+        use argonauts_core::app::views::LearningCommand;
         use argonauts_core::settings::evolution::EntryAcceptance;
-        use argonauts_core::views::LearningCommand;
         let repo = TempRepo::new().unwrap();
         let env = AppEnv::for_repo(Paths::new(repo.home()), repo.root(), false).unwrap();
         let store = super::super::store(&env);

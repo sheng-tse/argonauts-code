@@ -511,7 +511,7 @@ mod tests {
         fn embed<'a>(
             &'a self,
             _texts: &'a [String],
-        ) -> argonauts_core::future::BoxFuture<'a, Result<Vec<Vec<f32>>, String>> {
+        ) -> argonauts_core::base::future::BoxFuture<'a, Result<Vec<Vec<f32>>, String>> {
             Box::pin(async { Err("Ollama isn't running".to_owned()) })
         }
     }

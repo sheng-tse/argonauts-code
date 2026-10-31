@@ -7,11 +7,11 @@
 use std::sync::Arc;
 
 use super::{FORESHORTEN, LitGround, Relief, top_row};
-use crate::world::geo::Plate;
+use crate::base::draw::geo::Plate;
+use crate::base::draw::scene::Under;
 use crate::world::map::fields::{HEIGHT, WIDTH, byte, in_rows};
 use crate::world::raster::noise::{mix, smooth};
 use crate::world::raster::{Canvas, Grid};
-use crate::world::scene::Under;
 
 /// The stood-up land as a picture, and the flat map's row each of its pixels shows.
 #[derive(Debug, Clone)]

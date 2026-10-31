@@ -1,6 +1,6 @@
 //! The task state machine, as one table in code. A move the table doesn't list is refused.
 
-use argonauts_core::events::task::TaskState;
+use argonauts_core::runs::events::task::TaskState;
 
 /// What happened to a task, as the table's middle column names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

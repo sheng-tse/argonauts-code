@@ -5,43 +5,43 @@
 
 use std::time::{Duration, Instant};
 
-use argonauts_core::api::DiffScope;
-use argonauts_core::app::{UiCommand, ViewRequest};
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::session::{SubagentKind, SubagentStatus, SubagentUpdate};
-use argonauts_core::names::{ModelRef, RoleName, SessionKey};
-use argonauts_core::settings::ui::CliInternals;
-use argonauts_core::steps::plan::Severity;
-use argonauts_core::views::{
+use argonauts_core::app::views::{
     AgentRow, AgentView as AgentData, AskedFor, Finding, Moved, PhaseRow, RowStatus, StartedFrom,
     StatusLine, Tone, WorkflowRow,
 };
+use argonauts_core::app::{UiCommand, ViewRequest};
+use argonauts_core::base::names::{ModelRef, RoleName, SessionKey};
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::api::DiffScope;
+use argonauts_core::runs::events::session::{SubagentKind, SubagentStatus, SubagentUpdate};
+use argonauts_core::settings::ui::CliInternals;
+use argonauts_core::workflows::steps::plan::Severity;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 
-use crate::format;
-use crate::kit::State;
-use crate::markdown::{Indent, render_markdown};
-use crate::render::{Clock, RenderCtx};
-use crate::text::{
+use crate::base::draw::render::{Clock, RenderCtx};
+use crate::base::format;
+use crate::base::kit::State;
+use crate::base::text::{
     KEEP, Part, fit_parts, sanitize, sanitize_line, str_width, truncate_spans, wrap_text,
 };
-use crate::theme::{Role, Theme};
+use crate::base::theme::{Role, Theme};
+use crate::cells::markdown::{Indent, render_markdown};
 
-use super::dock::{self, Heading};
+use super::super::base::draw::layout::{cut, left};
+use super::super::base::draw::panes::{self, Footer, Marks};
+use super::super::frame::view::dock::{self, Heading};
+use super::super::frame::view::list;
+use super::super::frame::view::states;
 use super::follow::{Follower, Shown};
-use super::goal_panel;
-use super::layout::{cut, left};
-use super::list;
-use super::panes::{self, Footer, Marks};
+use super::goal::panel as goal_panel;
 use super::session::{SessionView, Tab};
-use super::states;
 use super::structured;
-use super::workflow_outline::{self, AgentOutline, Place};
-use super::workflow_rows::{self, Models, tone_role};
-use super::{View, ViewCtx, ViewOutcome};
+use super::workflow::outline::{self as workflow_outline, AgentOutline, Place};
+use super::workflow::rows::{self as workflow_rows, Models, tone_role};
+use crate::frame::view::{View, ViewCtx, ViewOutcome};
 
 /// Lines a section shows until it's expanded.
 const PROMPT_PREVIEW: usize = 1;
@@ -84,7 +84,7 @@ pub struct AgentView {
     outline: Option<AgentOutline>,
     /// How its run stands, as the workflow view it was opened from has it, which knows a run
     /// read from its journal that this session never watched.
-    pub run_state: Option<argonauts_core::views::WorkflowState>,
+    pub run_state: Option<argonauts_core::app::views::WorkflowState>,
     selected: usize,
     scroll: usize,
     /// Enter shows every section whole, and folds them again.
@@ -308,7 +308,7 @@ impl AgentView {
         self.drawn.page = page;
         self.drawn.width = panes.right.width;
         let last = (self.scroll + page).min(lines.len());
-        let mark = workflow_rows::scroll_mark(self.scroll, last, lines.len(), theme);
+        let mark = panes::scroll_mark(self.scroll, last, lines.len(), theme);
         dock::draw_box(buf, &frame, [&phase_title, &label], &mark, theme);
         panes::put_lines(buf, panes.right, &lines[self.scroll..last]);
         let footer = self.footer(usize::from(panes.footer.width), ctx);
@@ -423,7 +423,7 @@ impl AgentView {
             return outline.lines(self.selected, usize::from(area.height), theme, &line);
         }
         let (first, last) =
-            workflow_rows::window(self.selected, self.siblings.len(), usize::from(area.height));
+            panes::window(self.selected, self.siblings.len(), usize::from(area.height));
         (first..last).map(|i| line(i, 0)).collect()
     }
 
@@ -633,7 +633,7 @@ impl AgentView {
                     None => prompt_parts(&all[after..]),
                 };
                 if !parts.is_empty() {
-                    more.push_str(&format!(": {}", argonauts_core::text::listed(&parts)));
+                    more.push_str(&format!(": {}", argonauts_core::base::text::listed(&parts)));
                 }
                 body.push(Line::from(Span::styled(cut(&more, inner), dim)));
             }
@@ -1044,7 +1044,7 @@ impl AgentView {
             .as_ref()
             .filter(|note| note.tone == Tone::Bad && self.data.row.status == RowStatus::Failed)
             .map(|note| {
-                argonauts_core::text::sentence_case(sanitize_line(note.text.trim()).trim())
+                argonauts_core::base::text::sentence_case(sanitize_line(note.text.trim()).trim())
             });
         if let Some(why) = why.filter(|why| !why.is_empty()) {
             let indent = [Span::raw("  ")];
@@ -1144,7 +1144,7 @@ fn prompt_parts(lines: &[&str]) -> Vec<String> {
         .filter_map(|line| line.trim_start().strip_prefix('#'))
         .map(|heading| heading.trim_start_matches('#').trim())
         .filter(|heading| !heading.is_empty())
-        .map(argonauts_core::text::clause_case)
+        .map(argonauts_core::base::text::clause_case)
         .collect()
 }
 
@@ -1399,7 +1399,7 @@ fn held(row: &AgentRow) -> String {
         .and_then(|note| note.text.split(" · ").next())
         .map(str::trim)
         .filter(|held| !held.is_empty())
-        .map(argonauts_core::text::sentence_case)
+        .map(argonauts_core::base::text::sentence_case)
         .unwrap_or_else(|| "Paused".to_owned())
 }
 
@@ -1494,7 +1494,7 @@ fn started_from_lines(from: &StartedFrom, width: u16, ctx: &ViewCtx<'_>) -> Vec<
             if let Some(tokens) = tokens {
                 said.push_str(&format!(
                     " · {} tokens of conversation",
-                    crate::format::context_tokens(*tokens)
+                    crate::base::format::context_tokens(*tokens)
                 ));
             }
             (
@@ -1865,13 +1865,13 @@ fn millis(duration: Duration) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::views::ActivityLine;
+    use argonauts_core::app::views::ActivityLine;
     use argonauts_core::{DiffStat, RunId, Spend};
 
     use super::*;
-    use crate::stability::{assert_frames, buffer_text, check_with};
-    use crate::state::AppState;
-    use crate::theme::Glyphs;
+    use crate::base::stability::{assert_frames, buffer_text, check_with};
+    use crate::base::theme::Glyphs;
+    use crate::frame::state::AppState;
 
     fn theme(glyphs: Glyphs) -> Theme {
         let mut theme = Theme::dark();
@@ -1961,11 +1961,11 @@ mod tests {
     fn phase(rows: Vec<WorkflowRow>) -> PhaseRow {
         PhaseRow {
             name: "Build".into(),
-            standard: argonauts_core::workflow::StandardPhase::Do,
+            standard: argonauts_core::workflows::workflow::StandardPhase::Do,
             status: RowStatus::Running,
             detail: String::new(),
             try_number: None,
-            count: Some(argonauts_core::views::PhaseCount {
+            count: Some(argonauts_core::app::views::PhaseCount {
                 done: 0,
                 total: rows.len() as u32,
             }),
@@ -1989,13 +1989,13 @@ mod tests {
     fn live_state() -> AppState {
         let mut state = AppState::default();
         let run_id = RunId::new("run-01").unwrap();
-        let mut run = crate::state::RunState::new(run_id.clone());
+        let mut run = crate::frame::state::RunState::new(run_id.clone());
         run.started = Some(time::OffsetDateTime::now_utc());
-        let mut session = crate::state::SessionState::new(
+        let mut session = crate::frame::state::SessionState::new(
             SessionKey::parse("s-002").unwrap(),
             "claude-code/opus".parse().unwrap(),
             "claude-code",
-            argonauts_core::names::RoleName::Worker,
+            argonauts_core::base::names::RoleName::Worker,
             time::OffsetDateTime::now_utc(),
         );
         session.task = Some(argonauts_core::TaskId::new("task-002").unwrap());
@@ -2039,7 +2039,7 @@ mod tests {
         done.row.status = RowStatus::Done;
         let row = done.row.clone();
         let mut view = AgentView::in_phase(done, &phase(vec![WorkflowRow::Agent(row)]));
-        view.run_state = Some(argonauts_core::views::WorkflowState::Done);
+        view.run_state = Some(argonauts_core::app::views::WorkflowState::Done);
         let text = draw_in(&mut view, 124, &AppState::default());
         let keys = footer(&text);
         assert!(keys.contains("c continue"), "{keys}");
@@ -2058,7 +2058,7 @@ mod tests {
         let mut view = AgentView::in_phase(done, &phase(vec![WorkflowRow::Agent(row)]));
         let mut finished = live_state();
         for run in finished.runs.values_mut() {
-            run.finished = Some(argonauts_core::events::run::RunOutcome::Merged);
+            run.finished = Some(argonauts_core::runs::events::run::RunOutcome::Merged);
         }
         let text = draw_in(&mut view, 124, &finished);
         assert_eq!(
@@ -2149,7 +2149,7 @@ mod tests {
 
         let mut ended = live_state();
         for run in ended.runs.values_mut() {
-            run.finished = Some(argonauts_core::events::run::RunOutcome::Merged);
+            run.finished = Some(argonauts_core::runs::events::run::RunOutcome::Merged);
         }
         let text = draw_in(&mut view, 120, &ended);
         assert!(footer(&text).contains("c continue"), "{text}");
@@ -2181,7 +2181,7 @@ mod tests {
     fn the_footer_names_j_and_k_as_claude_code_does() {
         let text = draw(&mut in_phase("Done."), 120);
         assert!(footer(&text).contains("j/k scroll"), "{text}");
-        let vim = crate::views::list::keys_state(true);
+        let vim = crate::frame::view::list::keys_state(true);
         let buf = render(&mut in_phase("Done."), 120, &theme(Glyphs::UNICODE), &vim);
         let text = buffer_text(&buf);
         assert!(footer(&text).contains("j/k scroll"), "{text}");
@@ -2347,7 +2347,7 @@ mod tests {
         let mut paused = live_state();
         paused.attached = Some(run.clone());
         if let Some(held) = paused.runs.get_mut(&run) {
-            held.waiting = Some(argonauts_core::events::run::WaitReason::Paused);
+            held.waiting = Some(argonauts_core::runs::events::run::WaitReason::Paused);
         }
         let text = draw_in(&mut view, 124, &paused);
         assert!(footer(&text).contains("p resume"), "{text}");
@@ -2454,7 +2454,7 @@ mod tests {
         let mut data = data("done");
         data.tool_calls = 23;
         data.facts = vec!["worker".to_owned(), "worktree".to_owned()];
-        data.row.context = Some(argonauts_core::views::ContextUse {
+        data.row.context = Some(argonauts_core::app::views::ContextUse {
             used: 62_000,
             window: Some(200_000),
             cap: Some(200_000),
@@ -2576,8 +2576,8 @@ mod tests {
     #[test]
     fn a_phase_counts_the_agents_of_its_nested_workflows() {
         let data = data("Done.");
-        let nested = argonauts_core::views::NestedWorkflowRow {
-            id: argonauts_core::names::WorkflowId::numbered(2),
+        let nested = argonauts_core::app::views::NestedWorkflowRow {
+            id: argonauts_core::base::names::WorkflowId::numbered(2),
             name: "build:c-demo-tests".into(),
             status: RowStatus::Running,
             agents_done: 1,

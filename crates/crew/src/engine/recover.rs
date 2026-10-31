@@ -1,18 +1,18 @@
 //! Waking a run: after a crash, after you answered a waiting run's approval, when an agent is
 //! back, when an `ask_timeout` fallback runs out, or when you reopen a stopped run.
 
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::approval::{ApprovalKind, ApprovalPacket};
-use argonauts_core::events::run::{
+use argonauts_core::agents::session_runner::Access;
+use argonauts_core::base::names::{AgentId, ApprovalId};
+use argonauts_core::models::limits::RecoveryAction;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::approval::{ApprovalKind, ApprovalPacket};
+use argonauts_core::runs::events::run::{
     ResumeCause, ResumedSession, RunLifecycle, RunOutcome, RunResumed, WaitReason,
 };
-use argonauts_core::limits::RecoveryAction;
-use argonauts_core::names::{AgentId, ApprovalId};
-use argonauts_core::session_runner::Access;
 use argonauts_core::{Note, NoteLevel, TaskId};
 
+use crate::engine::error::EngineResult;
 use crate::engine::host::Host;
-use crate::error::EngineResult;
 use crate::state::RunState;
 use crate::{approvals, fallback, task};
 
@@ -232,8 +232,8 @@ fn agents_back(host: &Host) -> Vec<AgentId> {
             .is_none_or(|reading| !fallback::rules::plan_usage_out(&reading, now));
         matches!(
             health.state,
-            argonauts_core::limits::HealthState::Healthy
-                | argonauts_core::limits::HealthState::Testing
+            argonauts_core::models::limits::HealthState::Healthy
+                | argonauts_core::models::limits::HealthState::Testing
         ) && plan_usage_ok
     });
     out
@@ -316,7 +316,7 @@ async fn main_moved_by(host: &Host, branch: Option<&str>, base: &str) -> EngineR
 mod tests {
     use super::*;
 
-    use argonauts_core::events::approval::ApprovalKind;
+    use argonauts_core::runs::events::approval::ApprovalKind;
 
     use crate::state::tests::open_approval;
 
@@ -366,15 +366,15 @@ mod tests {
         assert_eq!(timed_out, vec![(id, None)]);
         assert_eq!(cause(&state, 10_000, None).0, Some(ResumeCause::Answer));
 
-        state.run.finished = Some(argonauts_core::events::run::RunOutcome::Merged);
+        state.run.finished = Some(argonauts_core::runs::events::run::RunOutcome::Merged);
         assert_eq!(cause(&state, 0, None).0, None);
     }
 
     #[test]
     fn a_waiting_merge_task_waits_on_the_originals_its_debt_needs() {
-        use argonauts_core::events::approval::{MergePacket, MergeRow};
-        use argonauts_core::events::task::TaskKind;
-        use argonauts_core::fallback::QualityDebt;
+        use argonauts_core::runs::events::approval::{MergePacket, MergeRow};
+        use argonauts_core::runs::events::task::TaskKind;
+        use argonauts_core::runs::fallback::QualityDebt;
         use argonauts_core::{DiffStat, Spend};
 
         let worker = |name: &str| name.parse().expect("a model");

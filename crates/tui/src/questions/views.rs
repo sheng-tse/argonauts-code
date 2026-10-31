@@ -4,10 +4,10 @@
 use std::io::Read;
 use std::path::Path;
 
-use argonauts_core::api::DiffScope;
 use argonauts_core::app::{AppChoice, ViewRequest};
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::approval::{
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::api::DiffScope;
+use argonauts_core::runs::events::approval::{
     ApprovalDecided, ApprovalKind, ApprovalOpened, ApprovalPacket, PolicyCheck,
 };
 use argonauts_core::{RunId, TaskId};
@@ -16,8 +16,8 @@ use time::UtcOffset;
 use super::about::details;
 use super::records::{by_id, outcome};
 use super::words;
-use crate::text::sanitize_line;
-use crate::views::pager::Pager;
+use crate::base::text::sanitize_line;
+use crate::frame::view::pager::Pager;
 
 /// Pager text is laid out this wide; the pager cuts or scrolls it.
 const PAGER_WIDTH: usize = 120;

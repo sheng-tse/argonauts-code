@@ -2,22 +2,22 @@
 //! the picked one, after a confirm question in the conversation. The work after it stays on a side
 //! branch.
 
+use argonauts_core::app::views::CheckpointRow;
 use argonauts_core::app::{UiCommand, ViewData};
-use argonauts_core::views::CheckpointRow;
 use argonauts_core::{RunId, TaskId};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 
-use crate::format::WallClock;
-use crate::text::sanitize_line;
-use crate::theme::{Role, Theme};
+use crate::base::format::WallClock;
+use crate::base::text::sanitize_line;
+use crate::base::theme::{Role, Theme};
 
-use super::list::{self, Column, ListState, fit_columns};
-use super::panes::{self, Footer, Header, Marks, Side};
-use super::resume::ago;
-use super::{View, ViewCtx, ViewOutcome};
+use super::super::base::draw::panes::{self, Footer, Header, Marks, Side};
+use super::super::frame::view::list::{self, Column, ListState, fit_columns};
+use crate::base::format::ago;
+use crate::frame::view::{View, ViewCtx, ViewOutcome};
 
 /// Cells between columns.
 const GAP: usize = 2;
@@ -180,8 +180,12 @@ impl View for RewindPicker {
         panes::put_lines(buf, panes.right, &shown);
 
         let marks = Marks::for_theme(theme);
-        let mark =
-            super::pager::position_mark(self.list.offset, height, self.rows.len(), marks.down);
+        let mark = super::super::frame::view::pager::position_mark(
+            self.list.offset,
+            height,
+            self.rows.len(),
+            marks.down,
+        );
         let hints = Footer::hints(&[
             ("↑↓  select", 0),
             ("⏎ go back to it", 1),
@@ -240,12 +244,12 @@ impl View for RewindPicker {
 mod tests {
     use std::time::Instant;
 
-    use argonauts_core::names::ModelRef;
+    use argonauts_core::base::names::ModelRef;
     use time::macros::datetime;
 
     use super::*;
-    use crate::state::AppState;
-    use crate::theme::Theme;
+    use crate::base::theme::Theme;
+    use crate::frame::state::AppState;
 
     fn row(task: &str, n: u32, to: &str) -> CheckpointRow {
         CheckpointRow {

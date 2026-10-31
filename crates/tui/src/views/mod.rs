@@ -5,216 +5,43 @@
 //! and from the last one to the conversation exactly where it was.
 //!
 //! Views lay out with ratatui into a `Buffer`, so borders and columns line up at any width
-//! ([`crate::stability`] checks it).
+//! ([`crate::base::stability`] checks it).
 
 pub mod agent;
 pub mod artifacts;
 pub mod asks;
-pub mod columns;
-#[cfg(test)]
-mod council_golden_tests;
 pub mod crew;
-pub mod dock;
 pub mod follow;
 pub mod goal;
-mod goal_keys;
-pub mod goal_panel;
 pub mod help;
 pub(crate) mod issues;
-#[cfg(test)]
-mod launch_golden_tests;
-pub mod layout;
 pub mod learning;
 pub mod library;
 mod line_edit;
-pub mod list;
-pub mod map;
-#[cfg(test)]
-mod network_golden_tests;
-pub mod pager;
-pub mod panes;
 pub mod prompts;
-pub mod raw_log;
-mod raw_rows;
 pub mod resume;
 pub mod rewind;
 pub mod session;
 pub mod settings;
 pub mod setup_sheet;
-pub mod states;
 mod structured;
 #[cfg(test)]
-mod vim_tests;
+mod tests;
 pub mod waiting;
 pub mod workflow;
-#[cfg(test)]
-mod workflow_captain_tests;
-#[cfg(test)]
-pub(crate) mod workflow_examples;
-#[cfg(test)]
-mod workflow_golden_tests;
-#[cfg(test)]
-mod workflow_inner_tests;
-#[cfg(test)]
-mod workflow_nested_tests;
-mod workflow_outline;
-pub mod workflow_page;
-mod workflow_peek;
-#[cfg(test)]
-pub(crate) mod workflow_pictures;
-#[cfg(test)]
-mod workflow_row_tests;
-pub(crate) mod workflow_rows;
-#[cfg(test)]
-mod workflow_tests;
-mod workflow_tries;
 
-use std::fmt;
-use std::time::Instant;
-
-use argonauts_core::agent_sessions::AgentSessionRef;
-use argonauts_core::app::{AnswerTarget, AppEvent, UiCommand, ViewData, ViewRequest};
-use argonauts_core::events::run::{RunOutcome, WaitReason};
+use argonauts_core::RunId;
+use argonauts_core::agents::agent_sessions::AgentSessionRef;
+use argonauts_core::app::{AppEvent, UiCommand, ViewData};
+use argonauts_core::base::names::{RoleName, SessionKey};
 use argonauts_core::input::{ResumeTarget, SlashCommand};
-use argonauts_core::names::{RoleName, SessionKey};
-use argonauts_core::steps::StepName;
-use argonauts_core::{RunId, TaskId};
-use crossterm::event::KeyEvent;
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
+use argonauts_core::runs::events::run::{RunOutcome, WaitReason};
+use argonauts_core::workflows::steps::StepName;
 
+use crate::base::text::sanitize_line;
 use crate::bridge::Cx;
-use crate::state::AppState;
-use crate::text::sanitize_line;
-use crate::theme::Theme;
-
-pub trait View: fmt::Debug + Send {
-    /// Draws the whole screen, or for a docked view the bottom region it was given.
-    fn render(&mut self, area: Rect, buf: &mut Buffer, ctx: &ViewCtx<'_>);
-
-    /// Whether it draws in the bottom region under the conversation, where the input, the mode
-    /// line, and the panel were, rather than on a screen of its own.
-    fn docked(&self) -> bool {
-        false
-    }
-
-    /// The rows a docked view takes on a screen of this size, when it knows better than the
-    /// usual half: a panel of cards takes only what they need. The caller keeps it on screen.
-    fn dock_height(&mut self, screen: ratatui::layout::Size, ctx: &ViewCtx<'_>) -> Option<u16> {
-        let _ = (screen, ctx);
-        None
-    }
-
-    /// Whether a docked view stays up while a question holds the keys. The question then draws
-    /// under it, where its keys were, and takes every key until it is answered or passed on.
-    /// Any other view closes as a question takes the keys.
-    fn stays_over_question(&self) -> bool {
-        false
-    }
-
-    fn handle_key(&mut self, key: KeyEvent, ctx: &ViewCtx<'_>) -> ViewOutcome;
-
-    /// A bracketed paste. Most views have no line to type into, and the prompt behind them
-    /// never gets it either.
-    fn handle_paste(&mut self, text: &str, ctx: &ViewCtx<'_>) -> ViewOutcome {
-        let _ = (text, ctx);
-        ViewOutcome::Ignored
-    }
-
-    /// What the view asks the controller for each time it opens, however it was opened, such
-    /// as the agent panel's rows: it shows the last ones sent until the new ones arrive.
-    fn asks_on_open(&self) -> Option<ViewRequest> {
-        None
-    }
-
-    /// A controller answer to a request this view made. True when the view took it.
-    fn accept(&mut self, data: &ViewData) -> bool {
-        let _ = data;
-        false
-    }
-
-    /// When the view next changes on its own, such as an elapsed counter. `None` when idle.
-    fn next_change(&self, now: Instant) -> Option<Instant> {
-        let _ = now;
-        None
-    }
-
-    /// Asked after every event: what shows in its place once the run it was opened for has
-    /// moved on, such as the main agent's session once it starts. `None` keeps it.
-    fn follow(&mut self, ctx: &ViewCtx<'_>) -> Option<Follow> {
-        let _ = ctx;
-        None
-    }
-
-    /// The map it draws, which can take a picture and the mouse, when it draws one.
-    fn map(&mut self) -> Option<&mut dyn map::MapView> {
-        None
-    }
-}
-
-/// Where a view that follows its run goes next.
-#[derive(Debug)]
-pub enum Follow {
-    Replace(Box<dyn View>),
-    /// Closes it and asks the controller for the view that follows, such as the workflow view.
-    Request(ViewRequest),
-}
-
-pub struct ViewCtx<'a> {
-    pub theme: &'a Theme,
-    pub state: &'a AppState,
-    pub now: Instant,
-}
-
-#[derive(Debug)]
-pub enum ViewOutcome {
-    Consumed,
-    /// Not a key this view uses.
-    Ignored,
-    /// Back one view, or to the conversation.
-    Close,
-    /// Back to the conversation.
-    CloseAll,
-    Open(Box<dyn View>),
-    Replace(Box<dyn View>),
-    Send(UiCommand),
-    /// Ask the controller; the answer comes back through [`View::accept`].
-    Request(ViewRequest),
-    /// Back to the conversation with this question's keys, such as Enter on a ◆ row.
-    AnswerQuestion(AnswerTarget),
-    /// The local confirm before a take-over.
-    ConfirmTakeOver {
-        run: RunId,
-        task: TaskId,
-    },
-    /// A short line in the notice slot, such as why a key did nothing.
-    Notice(String),
-    /// Text for the system clipboard, such as an artifact's link.
-    Copy(String),
-    /// A claude.ai page to open in the browser, by the name the notice says it by.
-    OpenLink {
-        url: String,
-        name: String,
-    },
-    /// Back to the conversation, where the answer shows, sending this on the way.
-    SendToConversation(UiCommand),
-    /// Back to the conversation, leaving `line` under an echo of `command`, as Config's Esc
-    /// leaves `⎿  Set Editor mode to vim` under `/config`.
-    CloseSaying {
-        command: String,
-        line: String,
-    },
-    /// [`ViewOutcome::CloseSaying`], then `then` sent on to the conversation, as a Config row
-    /// that opens a picker leaves what the tab changed under `/config` before it.
-    CloseSayingThen {
-        command: String,
-        line: String,
-        then: UiCommand,
-    },
-    /// A setting saved now, which the view sums up itself when it closes, so the conversation
-    /// doesn't print it as it happens.
-    SaveQuietly(UiCommand),
-}
+use crate::frame::state::AppState;
+use crate::frame::view::{ViewCtx, ViewOutcome};
 
 /// Whether `run` can still be paused or have agents stopped: not finished and not waiting, as far
 /// as the screen knows it.
@@ -224,7 +51,7 @@ pub(crate) fn run_going(state: &AppState, run: &RunId) -> bool {
 
 /// Why a key that acts on an agent's session can't act on `row`, which is one of a workflow
 /// its CLI runs itself: it has no session of ours, and its CLI alone runs it.
-pub(crate) fn inner_why(state: &AppState, row: &argonauts_core::views::AgentRow) -> String {
+pub(crate) fn inner_why(state: &AppState, row: &argonauts_core::app::views::AgentRow) -> String {
     let label = sanitize_line(&row.label).trim().to_owned();
     let cli = sanitize_line(&state.names.cli(&row.worker.agent))
         .trim()
@@ -258,7 +85,7 @@ impl Restart {
 pub(crate) fn restart(
     state: &AppState,
     run: &RunId,
-    agent: &argonauts_core::views::AgentRow,
+    agent: &argonauts_core::app::views::AgentRow,
 ) -> Result<Restart, String> {
     if let Some(why) = ended_why(state, run) {
         return Err(why.to_owned());
@@ -267,7 +94,7 @@ pub(crate) fn restart(
         return Err(inner_why(state, agent));
     }
     let label = sanitize_line(&agent.label).trim().to_owned();
-    if agent.status != argonauts_core::views::RowStatus::Running {
+    if agent.status != argonauts_core::app::views::RowStatus::Running {
         return Err(format!(
             "{label} isn't running, so there's nothing to restart"
         ));
@@ -493,7 +320,7 @@ pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>, refresh: &follow::Refresh) {
             let inside = cx.model.bottom.workflows.opening.take();
             if let Some((run, id)) = inside.as_deref().and_then(|key| key.split_once('#'))
                 && run == view.run.as_str()
-                && let Some(id) = argonauts_core::names::WorkflowId::parse(id)
+                && let Some(id) = argonauts_core::base::names::WorkflowId::parse(id)
             {
                 opened = opened.on_inside(&id);
             }
@@ -519,9 +346,10 @@ pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>, refresh: &follow::Refresh) {
         ViewData::SessionContext { .. } => {}
         // Under its tab of the usage panel, beside Status and Usage.
         ViewData::Context { view } => cx.out.open(
-            crate::overview::OverviewView::new(
-                crate::overview::Tab::Context,
+            crate::panels::OverviewView::new(
+                crate::panels::Tab::Context,
                 cx.model.bottom.band.watch.clone(),
+                crate::config::panel(),
             )
             .with_context(view.clone()),
         ),
@@ -533,12 +361,16 @@ pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>, refresh: &follow::Refresh) {
             resume::ResumePicker::listing(conversations.clone(), sessions.clone())
                 .with_in_cli(in_cli.clone()),
         ),
-        ViewData::Diff { diff } => cx.out.open(pager::Pager::diff(diff.clone())),
+        ViewData::Diff { diff } => cx
+            .out
+            .open(super::frame::view::pager::Pager::diff(diff.clone())),
         // A refresh is for a /mods that closed before it came.
         ViewData::Mods { view } if view.refresh => {}
         ViewData::Mods { view } => cx.out.open(crate::mods::ModsScreen::new((**view).clone())),
         ViewData::Goal { view } => cx.out.open(goal::GoalView::new((**view).clone())),
-        ViewData::Raw { raw } => cx.out.open(pager::Pager::raw(raw.clone())),
+        ViewData::Raw { raw } => cx
+            .out
+            .open(super::frame::view::pager::Pager::raw(raw.clone())),
         // The agent panel lists every repo's runs itself now.
         ViewData::AllRepos { .. } => cx.out.open(crew::AgentPanelView::new(cx.state)),
         ViewData::Settings { .. }
@@ -557,7 +389,7 @@ pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>, refresh: &follow::Refresh) {
         ViewData::WorkflowPage { page } if page.refresh => {}
         ViewData::WorkflowPage { page } => {
             cx.out
-                .open(workflow_page::WorkflowPageView::new((**page).clone()));
+                .open(workflow::page::WorkflowPageView::new((**page).clone()));
         }
         ViewData::Checkpoints {
             run,

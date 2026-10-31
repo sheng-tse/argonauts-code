@@ -3,15 +3,15 @@
 
 use serde::{Deserialize, Serialize};
 
-use argonauts_core::events::approval::ApprovalEvent;
-use argonauts_core::events::council::CouncilEventKind;
-use argonauts_core::events::goal::GoalEvent;
-use argonauts_core::events::plan::PlanEvent;
-use argonauts_core::events::run::RunLifecycle;
-use argonauts_core::events::session::SessionEvent;
-use argonauts_core::events::shared::BlackboardEvent;
-use argonauts_core::events::workflow::WorkflowEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
+use argonauts_core::runs::events::approval::ApprovalEvent;
+use argonauts_core::runs::events::council::CouncilEventKind;
+use argonauts_core::runs::events::goal::GoalEvent;
+use argonauts_core::runs::events::plan::PlanEvent;
+use argonauts_core::runs::events::run::RunLifecycle;
+use argonauts_core::runs::events::session::SessionEvent;
+use argonauts_core::runs::events::shared::BlackboardEvent;
+use argonauts_core::runs::events::workflow::WorkflowEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IdKind {
@@ -153,9 +153,9 @@ mod tests {
     use super::*;
 
     use argonauts_core::RunId;
-    use argonauts_core::events::approval::ApprovalEvent;
-    use argonauts_core::events::shared::BlackboardEvent;
-    use argonauts_core::names::{ApprovalId, MessageId, SessionKey};
+    use argonauts_core::base::names::{ApprovalId, MessageId, SessionKey};
+    use argonauts_core::runs::events::approval::ApprovalEvent;
+    use argonauts_core::runs::events::shared::BlackboardEvent;
     use time::OffsetDateTime;
 
     fn event(session: Option<SessionKey>, kind: RunEventKind) -> RunEvent {

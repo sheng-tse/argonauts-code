@@ -10,16 +10,16 @@ use futures::future::join_all;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::approval::{AnswerAction, ApprovalKind};
-use argonauts_core::events::plan::{DivideEvent, LimitPlan, TaskGraph};
-use argonauts_core::events::session::{InputPart, InputPartKind};
-use argonauts_core::events::task::{TaskKind, TaskSpec, TaskWay};
-use argonauts_core::limits::{HealthState, PlanUsageStatus};
-use argonauts_core::names::{ModelRef, RoleName};
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::models::limits::{HealthState, PlanUsageStatus};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::approval::{AnswerAction, ApprovalKind};
+use argonauts_core::runs::events::plan::{DivideEvent, LimitPlan, TaskGraph};
+use argonauts_core::runs::events::session::{InputPart, InputPartKind};
+use argonauts_core::runs::events::task::{TaskKind, TaskSpec, TaskWay};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::protocol::TestAuthor;
-use argonauts_core::steps::plan::{
+use argonauts_core::workflows::steps::plan::{
     GoalBrief, PlanDraft, PlanToTasks, PlanToTasksInput, TaskGraphProposal,
 };
 use argonauts_core::{Note, NoteLevel, RunId, TaskId};
@@ -27,12 +27,13 @@ use argonauts_core::{Note, NoteLevel, RunId, TaskId};
 use argonauts_learning::Store;
 use argonauts_learning::records::Book;
 
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::{Ask, Host};
-use crate::error::{EngineError, EngineResult};
-use crate::orchestrated::{self, OrchestratedTasks, Rejected};
+use crate::prompts;
+use crate::roles::orchestrated::{self, OrchestratedTasks, Rejected};
+use crate::roles::{self, tie_breaker};
 use crate::run_review::outcomes;
 use crate::workflow::{StepCall, StepDone};
-use crate::{prompts, roles, tie_breaker};
 
 pub mod assign;
 pub mod contracts;
@@ -768,7 +769,7 @@ fn seed(run: &RunId) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::steps::plan::{ProposedKind, TaskProposal};
+    use argonauts_core::workflows::steps::plan::{ProposedKind, TaskProposal};
 
     use super::*;
 

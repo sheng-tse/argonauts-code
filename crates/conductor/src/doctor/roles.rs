@@ -1,7 +1,7 @@
 //! Per role on one CLI: the effective compaction and fan-out cap with their effects, and a
 //! warning for every role with lifetime `run` or `project` whose compaction is off.
 
-use argonauts_core::names::RoleName;
+use argonauts_core::base::names::RoleName;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::sessions::{Compaction, FanoutSwitch, NativeFanout, SessionLifetime};
 use argonauts_core::{Adapter, TweakEffect};
@@ -196,7 +196,7 @@ mod tests {
     use super::*;
     use crate::doctor::tests::FakeCli;
     use argonauts_core::LaunchTweak;
-    use argonauts_core::names::ModelRef;
+    use argonauts_core::base::names::ModelRef;
     use argonauts_core::settings::roles::RoleSettings;
 
     fn role(workers: &[&str], lifetime: SessionLifetime, compaction: Compaction) -> RoleSettings {

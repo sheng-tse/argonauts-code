@@ -11,26 +11,26 @@ use anyhow::Context;
 use serde_json::{Value, json};
 
 use argonauts_core::ErrorCategory;
-use argonauts_core::engine::EngineExit;
-use argonauts_core::events::agent_status::FallbackPlan;
-use argonauts_core::events::approval::{
+use argonauts_core::agents::session_runner::SessionSpec;
+use argonauts_core::base::names::{AgentId, RoleName};
+use argonauts_core::models::limits::{Candidate, CostEstimate, HealthState, RecoveryAction};
+use argonauts_core::models::meter::LimitDimension;
+use argonauts_core::runs::engine::EngineExit;
+use argonauts_core::runs::events::agent_status::FallbackPlan;
+use argonauts_core::runs::events::approval::{
     ApprovalEvent, ApprovalKind, ApprovalPacket, MergeQuestion,
 };
-use argonauts_core::events::run::{Party, RunLifecycle, RunMode};
-use argonauts_core::events::session::EndReason;
-use argonauts_core::events::shared::{AnsweredForYou, BlackboardEvent};
-use argonauts_core::events::task::{MergeEvent, TaskEvent, TaskState};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::limits::{Candidate, CostEstimate, HealthState, RecoveryAction};
-use argonauts_core::meter::LimitDimension;
-use argonauts_core::names::{AgentId, RoleName};
-use argonauts_core::session_runner::SessionSpec;
+use argonauts_core::runs::events::run::{Party, RunLifecycle, RunMode};
+use argonauts_core::runs::events::session::EndReason;
+use argonauts_core::runs::events::shared::{AnsweredForYou, BlackboardEvent};
+use argonauts_core::runs::events::task::{MergeEvent, TaskEvent, TaskState};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::fallback::FallbackMode;
 use argonauts_core::settings::protocol::CheckCommand;
-use argonauts_core::steps::StepName;
+use argonauts_core::workflows::steps::StepName;
 use argonauts_crew::engine::shared::with_git_env;
-use argonauts_testkit::services::{MemoryHealthBoard, TableLimits};
+use argonauts_testkit::engine::services::{MemoryHealthBoard, TableLimits};
 use argonauts_testkit::{FakeRunner, FakeSession};
 
 use support::{Crew, Outcome, names};
@@ -423,10 +423,10 @@ async fn a_workers_instructions_offer_no_question_for_the_person() -> anyhow::Re
 }
 
 /// A check's result as the fake runner gives it.
-fn check(passed: bool, summary: &str, tail: &str) -> argonauts_core::events::CheckOutcome {
-    argonauts_core::events::CheckOutcome {
+fn check(passed: bool, summary: &str, tail: &str) -> argonauts_core::runs::events::CheckOutcome {
+    argonauts_core::runs::events::CheckOutcome {
         name: "tests".to_owned(),
-        kind: argonauts_core::events::task::CheckKind::Command,
+        kind: argonauts_core::runs::events::task::CheckKind::Command,
         passed,
         command: Some(vec!["npm".to_owned(), "test".to_owned()]),
         exit_code: Some(i32::from(!passed)),
@@ -909,7 +909,7 @@ async fn on_autopilot_a_checkout_on_no_branch_keeps_the_runs_branch() -> anyhow:
     assert_nothing_waited(&outcome);
     assert_eq!(
         outcome.exit,
-        EngineExit::Finished(argonauts_core::events::run::RunOutcome::BranchLeft)
+        EngineExit::Finished(argonauts_core::runs::events::run::RunOutcome::BranchLeft)
     );
     let said = notes(&outcome.events);
     assert!(
@@ -946,7 +946,7 @@ async fn on_autopilot_a_file_both_changed_waits_to_be_written_in() -> anyhow::Re
     crew.repo.git(&["add", FILE])?;
     crew.repo.git(&["commit", "--quiet", "-m", "a flag"])?;
     let root = crew.repo.root().to_path_buf();
-    let hidden = argonauts_core::hidden_git::dir(crew.repo_context()?.state_dir());
+    let hidden = argonauts_core::runs::hidden_git::dir(crew.repo_context()?.state_dir());
     std::fs::create_dir_all(hidden.parent().context("a state folder")?)?;
     std::fs::rename(root.join(".git"), &hidden)?;
     *folder.lock().unwrap() = Some(root.clone());
@@ -984,7 +984,7 @@ async fn on_autopilot_a_file_both_changed_waits_to_be_written_in() -> anyhow::Re
     // Paused, which /resume takes up, and not waiting on an answer.
     assert_eq!(
         outcome.exit,
-        EngineExit::Waiting(argonauts_core::events::run::WaitReason::Paused)
+        EngineExit::Waiting(argonauts_core::runs::events::run::WaitReason::Paused)
     );
     Ok(())
 }

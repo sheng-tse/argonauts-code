@@ -3,14 +3,14 @@
 //! columns, with the frame check at every width.
 
 use crate::common;
-use argonauts_core::screen::{Drawn, DrawnButton, DrawnLook, DrawnRow, DrawnSpan};
-use argonauts_tui::bottom::Notice;
-use argonauts_tui::model::{
+use argonauts_core::agents::screen::{Drawn, DrawnButton, DrawnLook, DrawnRow, DrawnSpan};
+use argonauts_tui::app::model::{
     AddedPart, ApprovalMode, BottomState, CliUse, LinePart, ModeNotice, QuestionOption,
     QuestionPrompt, Tone, WindowUse, WorkingLine,
 };
-use argonauts_tui::stability;
-use argonauts_tui::theme::Role;
+use argonauts_tui::base::stability;
+use argonauts_tui::base::theme::Role;
+use argonauts_tui::bottom::Notice;
 use common::{assert_fits, at, ctx, fg, style_of, t0, text, theme};
 use ratatui::style::Modifier;
 

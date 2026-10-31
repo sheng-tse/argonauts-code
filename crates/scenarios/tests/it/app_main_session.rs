@@ -6,9 +6,9 @@ use crate::app_support;
 use std::path::{Path, PathBuf};
 
 use app_support::*;
-use argonauts_core::events::run::RunMode;
+use argonauts_core::runs::events::run::RunMode;
 use argonauts_scenarios::{as_set_up, scenario_file};
-use argonauts_testkit::scenario::StdinPrompt;
+use argonauts_testkit::fake_clis::scenario::StdinPrompt;
 use argonauts_testkit::{FakeRule, FakeScenario, FakeStep};
 use serde_json::json;
 

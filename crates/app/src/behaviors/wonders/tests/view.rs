@@ -1,12 +1,12 @@
 //! The wonders as the Behaviors view sends them to the screen.
 
 use argonauts_core::app::{AppEvent, UiCommand, ViewData, ViewRequest};
-use argonauts_core::behavior_map::{MapRequest, Scope};
-use argonauts_core::behavior_world::Wonder;
-use argonauts_core::events::run::RunOutcome;
+use argonauts_core::behaviors::behavior_map::{MapRequest, Scope};
+use argonauts_core::behaviors::behavior_world::Wonder;
+use argonauts_core::runs::events::run::RunOutcome;
 
 use super::three_makers;
-use crate::controller::test_support::TestDriver;
+use crate::controller::base::test_support::TestDriver;
 
 async fn wonders_shown(driver: &mut TestDriver, scope: Scope) -> Vec<Wonder> {
     driver

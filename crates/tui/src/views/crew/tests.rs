@@ -1,11 +1,11 @@
-use argonauts_core::agent_panel::{CrewDetails, CrewRun};
-use argonauts_core::limits::{PlanUsageReading, PlanUsageStatus};
-use argonauts_core::names::ConversationId;
+use argonauts_core::app::agent_panel::{CrewDetails, CrewRun};
+use argonauts_core::base::names::ConversationId;
+use argonauts_core::models::limits::{PlanUsageReading, PlanUsageStatus};
 use serde_json::json;
 use time::OffsetDateTime;
 
 use super::*;
-use crate::theme::Theme;
+use crate::base::theme::Theme;
 
 fn at(minutes_ago: i64) -> OffsetDateTime {
     OffsetDateTime::from_unix_timestamp(1_790_000_000 - minutes_ago * 60).unwrap()
@@ -63,7 +63,7 @@ fn ctrl_letters_are_left_to_the_global_keys() {
 
 #[test]
 fn opened_with_left_it_closes_with_right_and_opens_with_enter() {
-    let state = crate::mentions::fixture::working_state();
+    let state = crate::bridge::mentions::fixture::working_state();
     let mut view = AgentPanelView::opened_left(&state);
     assert!(!matches!(
         press(&mut view, KeyEvent::from(KeyCode::Enter), &state),
@@ -84,7 +84,7 @@ fn opened_with_left_it_closes_with_right_and_opens_with_enter() {
 
 #[test]
 fn letter_keys_move_open_and_go_back() {
-    let mut state = crate::mentions::fixture::working_state();
+    let mut state = crate::bridge::mentions::fixture::working_state();
     state.ui = list::keys_state(true).ui;
     let mut view = AgentPanelView::new(&state);
     let count = ordered(&view.panel(&state), view.tab).len();
@@ -123,8 +123,8 @@ fn letter_keys_move_open_and_go_back() {
 
 #[test]
 fn the_controller_row_for_a_run_on_screen_gives_way_to_its_agents() {
-    let mut state = crate::mentions::fixture::working_state();
-    state.welcome = Some(crate::state::Welcome {
+    let mut state = crate::bridge::mentions::fixture::working_state();
+    state.welcome = Some(crate::frame::state::Welcome {
         version: "0.1.0".into(),
         repo: "~/app".into(),
         workflow: "captain".into(),
@@ -224,7 +224,7 @@ fn text_of(lines: &[draw::BodyLine]) -> Vec<String> {
 fn the_list_reads_like_the_picture() {
     let mut run = CrewRun::new(RunId::new("run-01").unwrap(), "Add due dates to the tasks");
     run.name = Some("add-due-dates".into());
-    run.stands = Some(argonauts_core::agent_panel::RunStands {
+    run.stands = Some(argonauts_core::app::agent_panel::RunStands {
         state: CrewState::Done,
         word: "merged".into(),
         since: at(13),
@@ -315,7 +315,7 @@ fn the_list_reads_like_the_picture() {
 fn a_run_listed_whole_is_its_own_heading_and_another_repo_is_named() {
     let whole = |id: &str, repo: &str, word: &str, state: CrewState| {
         let mut run = CrewRun::new(RunId::new(id).unwrap(), "Tidy the README");
-        run.stands = Some(argonauts_core::agent_panel::RunStands {
+        run.stands = Some(argonauts_core::app::agent_panel::RunStands {
             state,
             word: word.into(),
             since: at(120),
@@ -387,7 +387,8 @@ fn long_paths_in_the_details_are_cut_in_the_middle() {
         "{text:#?}"
     );
     assert!(
-        text.iter().all(|line| crate::text::str_width(line) <= 40),
+        text.iter()
+            .all(|line| crate::base::text::str_width(line) <= 40),
         "{text:#?}"
     );
 }
@@ -439,7 +440,7 @@ fn plan_usages_read_as_one_short_part_each() {
         .map(|span| span.content.as_ref())
         .collect();
     assert!(text.starts_with("argonauts › crew") && text.ends_with("Codex 40%"));
-    assert_eq!(crate::text::str_width(&text), 80);
+    assert_eq!(crate::base::text::str_width(&text), 80);
     // With no room the plan usage gives way and the name stays.
     let line = draw::title_line(&state, 20, &Theme::dark());
     assert_eq!(line.spans.len(), 1);
@@ -449,7 +450,7 @@ fn plan_usages_read_as_one_short_part_each() {
 fn every_state_has_its_own_glyph() {
     for theme in [Theme::dark(), {
         let mut ascii = Theme::dark();
-        ascii.glyphs = crate::theme::Glyphs::ASCII;
+        ascii.glyphs = crate::base::theme::Glyphs::ASCII;
         ascii
     }] {
         let states = [
@@ -513,7 +514,7 @@ fn c_carries_a_finished_agent_on_and_leaves_a_working_one_to_take_over() {
     let run = RunId::new("run-01").unwrap();
     going
         .runs
-        .insert(run.clone(), crate::state::RunState::new(run));
+        .insert(run.clone(), crate::frame::state::RunState::new(run));
     match carry_on(&going, &panel, &agent(CrewState::Done)) {
         ViewOutcome::Notice(text) => assert_eq!(
             text,
@@ -550,7 +551,7 @@ fn hints(footer: &Footer) -> Vec<String> {
 /// and only a working agent offers `x stop`.
 #[test]
 fn enter_opens_any_agents_transcript_finished_or_running() {
-    let mut state = crate::mentions::fixture::working_state();
+    let mut state = crate::bridge::mentions::fixture::working_state();
     let run = state.attached.clone().unwrap();
     let held = |state: &AppState| {
         let panel = rows::panel(state, now());
@@ -583,7 +584,7 @@ fn enter_opens_any_agents_transcript_finished_or_running() {
     }
 
     state.runs.get_mut(&run).unwrap().finished =
-        Some(argonauts_core::events::run::RunOutcome::Merged);
+        Some(argonauts_core::runs::events::run::RunOutcome::Merged);
     for session in state.runs.get_mut(&run).unwrap().sessions.values_mut() {
         session.status = SessionStatus::Done;
     }

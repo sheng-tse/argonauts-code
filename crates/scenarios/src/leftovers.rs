@@ -8,8 +8,8 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use argonauts_core::layout::run_files;
-use argonauts_testkit::journal;
+use argonauts_core::base::layout::run_files;
+use argonauts_testkit::home::journal;
 
 use crate::Scenario;
 
@@ -40,7 +40,7 @@ pub(crate) fn stop(scenario: &Scenario) {
     for pid in run_hosts {
         kill_with_group(pid);
     }
-    let deadline = argonauts_testkit::deadline::after(SWEEP);
+    let deadline = argonauts_testkit::pty::deadline::after(SWEEP);
     while !hosting(root).is_empty() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(50));
     }

@@ -4,12 +4,12 @@
 
 use std::path::Path;
 
-use argonauts_core::app::{AppEvent, ViewData};
-use argonauts_core::log::NoteLevel;
-use argonauts_core::settings::crew::CrewRole;
-use argonauts_core::workflow_page::{
+use argonauts_core::app::workflow_page::{
     PageCheck, PageField, PageGroup, WorkflowChange, WorkflowPage,
 };
+use argonauts_core::app::{AppEvent, ViewData};
+use argonauts_core::base::log::NoteLevel;
+use argonauts_core::settings::crew::CrewRole;
 use argonauts_runner::{Change, DryRun, FILE_FIELDS, STEP_FIELDS, WorkflowFile, dry_run};
 use toml::{Table, Value};
 

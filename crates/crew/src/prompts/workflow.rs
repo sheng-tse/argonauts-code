@@ -7,8 +7,8 @@ pub const FIX_DESIGN: &str = argonauts_core::template!("prompts/workflow/fix-des
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::steps::design::{DesignInput, DesignOutput, DesignWorkflow};
-    use argonauts_core::steps::output_schema;
+    use argonauts_core::workflows::steps::design::{DesignInput, DesignOutput, DesignWorkflow};
+    use argonauts_core::workflows::steps::output_schema;
 
     use super::*;
 
@@ -105,7 +105,7 @@ mod tests {
             ["name", "description", "based_on", "why", "workflow"],
             "{schema:#}"
         );
-        let strict = argonauts_core::answer_format::strict(&schema);
+        let strict = argonauts_core::workflows::answer_format::strict(&schema);
         assert_eq!(
             required(&strict),
             [

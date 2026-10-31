@@ -5,7 +5,7 @@
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use super::{Air, CloudsIn, Planet, Sun};
-use crate::world::geo::Globe;
+use crate::base::draw::geo::Globe;
 use crate::world::map::fields::{Look, Rgb, in_rows};
 use crate::world::raster::Canvas;
 use crate::world::raster::noise::{mix, smooth};

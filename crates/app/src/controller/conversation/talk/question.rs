@@ -8,22 +8,22 @@ use std::path::{Path, PathBuf};
 
 use argonauts_core::NoteLevel;
 use argonauts_core::app::{AppEvent, ChoiceKind};
-use argonauts_core::events::approval::{AnswerAction, AnswerOption};
-use argonauts_core::layout::{project_files, user_files};
-use argonauts_core::names::{ChoiceId, ModelRef, RoleName, TurnId};
-use argonauts_core::prompt_files::{self, PROJECT_DIR, PromptDirs, RoleFileMode};
-use argonauts_core::prompt_parts::Readers;
-use argonauts_core::required::{self, RequiredStep};
+use argonauts_core::base::layout::{project_files, user_files};
+use argonauts_core::base::names::{ChoiceId, ModelRef, RoleName, TurnId};
+use argonauts_core::prompts::prompt_files::{self, PROJECT_DIR, PromptDirs, RoleFileMode};
+use argonauts_core::prompts::prompt_parts::Readers;
+use argonauts_core::runs::events::approval::{AnswerAction, AnswerOption};
 use argonauts_core::settings::SettingScope;
 use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::settings::limit::OnHit;
 use argonauts_core::settings::saving::SaveChangesTo;
+use argonauts_core::workflows::required::{self, RequiredStep};
 use unicode_width::UnicodeWidthStr;
 
 use super::form::{Place, Proposal, RoleChange};
 use super::{Call, ConversationState, fail};
-use crate::choices::{self, choose, option};
 use crate::controller::{Ctx, Effect, settings};
+use crate::setup::choices::{self, choose, option};
 
 /// A setup waiting on your pick, and the call waiting on the setup.
 pub(super) struct Open {

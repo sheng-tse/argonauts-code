@@ -1,7 +1,7 @@
 //! The `[crew]` table as people write it: `main` beside the four other roles, or one list for
 //! everyone.
 
-use argonauts_core::names::ModelRef;
+use argonauts_core::base::names::ModelRef;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::crew::{CrewRole, Orchestrator};
 use toml::{Table, Value};

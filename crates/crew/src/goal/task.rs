@@ -9,23 +9,25 @@
 //! other. Stuck, it changes approach once, then stops being sent round and says why.
 
 use argonauts_core::TaskId;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::goal::{
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::goal::{
     CliGoalSaid, Criterion, CriterionCheck, GoalChecked, GoalEvent, GoalRun, GoalStatus,
 };
-use argonauts_core::events::run::{Party, RunMode};
-use argonauts_core::events::session::InputPart;
-use argonauts_core::events::task::{CheckKind, CheckOutcome, TaskKind};
-use argonauts_core::goal::keep::{self, Limits, Next};
-use argonauts_core::goal::{GoalDefault, GoalFrom, GoalScope, GoalSpec, KeptBy, RoleGoal};
-use argonauts_core::names::{ModelRef, RoleName};
+use argonauts_core::runs::events::run::{Party, RunMode};
+use argonauts_core::runs::events::session::InputPart;
+use argonauts_core::runs::events::task::{CheckKind, CheckOutcome, TaskKind};
 use argonauts_core::settings::Settings;
-use argonauts_core::steps::task::{ReportStatus, TaskReport};
+use argonauts_core::workflows::goal::keep::{self, Limits, Next};
+use argonauts_core::workflows::goal::{
+    GoalDefault, GoalFrom, GoalScope, GoalSpec, KeptBy, RoleGoal,
+};
+use argonauts_core::workflows::steps::task::{ReportStatus, TaskReport};
 
+use crate::engine::error::EngineResult;
 use crate::engine::host::Host;
-use crate::error::EngineResult;
-use crate::labels;
 use crate::merge::final_check::FinalCheck;
+use crate::sessions::labels;
 use crate::state::RunState;
 use crate::state::tasks::TaskEntry;
 use crate::task::prompt;

@@ -4,21 +4,21 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use argonauts_core::api::TakeOverTicket;
+use argonauts_core::agents::cli_commands::CliCommandSet;
 use argonauts_core::app::{AnswerTarget, AppEvent, ConversationEvent, UiCommand, ViewRequest};
-use argonauts_core::cli_commands::CliCommandSet;
-use argonauts_core::events::session::SessionEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
 use argonauts_core::input::{ParsedInput, SlashCommand, parse_input_with};
+use argonauts_core::runs::api::TakeOverTicket;
+use argonauts_core::runs::events::session::SessionEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::ui::TakeOverWhere;
 use argonauts_core::{AgentEvent, KeyScheme, RunId, TaskId, Verbosity};
 
 use crate::UiOptions;
+use crate::bottom::menu::commands::help_sections;
 use crate::bridge::keys::shown_run;
-use crate::commands::help_sections;
-use crate::mentions::{Resolved, resolve_target};
+use crate::bridge::mentions::{Resolved, resolve_target};
+use crate::frame::state::AppState;
 use crate::runtime::{TakeOverPlan, plan_take_over, write_spec_files};
-use crate::state::AppState;
 use crate::views::waiting::{self, RunEntry};
 
 use super::agent::start_turned_down;

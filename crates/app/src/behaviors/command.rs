@@ -8,7 +8,7 @@ use std::str::FromStr;
 use anyhow::Context as _;
 use argonauts_core::Paths;
 use argonauts_core::behaviors::Behavior;
-use argonauts_core::display_names::DisplayNames;
+use argonauts_core::look::display_names::DisplayNames;
 use time::{Date, Duration, OffsetDateTime};
 use unicode_width::UnicodeWidthStr;
 
@@ -257,7 +257,7 @@ fn cut(text: &str, cells: usize) -> String {
 #[cfg(test)]
 mod tests {
     use argonauts_core::behaviors::Label;
-    use argonauts_core::crew_stats::StatsRole;
+    use argonauts_core::behaviors::crew_stats::StatsRole;
     use time::macros::datetime;
 
     use super::*;

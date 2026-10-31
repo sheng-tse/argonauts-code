@@ -8,29 +8,30 @@
 
 use argonauts_core::RunId;
 use argonauts_core::app::{SettingRow, UiCommand, ViewData, ViewRequest};
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::names::{ApprovalId, ModelRef, RoleName};
-use argonauts_core::policy::{ApprovalRow, ApprovalsView as ApprovalsData};
+use argonauts_core::base::names::{ApprovalId, ModelRef, RoleName};
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::safety::policy::{ApprovalRow, ApprovalsView as ApprovalsData};
 use argonauts_core::settings::approvals::DecideWith;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 
-use super::flow::{self, Asked};
+use super::flow;
 use super::models;
 use super::panel::{draw_editor, edit_key, edit_paste};
 use super::table::{Cells, Widths, cells_line, heading_line};
-use super::words::{capitalized, freshness, layer_words, row_value_words};
+use crate::base::draw::layout::cut;
+use crate::base::draw::panes::{self, Footer, Header, Side};
+use crate::base::text::words::{capitalized, freshness, layer_words, row_value_words};
+use crate::base::text::{sanitize_line, str_width, wrap_text};
+use crate::base::theme::{Role, Theme};
 use crate::bottom::Picker;
+use crate::bottom::picker::flow::Asked;
+use crate::frame::state::{AppState, DecisionRecord};
+use crate::frame::view::list;
+use crate::frame::view::{View, ViewCtx, ViewOutcome};
 use crate::questions::{joined, spot_check_evidence, spot_check_line};
-use crate::state::{AppState, DecisionRecord};
-use crate::text::{sanitize_line, str_width, wrap_text};
-use crate::theme::{Role, Theme};
-use crate::views::layout::cut;
-use crate::views::list;
-use crate::views::panes::{self, Footer, Header, Side};
-use crate::views::{View, ViewCtx, ViewOutcome};
 
 /// Where rows start, after the pointer.
 const INDENT: usize = 2;
@@ -897,13 +898,13 @@ mod tests {
     use std::time::Instant;
 
     use argonauts_core::app::ModelChoice;
-    use argonauts_core::limits::CostEstimate;
-    use argonauts_core::registry::ModelAccess;
+    use argonauts_core::models::limits::CostEstimate;
+    use argonauts_core::models::registry::ModelAccess;
     use argonauts_core::settings::SettingScope;
     use crossterm::event::KeyCode;
 
     use super::*;
-    use crate::state::AppState;
+    use crate::frame::state::AppState;
 
     fn row(key: &str, value: &str) -> SettingRow {
         SettingRow {
@@ -977,7 +978,7 @@ mod tests {
             now: Instant::now(),
         };
         view.render(area, &mut buf, &ctx);
-        crate::stability::buffer_text(&buf)
+        crate::base::stability::buffer_text(&buf)
     }
 
     fn editor_rows(view: &ApprovalsView) -> Vec<String> {
@@ -1400,7 +1401,7 @@ mod tests {
     /// settings check found shows under the heading, whole.
     #[test]
     fn the_switch_marks_what_it_overrides_and_names_what_still_waits() {
-        use argonauts_core::events::approval::ApprovalKind;
+        use argonauts_core::runs::events::approval::ApprovalKind;
         use argonauts_core::settings::approvals::ApprovalMode;
 
         let names = DisplayNames::default();

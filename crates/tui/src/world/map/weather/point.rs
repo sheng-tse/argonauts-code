@@ -6,11 +6,11 @@
 
 use super::tsunami::wave_bounds;
 use super::{Weather, hurricane, thunder};
+use crate::base::draw::scene::{Mark, Pointed, Shape};
 use crate::world::map::fields::{COARSE, Ground, HEIGHT, WIDTH};
 use crate::world::map::motion::Moment;
 use crate::world::map::nature::{Kind, Nature, Wave, scars};
 use crate::world::map::relief::FORESHORTEN;
-use crate::world::scene::{Mark, Pointed, Shape};
 use crate::world::wonders::Placed;
 
 /// The tier of what stands or flies, which answers just after a dot right under the pointer.

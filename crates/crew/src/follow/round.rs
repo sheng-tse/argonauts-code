@@ -10,20 +10,20 @@ use std::path::Path;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::run::RunOutcome;
-use argonauts_core::events::session::{EndReason, InputPartKind, SessionEnd};
-use argonauts_core::names::{ModelRef, RoleName, SessionKey};
-use argonauts_core::session_runner::Access;
-use argonauts_core::steps::judgment::{Review, ReviewOutput, ReviewVerdict};
-use argonauts_core::steps::last_json_object;
-use argonauts_core::steps::output_schema;
+use argonauts_core::agents::session_runner::Access;
+use argonauts_core::base::names::{ModelRef, RoleName, SessionKey};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::run::RunOutcome;
+use argonauts_core::runs::events::session::{EndReason, InputPartKind, SessionEnd};
+use argonauts_core::workflows::steps::judgment::{Review, ReviewOutput, ReviewVerdict};
+use argonauts_core::workflows::steps::last_json_object;
+use argonauts_core::workflows::steps::output_schema;
 use argonauts_core::{Note, NoteLevel, RunId, TaskId};
 
 use super::followed::{Due, Followed, Reply, Work};
 use super::watch::{self, ToAnswer};
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::{Fallbacks, Host, Ran, SessionPlan};
-use crate::error::{EngineError, EngineResult};
 use crate::review::diff_cut;
 use crate::state::RunState;
 use crate::task::support::part;
@@ -248,7 +248,7 @@ async fn work(
     if !protected.is_empty() {
         return Ok(Err(format!(
             "the fix changes {}, which only you may push",
-            argonauts_core::text::and_list(&protected)
+            argonauts_core::base::text::and_list(&protected)
         )));
     }
     let root = host.repo().root.clone();
@@ -306,7 +306,7 @@ fn prompt(number: u64, work: &Work) -> String {
 /// The task a round's work goes to: the one that changed the file a comment is on, else the
 /// first the run merged.
 fn task_of(state: &RunState, work: &Work) -> Option<TaskId> {
-    use argonauts_core::events::task::TaskState;
+    use argonauts_core::runs::events::task::TaskState;
     let merged: Vec<_> = state
         .tasks
         .by_id

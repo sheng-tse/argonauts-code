@@ -19,9 +19,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
-use argonauts_core::api::DiffScope;
-use argonauts_core::control::{ControlReply, ControlRequest, Frame};
-use argonauts_core::events::RunEvent;
+use argonauts_core::runs::api::DiffScope;
+use argonauts_core::runs::events::RunEvent;
 use argonauts_core::{Paths, RunId};
 use tokio::io::BufReader;
 use tokio::net::unix::OwnedWriteHalf;
@@ -36,9 +35,10 @@ use self::subscribe::subscription;
 use super::door::{Door, Turned};
 use super::log_views;
 use super::relay::{Entry, Receipt};
-use crate::ancestry::AgentMarkers;
-use crate::run_files::{socket_address, socket_path};
-use crate::wire::{read_frame, write_frame};
+use crate::control::wire::{read_frame, write_frame};
+use crate::control::{ControlReply, ControlRequest, Frame};
+use crate::host::run_files::{socket_address, socket_path};
+use crate::startup::ancestry::AgentMarkers;
 
 /// Replies and events waiting to go out on one connection.
 const OUTGOING: usize = 256;

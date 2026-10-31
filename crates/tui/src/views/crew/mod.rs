@@ -12,25 +12,25 @@ mod tests;
 use std::time::{Duration, Instant};
 
 use argonauts_core::RunId;
-use argonauts_core::agent_panel::{AgentPanelRows, CrewRow, CrewState, CrewTab, CrewTarget};
+use argonauts_core::app::agent_panel::{AgentPanelRows, CrewRow, CrewState, CrewTab, CrewTarget};
 use argonauts_core::app::{AnswerTarget, UiCommand, ViewRequest};
+use argonauts_core::base::names::SessionKey;
 use argonauts_core::input::{ResumeTarget, SlashCommand};
-use argonauts_core::names::SessionKey;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 
-use crate::format::WallClock;
-use crate::state::{AppState, SessionStatus};
-use crate::text::marks;
-use crate::theme::{Role, Theme};
+use crate::base::format::WallClock;
+use crate::base::text::marks;
+use crate::base::theme::{Role, Theme};
+use crate::frame::state::{AppState, SessionStatus};
 
 use self::draw::BodyLine;
-use super::list::{self, ListState};
-use super::panes::{self, Footer};
+use super::super::base::draw::panes::{self, Footer};
+use super::super::frame::view::list::{self, ListState};
 use super::session::SessionView;
-use super::{View, ViewCtx, ViewOutcome};
+use crate::frame::view::{View, ViewCtx, ViewOutcome};
 
 /// From this width the details sit beside the list, as in Codex.
 pub const DETAILS_BESIDE: u16 = 120;

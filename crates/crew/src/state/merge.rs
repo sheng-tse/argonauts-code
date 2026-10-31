@@ -4,9 +4,9 @@
 use serde::{Deserialize, Serialize};
 
 use argonauts_core::TaskId;
-use argonauts_core::events::RunEvent;
-use argonauts_core::events::task::MergeEvent;
-use argonauts_core::names::ModelRef;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::runs::events::RunEvent;
+use argonauts_core::runs::events::task::MergeEvent;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct MergeState {
@@ -141,7 +141,7 @@ impl MergeState {
 mod tests {
     use super::*;
     use argonauts_core::RunId;
-    use argonauts_core::events::RunEventKind;
+    use argonauts_core::runs::events::RunEventKind;
     use time::macros::datetime;
 
     fn envelope(event: &MergeEvent) -> RunEvent {

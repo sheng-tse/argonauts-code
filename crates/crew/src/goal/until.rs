@@ -21,15 +21,19 @@
 use std::path::Path;
 
 use argonauts_core::TaskId;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::goal::{GoalChecked, GoalEvent, GoalRun, GoalStatus, GoalVerdict};
-use argonauts_core::events::run::{Party, RunMode};
-use argonauts_core::goal::keep::{self, Limits, Next};
-use argonauts_core::goal::{CheckMeans, CheckWith, GoalDefault, GoalFrom, GoalSpec, RoleGoal};
-use argonauts_core::names::RoleName;
+use argonauts_core::base::names::RoleName;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::goal::{
+    GoalChecked, GoalEvent, GoalRun, GoalStatus, GoalVerdict,
+};
+use argonauts_core::runs::events::run::{Party, RunMode};
+use argonauts_core::workflows::goal::keep::{self, Limits, Next};
+use argonauts_core::workflows::goal::{
+    CheckMeans, CheckWith, GoalDefault, GoalFrom, GoalSpec, RoleGoal,
+};
 
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::Host;
-use crate::error::{EngineError, EngineResult};
 use crate::merge::final_check::run_base;
 use crate::workflow::{StepAt, runner};
 
@@ -433,7 +437,7 @@ fn commands_in_file(host: &Host, condition: &str) -> Vec<String> {
         .map(|dir| dir.join(format!("{name}.toml")))
         .filter(|path| !waiting.contains(path))
         .find_map(|path| std::fs::read_to_string(path).ok())
-        .map(|file| argonauts_core::goal::checks_beside(&file, condition))
+        .map(|file| argonauts_core::workflows::goal::checks_beside(&file, condition))
         .unwrap_or_default()
 }
 

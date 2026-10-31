@@ -2,18 +2,18 @@
 //! picks from another maker than the worker whenever one is set up.
 
 use argonauts_core::TaskId;
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::council::{CheckRung, Seat};
-use argonauts_core::events::task::{TaskSpec, Way};
-use argonauts_core::names::{ModelRef, RoleName};
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::events::council::{CheckRung, Seat};
+use argonauts_core::runs::events::task::{TaskSpec, Way};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::council::SameModelCheck;
 use argonauts_core::settings::crew::CrewRole;
 
 use super::{PickedBy, Setup, TaskStep};
 use crate::council::{checks, seats};
+use crate::engine::error::EngineResult;
 use crate::engine::host::Host;
-use crate::error::EngineResult;
 use crate::roles::{self, display_name};
 use crate::task::support::record_of;
 
@@ -187,8 +187,8 @@ pub fn asks_first(settings: &Settings) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::events::council::SeatRole;
-    use argonauts_core::names::SeatId;
+    use argonauts_core::base::names::SeatId;
+    use argonauts_core::runs::events::council::SeatRole;
 
     fn model(text: &str) -> ModelRef {
         text.parse().unwrap()

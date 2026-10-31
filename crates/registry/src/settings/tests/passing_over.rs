@@ -1,7 +1,7 @@
 //! As the app reads the files at start: a key that can't be used is left out with a warning
 //! that names it, and the rest of the file still applies.
 
-use argonauts_core::names::RoleName;
+use argonauts_core::base::names::RoleName;
 
 use super::*;
 use crate::{SettingsWarning, resolve};
@@ -287,7 +287,7 @@ fn a_switch_written_as_its_default_is_known() {
             .iter()
             .any(|entry| entry.key == "crew.worker_workflows")
     );
-    let catalog = crate::catalog::settings_catalog();
+    let catalog = crate::settings::catalog::settings_catalog();
     for key in ["crew.worker_workflows", "roles.*.shell"] {
         assert!(catalog.iter().any(|meta| meta.key == key), "{key}");
     }

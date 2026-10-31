@@ -3,14 +3,14 @@
 //! through a workflow, whose tries the step after them picks among. A script's writer and the
 //! build step of a workflow's phases both start a task's first turn here.
 
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::task::{TaskEvent, TaskSpec, TaskState, Way};
-use argonauts_core::{Note, NoteLevel, TaskId, labels};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::task::{TaskEvent, TaskSpec, TaskState, Way};
+use argonauts_core::{Note, NoteLevel, TaskId, look::labels};
 
 use super::{checker, tries};
 use crate::council::ways::{self, TaskStep};
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::Host;
-use crate::error::{EngineError, EngineResult};
 use crate::merge::branch::task_branch;
 use crate::review::{self, Verdict, with_findings};
 use crate::state::RunState;
@@ -255,7 +255,7 @@ async fn with_agents(
             let title = record_of(host, part)?.spec.title;
             return Ok(Err(format!(
                 "the agent on {title} stopped before its checks passed: it is {}",
-                argonauts_core::text::state_words(&format!("{state:?}").to_lowercase())
+                argonauts_core::base::text::state_words(&format!("{state:?}").to_lowercase())
             )));
         }
     }
@@ -481,7 +481,7 @@ mod tests {
             id: TaskId::numbered(1),
             title: "Both".to_owned(),
             task: "Write both.".to_owned(),
-            kind: argonauts_core::events::task::TaskKind::Build,
+            kind: argonauts_core::runs::events::task::TaskKind::Build,
             owned_paths: paths(&["a.rs", "b.rs"]),
             read_only_paths: Vec::new(),
             forbidden_paths: Vec::new(),
@@ -493,7 +493,7 @@ mod tests {
             limit: Default::default(),
             predictions: None,
             item: None,
-            way: Some(argonauts_core::events::task::TaskWay {
+            way: Some(argonauts_core::runs::events::task::TaskWay {
                 how: Way::Agents { count: 2 },
                 asked_by_you: false,
                 steps: None,
@@ -517,7 +517,7 @@ mod tests {
             id: TaskId::numbered(1),
             title: "Both".to_owned(),
             task: first_part_brief("Write both.", &parts),
-            kind: argonauts_core::events::task::TaskKind::Build,
+            kind: argonauts_core::runs::events::task::TaskKind::Build,
             owned_paths: paths(&["a.rs", "b.rs"]),
             read_only_paths: Vec::new(),
             forbidden_paths: Vec::new(),

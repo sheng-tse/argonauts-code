@@ -6,24 +6,24 @@ use std::fmt::Write as _;
 use std::path::{Component, Path};
 
 use argonauts_core::TaskId;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::agent_status::FallbackEvent;
-use argonauts_core::events::approval::ApprovalKind;
-use argonauts_core::events::goal::GoalFile;
-use argonauts_core::events::plan::DesignDecision;
-use argonauts_core::events::session::{InputPart, InputPartKind};
-use argonauts_core::events::task::{TaskKind, TaskSpec, TryCause};
-use argonauts_core::hash::sha256_hex;
-use argonauts_core::layout;
-use argonauts_core::limits::FallbackNote;
-use argonauts_core::names::{ModelRef, RoleName};
-use argonauts_core::paths::{create_private_dir_all, write_private_file};
+use argonauts_core::base::hash::sha256_hex;
+use argonauts_core::base::layout;
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::base::paths::{create_private_dir_all, write_private_file};
+use argonauts_core::models::limits::FallbackNote;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::agent_status::FallbackEvent;
+use argonauts_core::runs::events::approval::ApprovalKind;
+use argonauts_core::runs::events::goal::GoalFile;
+use argonauts_core::runs::events::plan::DesignDecision;
+use argonauts_core::runs::events::session::{InputPart, InputPartKind};
+use argonauts_core::runs::events::task::{TaskKind, TaskSpec, TryCause};
 use argonauts_core::settings::Settings;
-use argonauts_core::steps::StepName;
+use argonauts_core::workflows::steps::StepName;
 
 use crate::approvals::autopilot;
+use crate::engine::error::EngineResult;
 use crate::engine::host::Host;
-use crate::error::EngineResult;
 use crate::fallback::context;
 use crate::prompts;
 use crate::prompts::instructions::Agent;
@@ -396,7 +396,7 @@ fn list(text: &mut String, title: &str, items: &[String]) {
 }
 
 /// Whether the worker's session runner serves the status tool.
-pub(crate) fn has_status_tool(host: &Host, worker: &argonauts_core::names::ModelRef) -> bool {
+pub(crate) fn has_status_tool(host: &Host, worker: &argonauts_core::base::names::ModelRef) -> bool {
     host.services()
         .workers
         .get(worker)
@@ -407,7 +407,7 @@ pub(crate) fn has_status_tool(host: &Host, worker: &argonauts_core::names::Model
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::task_spec;
+    use crate::testing::task_spec;
 
     #[test]
     fn the_task_part_lists_paths_and_dependencies() {

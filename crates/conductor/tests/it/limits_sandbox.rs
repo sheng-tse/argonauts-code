@@ -13,17 +13,17 @@ use std::time::Duration;
 
 use argonauts_conductor::cli_runner::CliRunner;
 use argonauts_conductor::sandbox::{ProfileInput, SandboxWrap, session_profile};
-use argonauts_core::layout::{self, run_files, session_files};
-use argonauts_core::names::{ModelRef, SessionKey};
-use argonauts_core::session_runner::{Access, SandboxProfile, SessionRunner};
+use argonauts_core::agents::session_runner::{Access, SandboxProfile, SessionRunner};
+use argonauts_core::base::layout::{self, run_files, session_files};
+use argonauts_core::base::names::{ModelRef, SessionKey};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::SandboxChoice;
 use argonauts_core::{
     Adapter, AgentEvent, CommandSpec, Paths, RepoId, RunId, SessionRequest, SpecFile, StopPlan,
     StreamParser, TaskId,
 };
-use argonauts_testkit::runner::{drain, session_spec};
-use argonauts_testkit::services::{MemoryHealthBoard, MemoryPlanUsageBoard};
+use argonauts_testkit::engine::runner::{drain, session_spec};
+use argonauts_testkit::engine::services::{MemoryHealthBoard, MemoryPlanUsageBoard};
 
 /// `$1` is the results file. Then each check is three arguments: `read` or `write`, a name,
 /// and a path. Each check adds `<name>=ok` or `<name>=blocked` to the results.

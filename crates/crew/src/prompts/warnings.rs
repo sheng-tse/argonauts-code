@@ -5,11 +5,11 @@
 
 use std::sync::{Mutex, PoisonError};
 
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::names::{ModelRef, RoleName};
-use argonauts_core::prompt_files::{self, PromptDirs, ROLES_DIR, RoleFile};
-use argonauts_core::prompt_parts::Readers;
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::prompts::prompt_files::{self, PromptDirs, ROLES_DIR, RoleFile};
+use argonauts_core::prompts::prompt_parts::Readers;
+use argonauts_core::runs::events::RunEventKind;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::{Note, NoteLevel};

@@ -6,7 +6,7 @@ mod shell;
 mod test_edits;
 
 use argonauts_core::behaviors::{Behavior, Label};
-use argonauts_core::patch_files::patched_files;
+use argonauts_core::runs::patch_files::patched_files;
 use serde_json::Value;
 
 pub(crate) use files::{FileRole, path_of};

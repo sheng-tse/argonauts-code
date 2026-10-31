@@ -1,31 +1,33 @@
 //! The live region's own rows as the status sync builds them from the app state.
 
 use crate::common;
+use argonauts_core::app::views::ContextUse;
 use argonauts_core::app::{AppEvent, AppMode, HeaderAndBottomLine, LineFacts, PlanUsageChip};
-use argonauts_core::events::agent_status::RunSpend;
-use argonauts_core::events::approval::{
+use argonauts_core::base::names::{AgentId, ApprovalId, ModelRef, RoleName, SessionKey, TurnId};
+use argonauts_core::models::limits::{
+    HealthState, PlanUsageReading, PlanUsageSource, PlanUsageStatus,
+};
+use argonauts_core::runs::events::agent_status::RunSpend;
+use argonauts_core::runs::events::approval::{
     ApprovalKind, ApprovalOpened, ApprovalPacket, FreeText, QuestionPacket,
 };
-use argonauts_core::events::run::{RunMode, RunPhase};
-use argonauts_core::events::task::TaskState;
-use argonauts_core::limits::{HealthState, PlanUsageReading, PlanUsageSource, PlanUsageStatus};
-use argonauts_core::names::{AgentId, ApprovalId, ModelRef, RoleName, SessionKey, TurnId};
-use argonauts_core::policy::{NarratorLine, NarratorLineKind, NarratorStatus};
+use argonauts_core::runs::events::run::{RunMode, RunPhase};
+use argonauts_core::runs::events::task::TaskState;
+use argonauts_core::safety::policy::{NarratorLine, NarratorLineKind, NarratorStatus};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 use argonauts_core::settings::asking::WhenDeclined;
 use argonauts_core::settings::bottom_line::{BottomLineSettings, PlanUsageShow};
 use argonauts_core::settings::limit::{LimitAmount, LimitUnit};
 use argonauts_core::settings::ui::{NarratorMode, Theme as ThemeChoice, UiSettings};
-use argonauts_core::views::ContextUse;
 use argonauts_core::{KeyScheme, RunId, Spend, TaskId};
+use argonauts_tui::app::model::{ViewModel, VimMode};
+use argonauts_tui::base::kit::Level;
+use argonauts_tui::base::stability;
+use argonauts_tui::base::theme::{ColorEnv, Role};
 use argonauts_tui::bottom::{LinePart, ModeState, PartBody};
 use argonauts_tui::bridge::settings::theme_for;
 use argonauts_tui::bridge::{Cx, Effects, status};
-use argonauts_tui::kit::Level;
-use argonauts_tui::model::{ViewModel, VimMode};
-use argonauts_tui::stability;
-use argonauts_tui::state::{AppState, Doing, OpenApproval, RunState, SessionState, TaskRow};
-use argonauts_tui::theme::{ColorEnv, Role};
+use argonauts_tui::frame::state::{AppState, Doing, OpenApproval, RunState, SessionState, TaskRow};
 use common::{at, ctx, fg, style_of, styled, text, theme};
 use ratatui::text::{Line, Span};
 use time::macros::datetime;
@@ -49,7 +51,7 @@ fn session(n: u32, who: ModelRef, tokens_out: u64) -> SessionState {
     let mut session =
         SessionState::new(SessionKey::numbered(n), who, agent_id, RoleName::Worker, T0);
     session.follow = Some(n as u8);
-    session.status = argonauts_tui::state::SessionStatus::Working;
+    session.status = argonauts_tui::frame::state::SessionStatus::Working;
     session.tokens_out = tokens_out;
     session
 }
@@ -170,7 +172,11 @@ fn synced(state: &AppState, ui: &UiSettings, seconds: f64) -> ViewModel {
 }
 
 /// The bottom line as the sync set it up, with the mode at its left.
-fn bottom_row(model: &ViewModel, theme: &argonauts_tui::theme::Theme, width: u16) -> Line<'static> {
+fn bottom_row(
+    model: &ViewModel,
+    theme: &argonauts_tui::base::theme::Theme,
+    width: u16,
+) -> Line<'static> {
     let state = ModeState {
         line: Some(&model.bottom.line),
         ..ModeState::default()
@@ -711,7 +717,7 @@ fn the_working_line_steps_aside_while_the_run_waits_on_you() {
     // not.
     let run = state.runs.get_mut(&run_id(1)).unwrap();
     for session in run.sessions.values_mut() {
-        session.status = argonauts_tui::state::SessionStatus::Done;
+        session.status = argonauts_tui::frame::state::SessionStatus::Done;
     }
     task_state(&mut state, "task-003", TaskState::Blocked);
     task_state(&mut state, "task-004", TaskState::Merged);
@@ -752,11 +758,11 @@ impl CloneModel for ViewModel {
 
 #[test]
 fn sync_fills_the_rest_and_keeps_what_the_screen_changed() {
-    use argonauts_core::events::run::Party;
-    use argonauts_core::events::session::{Delivery, QueuedMessage};
+    use argonauts_core::base::names::MessageId;
     use argonauts_core::input::MentionTarget;
-    use argonauts_core::names::MessageId;
-    use argonauts_tui::model::ApprovalMode as ScreenMode;
+    use argonauts_core::runs::events::run::Party;
+    use argonauts_core::runs::events::session::{Delivery, QueuedMessage};
+    use argonauts_tui::app::model::ApprovalMode as ScreenMode;
 
     let ui = UiSettings::default();
     let mut state = crew();
@@ -803,7 +809,7 @@ fn sync_fills_the_rest_and_keeps_what_the_screen_changed() {
     // working.
     let run = state.runs.get_mut(&run_id(1)).unwrap();
     run.mode = Some(RunMode::Captain);
-    run.finished = Some(argonauts_core::events::run::RunOutcome::Merged);
+    run.finished = Some(argonauts_core::runs::events::run::RunOutcome::Merged);
     sync(&mut model, &state, &ui, NOW + 3.0);
     assert_eq!(model.bottom.composer.label.as_deref(), Some("council"));
     assert!(model.bottom.working.is_none());
@@ -816,8 +822,8 @@ fn sync_fills_the_rest_and_keeps_what_the_screen_changed() {
 #[test]
 fn the_working_line_steps_aside_while_the_cli_asks_you() {
     use argonauts_core::app::{AppChoice, ChoiceKind, ConversationEvent};
-    use argonauts_core::events::approval::FreeText;
-    use argonauts_core::names::ChoiceId;
+    use argonauts_core::base::names::ChoiceId;
+    use argonauts_core::runs::events::approval::FreeText;
 
     let ui = UiSettings::default();
     let mut state = AppState::default();

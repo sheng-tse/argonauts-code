@@ -7,15 +7,15 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use argonauts_core::layout::project_files::WORKFLOWS;
-use argonauts_core::workflow::Workflow;
+use argonauts_core::base::layout::project_files::WORKFLOWS;
+use argonauts_core::workflows::workflow::Workflow;
 
 use super::keys::{CHECKLIST_KEY, WORKFLOW_KEY, class_for_key, flatten};
 use super::{
     Change, ChangeClass, LearnedWorkflow, LoadedLearnedWorkflow, graph, is_workflow_file,
     learned_workflow_dir, loops,
 };
-use crate::error::{LearningError, Result};
+use crate::store::error::{LearningError, Result};
 
 /// Every difference between `parent` and `child`: settings key by key, prompt files by
 /// content, and the workflow step by step. The mutation rules allow exactly one.

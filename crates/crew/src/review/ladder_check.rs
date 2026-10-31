@@ -7,17 +7,17 @@
 use std::path::{Path, PathBuf};
 use std::slice;
 
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::council::{CheckPick, CouncilEvent, CouncilEventKind};
-use argonauts_core::events::session::{InputPart, InputPartKind};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::council::{CheckPick, CouncilEvent, CouncilEventKind};
+use argonauts_core::runs::events::session::{InputPart, InputPartKind};
 use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::{Note, NoteLevel, TaskId};
 
 use super::{Reader, Verdict, review_in};
 use crate::council::seats;
 use crate::council::ways::{self, Checker};
+use crate::engine::error::EngineResult;
 use crate::engine::host::Host;
-use crate::error::EngineResult;
 use crate::plan::context::part;
 
 /// Who checks `task` in a run where a council talked, by the ladder. `None` in any other
@@ -94,8 +94,10 @@ async fn nameless_copy(host: &Host, task: &TaskId) -> EngineResult<Option<PathBu
 
 /// The council's frame, after the reviewers' own that the prompt opens with.
 pub(super) fn council_frame() -> InputPart {
-    let text =
-        argonauts_core::prompt_files::in_use("council/check", crate::prompts::council::CHECK);
+    let text = argonauts_core::prompts::prompt_files::in_use(
+        "council/check",
+        crate::prompts::council::CHECK,
+    );
     part(InputPartKind::Instructions, "The council's check", text)
 }
 

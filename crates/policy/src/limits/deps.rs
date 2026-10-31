@@ -8,7 +8,7 @@
 
 use std::collections::BTreeSet;
 
-use argonauts_core::policy::{HardLimit, Violation};
+use argonauts_core::safety::policy::{HardLimit, Violation};
 use argonauts_core::settings::Settings;
 
 use super::diff::{

@@ -3,16 +3,16 @@
 //! branch without asking, unless it touches a protected path. Replies post as you, so a round
 //! only keeps them for you to see first.
 
-use argonauts_core::engine::EngineExit;
-use argonauts_core::events::run::RunOutcome;
-use argonauts_core::events::session::SessionEvent;
-use argonauts_core::events::task::MergeEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::session_runner::SessionSpec;
+use argonauts_core::agents::session_runner::SessionSpec;
+use argonauts_core::runs::engine::EngineExit;
+use argonauts_core::runs::events::run::RunOutcome;
+use argonauts_core::runs::events::session::SessionEvent;
+use argonauts_core::runs::events::task::MergeEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_crew::follow::watch::ToAnswer;
 use argonauts_crew::follow::{Due, Followed, Reply, Work, draft};
 use argonauts_testkit::FakeSession;
-use argonauts_testkit::fake_gh::GhPost;
+use argonauts_testkit::fake_clis::fake_gh::GhPost;
 use serde_json::json;
 
 use crate::issue_draft::{BRANCH, OnAnIssue, answering_the_draft, ended_as, on_an_issue};

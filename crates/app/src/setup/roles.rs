@@ -3,12 +3,12 @@
 //! back to the list. The orchestrator's question ends with the same model question.
 
 use argonauts_core::app::ChoiceKind;
-use argonauts_core::model_catalog::display_name_from_id;
-use argonauts_core::names::ModelRef;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::models::model_catalog::display_name_from_id;
 
 use super::questions::{Question, SetupView, agent_answers, described, kept_or_new};
 use super::steps::{Answers, ORCHESTRATOR};
-use crate::choices::{InitAnswer, init_options};
+use crate::setup::choices::{InitAnswer, init_options};
 
 /// Keeps every role, or one role, as it is.
 pub(crate) const KEEP: &str = "keep";
@@ -242,7 +242,7 @@ pub(crate) fn toml_value(key: &str, worker: &ModelRef) -> String {
 #[cfg(test)]
 mod tests {
     use argonauts_conductor::AgentStatus;
-    use argonauts_core::adapter::SetupHints;
+    use argonauts_core::agents::adapter::SetupHints;
 
     use super::*;
     use crate::setup::probe::{FoundAgent, LoginState};

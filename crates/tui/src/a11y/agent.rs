@@ -1,15 +1,15 @@
 //! What one agent event says: its messages, each tool call and what came of it, errors, and
 //! retries. Streamed text is left to [`super::Reader`], which speaks it a line at a time.
 
-use argonauts_core::steps::summary_line;
+use argonauts_core::workflows::steps::summary_line;
 use argonauts_core::{AgentEvent, ErrorCategory, TodoItem, Verbosity};
 use serde_json::Value;
 
+use crate::base::text::sanitize_line;
 use crate::bridge::tools::{finish_call, is_own, is_tool_lookup, start_call};
 use crate::bridge::transcript::own_calls::{Own, turned_down};
-use crate::cell::{PhaseLine, ToolItem, ToolTitle, WorkflowEnd, WorkflowResult};
-use crate::state::AppState;
-use crate::text::sanitize_line;
+use crate::cells::cell::{PhaseLine, ToolItem, ToolTitle, WorkflowEnd, WorkflowResult};
+use crate::frame::state::AppState;
 
 use super::words::{duration, first_lines, labeled, more_lines, shows, tokens, word};
 

@@ -1,25 +1,27 @@
 use crate::common;
-use argonauts_core::app::{UiCommand, ViewData, ViewRequest};
-use argonauts_core::events::session::{SubagentKind, SubagentStatus, SubagentUpdate};
-use argonauts_core::fallback::QualityDebt;
-use argonauts_core::names::{ModelRef, RoleName, SessionKey, WorkflowId};
-use argonauts_core::settings::ui::{CliInternals, UiSettings};
-use argonauts_core::views::{
+use argonauts_core::app::views::{
     ActivityLine, AgentRow, AgentView as AgentData, ContextUse, NestedWorkflowRow, PhaseCount,
     PhaseRow, RowStatus, SubagentsSection, WorkflowRow, WorkflowView as WorkflowData,
 };
-use argonauts_core::workflow::StandardPhase;
+use argonauts_core::app::{UiCommand, ViewData, ViewRequest};
+use argonauts_core::base::names::{ModelRef, RoleName, SessionKey, WorkflowId};
+use argonauts_core::runs::events::session::{SubagentKind, SubagentStatus, SubagentUpdate};
+use argonauts_core::runs::fallback::QualityDebt;
+use argonauts_core::settings::ui::{CliInternals, UiSettings};
+use argonauts_core::workflows::workflow::StandardPhase;
 use argonauts_core::{DiffStat, RunId, Spend, TaskId};
+use argonauts_tui::app::model::ViewModel;
+use argonauts_tui::base::draw::render::{Clock, RenderCtx};
+use argonauts_tui::base::stability::{WIDTHS, assert_frames, assert_lines, buffer_text, samples};
+use argonauts_tui::base::theme::{Role, Theme};
 use argonauts_tui::bottom::{AgentPanel, WorkflowPanel, WorkflowRowState, panel_lines};
 use argonauts_tui::bridge::{Cx, Effects, panel};
-use argonauts_tui::model::ViewModel;
-use argonauts_tui::render::{Clock, RenderCtx};
-use argonauts_tui::stability::{WIDTHS, assert_frames, assert_lines, buffer_text, samples};
-use argonauts_tui::state::{AppState, Doing, RunState, SessionState, SessionStatus, TaskRow};
-use argonauts_tui::theme::{Role, Theme};
+use argonauts_tui::frame::state::{
+    AppState, Doing, RunState, SessionState, SessionStatus, TaskRow,
+};
+use argonauts_tui::frame::view::{View, ViewCtx, ViewOutcome};
 use argonauts_tui::views::agent::AgentView;
 use argonauts_tui::views::workflow::WorkflowView;
-use argonauts_tui::views::{View, ViewCtx, ViewOutcome};
 use common::{t0, theme};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
@@ -1264,8 +1266,8 @@ fn crew_state(wall: OffsetDateTime) -> AppState {
     for (index, mut session) in [done, claude, codex].into_iter().enumerate() {
         // The workflow ran them, a drafting agent in its first phase and the workers in its second,
         // so they're the run's agents.
-        session.workflow_step = Some(argonauts_core::workflow::StepRef {
-            workflow: argonauts_core::names::WorkflowId::numbered(1),
+        session.workflow_step = Some(argonauts_core::workflows::workflow::StepRef {
+            workflow: argonauts_core::base::names::WorkflowId::numbered(1),
             phase: u32::from(index > 0),
             path: vec![0],
         });
@@ -1544,7 +1546,7 @@ fn debt_markers_on_rows() {
 fn a_published_page_marks_its_agents_row() {
     use argonauts_core::AgentEvent;
     use argonauts_core::app::AppEvent;
-    use argonauts_core::events::{RunEvent, RunEventKind};
+    use argonauts_core::runs::events::{RunEvent, RunEventKind};
 
     let wall = OffsetDateTime::now_utc();
     let mut state = crew_state(wall);
@@ -1795,8 +1797,8 @@ fn workflow_frames_at_every_width() {
     assert_eq!(column(&before, "Phases"), column(&after, "Phases"));
 }
 
-fn library_files() -> Vec<argonauts_core::views::WorkflowFile> {
-    use argonauts_core::views::{WorkflowFile, WorkflowOrigin};
+fn library_files() -> Vec<argonauts_core::app::views::WorkflowFile> {
+    use argonauts_core::app::views::{WorkflowFile, WorkflowOrigin};
     let file = |name: &str, origin, source: &str, edited, in_use| WorkflowFile {
         name: name.to_owned(),
         origin,
@@ -1951,7 +1953,7 @@ fn a_run_before_its_workflow() {
         insta::assert_snapshot!(format!("run_waiting_{width}"), text);
 
         let mut main_agent = argonauts_tui::views::session::SessionView::new(run(), key("s-002"));
-        main_agent.clock = argonauts_tui::format::WallClock::pinned(at);
+        main_agent.clock = argonauts_tui::base::format::WallClock::pinned(at);
         let text = screen(&mut main_agent, width, height, &designing);
         let header = text.lines().next().unwrap_or_default();
         assert!(

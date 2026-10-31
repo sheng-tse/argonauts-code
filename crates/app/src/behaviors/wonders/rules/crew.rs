@@ -3,9 +3,9 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 
-use argonauts_core::behavior_world::Wonder;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::behaviors::behavior_world::Wonder;
 use argonauts_core::behaviors::{Behavior, Label};
-use argonauts_core::names::ModelRef;
 use time::{Duration, OffsetDateTime};
 
 use super::{About, Found, Records};

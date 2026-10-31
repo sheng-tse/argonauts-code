@@ -1,7 +1,7 @@
 //! The confirm built here before `t` takes over a task. It opens with the keys, and Esc cancels
 //! with nothing sent.
 
-use argonauts_core::events::approval::{AnswerAction, AnswerOption};
+use argonauts_core::runs::events::approval::{AnswerAction, AnswerOption};
 use argonauts_core::{RunId, TaskId};
 
 use super::options::answer;

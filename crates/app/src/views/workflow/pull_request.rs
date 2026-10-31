@@ -3,15 +3,15 @@
 //! what to fix, and its reviewer (`review:…`) looks again before the fix is pushed. Plain steps,
 //! such as reading the checks or pushing, are no rows: only agents are.
 
-use argonauts_core::events::session::{EndReason, SessionEvent};
-use argonauts_core::events::task::MergeEvent;
-use argonauts_core::events::{RunEvent, RunEventKind, RunLifecycle};
-use argonauts_core::names::{ModelRef, RoleName, SessionKey};
-use argonauts_core::views::{
+use argonauts_core::app::views::{
     AgentRow, PhaseCount, PhaseRow, RowNote, RowStatus, StatusKind, StatusLine, Tone, WorkflowRow,
     WorkflowView,
 };
-use argonauts_core::workflow::StandardPhase;
+use argonauts_core::base::names::{ModelRef, RoleName, SessionKey};
+use argonauts_core::runs::events::session::{EndReason, SessionEvent};
+use argonauts_core::runs::events::task::MergeEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind, RunLifecycle};
+use argonauts_core::workflows::workflow::StandardPhase;
 use argonauts_core::{Spend, TaskId};
 use argonauts_crew::follow::Followed;
 use std::path::Path;
@@ -216,7 +216,7 @@ fn at_work(label: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::session::SessionStarted;
+    use argonauts_core::runs::events::session::SessionStarted;
     use time::macros::datetime;
 
     use super::*;
@@ -276,7 +276,7 @@ mod tests {
         event(
             None,
             RunEventKind::Run(RunLifecycle::Finished {
-                outcome: argonauts_core::events::run::RunOutcome::PullRequest,
+                outcome: argonauts_core::runs::events::run::RunOutcome::PullRequest,
                 detail: None,
             }),
         )
@@ -318,7 +318,7 @@ mod tests {
     }
 
     fn ended(session: u32, reason: EndReason) -> RunEvent {
-        let end = argonauts_testkit::runner::session_end(reason, None, None);
+        let end = argonauts_testkit::engine::runner::session_end(reason, None, None);
         event(
             Some(session),
             RunEventKind::Session(SessionEvent::Ended(Box::new(end))),
@@ -331,8 +331,8 @@ mod tests {
     #[test]
     fn a_followed_pull_request_heads_its_run() {
         use argonauts_conductor::gh::RepoName;
-        use argonauts_core::names::WorkflowId;
-        use argonauts_core::views::WorkflowState;
+        use argonauts_core::app::views::WorkflowState;
+        use argonauts_core::base::names::WorkflowId;
         use argonauts_crew::follow::Heading;
 
         let state = tempfile::tempdir().unwrap();

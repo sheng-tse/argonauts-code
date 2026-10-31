@@ -9,7 +9,7 @@ use std::process::{Command, Output, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use argonauts_testkit::scenario::FakeScenario;
+use argonauts_testkit::fake_clis::scenario::FakeScenario;
 use argonauts_testkit::{FakeClis, Key, Pty, PtyCommand, TempRepo};
 
 /// A question drops the keys pressed in its first moment, so a test that answers one right away

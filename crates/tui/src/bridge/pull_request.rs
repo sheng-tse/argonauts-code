@@ -2,8 +2,8 @@
 //! footer does, such as `PR #12`.
 
 use argonauts_core::app::AppEvent;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::task::MergeEvent;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::task::MergeEvent;
 
 use super::Cx;
 

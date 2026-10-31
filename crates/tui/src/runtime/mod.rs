@@ -18,17 +18,17 @@ use ratatui::layout::Position;
 use tokio::sync::mpsc;
 
 use crate::UiOptions;
-use crate::format::WallClock;
-use crate::kit::logo;
-use crate::mascot::{Graphics, placeholder};
-use crate::state::TerminalInfo;
+use crate::base::format::WallClock;
+use crate::base::kit::logo;
+use crate::base::mascot::{Graphics, placeholder};
+use crate::base::text::set_ambiguous_width;
+use crate::base::theme::ColorEnv;
+use crate::frame::state::TerminalInfo;
 use crate::terminal::InlineTerminal;
 use crate::terminal::setup::{
     TerminalModes, install_panic_hook, probe_background, probe_cell_size, probe_cursor,
     probe_graphics, probe_pixel_mouse,
 };
-use crate::text::set_ambiguous_width;
-use crate::theme::ColorEnv;
 
 pub use editor::{EditorError, edit_in_editor, edit_with, editor_command};
 pub use gone::TerminalGone;

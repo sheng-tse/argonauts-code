@@ -1,5 +1,5 @@
-use argonauts_core::events::run::{CheckedInstruction, InstructionOutcome};
-use argonauts_core::model_catalog::{CatalogEntry, ModelCatalog};
+use argonauts_core::models::model_catalog::{CatalogEntry, ModelCatalog};
+use argonauts_core::runs::events::run::{CheckedInstruction, InstructionOutcome};
 use argonauts_core::settings::crew::{CrewSettings, Orchestrator};
 
 use super::*;

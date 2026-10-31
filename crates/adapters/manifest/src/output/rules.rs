@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use anyhow::{Context, anyhow};
 use argonauts_core::ErrorCategory;
-use argonauts_core::registry::CliManifest;
+use argonauts_core::models::registry::CliManifest;
 use regex::Regex;
 
 pub(crate) struct ErrorRules {

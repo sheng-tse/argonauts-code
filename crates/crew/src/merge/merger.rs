@@ -7,30 +7,30 @@
 
 use std::path::Path;
 
-use argonauts_core::events::session::{EndReason, InputPart, InputPartKind, SessionEnd};
-use argonauts_core::events::task::CheckOutcome;
-use argonauts_core::names::{ModelRef, RoleName};
-use argonauts_core::session_runner::Access;
+use argonauts_core::agents::session_runner::Access;
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::runs::events::session::{EndReason, InputPart, InputPartKind, SessionEnd};
+use argonauts_core::runs::events::task::CheckOutcome;
 use argonauts_core::settings::Settings;
-use argonauts_core::steps::task::{ReportStatus, ResolveConflict};
-use argonauts_core::steps::{StepName, output_schema};
-use argonauts_core::workflow::StepKind;
+use argonauts_core::workflows::steps::task::{ReportStatus, ResolveConflict};
+use argonauts_core::workflows::steps::{StepName, output_schema};
+use argonauts_core::workflows::workflow::StepKind;
 
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::{Fallbacks, Host, SessionPlan, crashed_end};
 use crate::engine::job_fallback::{self, Job};
-use crate::error::{EngineError, EngineResult};
 use crate::git::StagedMerge;
 use crate::merge::conductor;
 use crate::prompts::{self, instructions};
+use crate::roles::tie_breaker;
 use crate::state::RunState;
 use crate::task::session::report_of;
 use crate::task::support::part;
-use crate::tie_breaker;
 use crate::workflow::StepAt;
 
 /// What the merger's sessions go by, each named for its job and never for the branch, so a row
 /// can't read as the merge itself: code merges, and these only settle what needs judgement.
-/// The one that writes the commit message goes by `argonauts_core::views::COMMIT_MESSAGE`,
+/// The one that writes the commit message goes by `argonauts_core::app::views::COMMIT_MESSAGE`,
 /// which the screens read too.
 pub const SETTLE_CONFLICT: &str = "settle conflict";
 

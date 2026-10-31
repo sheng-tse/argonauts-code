@@ -1,7 +1,7 @@
 //! The built-in ACP profiles, OpenCode's and Hermes', as data in `clis/`, and Hermes'
 //! home template.
 
-use argonauts_core::registry::{CliManifest, RegistryFile};
+use argonauts_core::models::registry::{CliManifest, RegistryFile};
 
 use super::turned_on::builtin_counts;
 

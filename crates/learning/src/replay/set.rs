@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 use argonauts_core::RunId;
-use argonauts_core::future::BoxFuture;
-use argonauts_core::limits::CheckRunner;
+use argonauts_core::base::future::BoxFuture;
+use argonauts_core::models::limits::CheckRunner;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::evolution::ReplaySettings;
 
@@ -19,9 +19,9 @@ use super::files::{
     append_json_line, read_json, read_json_dir, read_json_lines, remove_if_present, write_json,
 };
 use super::{Entry, Proposal, ReplaySet, checks};
-use crate::error::{LearningError, Result};
 use crate::store::Store;
-use crate::types::LearnedWorkflowRef;
+use crate::store::error::{LearningError, Result};
+use crate::store::types::LearnedWorkflowRef;
 
 /// Beside `replay/`, so an agent's sandbox can be given a replay repository without any view
 /// into the hidden folder.

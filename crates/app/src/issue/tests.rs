@@ -1,15 +1,15 @@
 use argonauts_conductor::gh::Gh;
+use argonauts_core::agents::session_runner::Access;
 use argonauts_core::app::AnswerTarget;
 use argonauts_core::app::{AppChoice, IssueRow, UiCommand, ViewData, ViewRequest};
-use argonauts_core::events::approval::AnswerAction;
 use argonauts_core::input::SlashCommand;
-use argonauts_core::session_runner::Access;
+use argonauts_core::runs::events::approval::AnswerAction;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_testkit::FakeSession;
-use argonauts_testkit::fake_gh::{FakeGh, GhComment, GhIssue, GhPost, GhRepo, GhWorld};
+use argonauts_testkit::fake_clis::fake_gh::{FakeGh, GhComment, GhIssue, GhPost, GhRepo, GhWorld};
 
 use super::*;
-use crate::controller::test_support::{CliOptions, TestDriver};
+use crate::controller::base::test_support::{CliOptions, TestDriver};
 
 const PLAN: &str = "Here is #42 in my words: all requests share one token bucket. The plan:\n\n\
                     1. Give each X-Api-Key its own bucket.\n\n\

@@ -12,38 +12,38 @@ mod work;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use argonauts_core::agents::cli_sessions::ResumeCommand;
 use argonauts_core::app::{AppEvent, UiCommand, ViewRequest};
-use argonauts_core::cli_sessions::ResumeCommand;
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::approval::{ApprovalEvent, ApprovalPacket, PlanPacket};
-use argonauts_core::events::council::{
+use argonauts_core::base::names::{ApprovalId, MessageId, ModelRef, SeatId, SessionKey};
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::approval::{ApprovalEvent, ApprovalPacket, PlanPacket};
+use argonauts_core::runs::events::council::{
     CheckPick, CouncilEvent, CouncilEventKind, Seating, Speaker,
 };
-use argonauts_core::events::session::SessionEvent;
-use argonauts_core::events::task::ReviewEvent;
-use argonauts_core::events::task::{TaskEvent, TaskSpec, TaskState, Way};
-use argonauts_core::names::{ApprovalId, MessageId, ModelRef, SeatId, SessionKey};
-use argonauts_core::workflow::StepRef;
+use argonauts_core::runs::events::session::SessionEvent;
+use argonauts_core::runs::events::task::ReviewEvent;
+use argonauts_core::runs::events::task::{TaskEvent, TaskSpec, TaskState, Way};
+use argonauts_core::workflows::workflow::StepRef;
 use argonauts_core::{AgentEvent, RunId, TaskId};
 use time::OffsetDateTime;
 
 use super::Cx;
 use crate::app::UiAction;
-use crate::cell::Cell;
-use crate::council::conversation::ToolUse;
-use crate::council::edits::{EditSheet, PlanEdits};
-use crate::council::pick::{PickKey, Picker, pick_keys, starts_picking};
-use crate::council::plan::PlanTask;
-use crate::council::session_view::SeatSession;
-use crate::council::task_header::TaskHeader;
-use crate::council::views::{SeatView, ThreadView};
+use crate::base::format::WallClock;
+use crate::cells::cell::Cell;
+use crate::cells::cell::history::CellId;
+use crate::council::screens::edits::{EditSheet, PlanEdits};
+use crate::council::screens::pick::{PickKey, Picker, pick_keys, starts_picking};
+use crate::council::screens::session_view::SeatSession;
+use crate::council::screens::views::{SeatView, ThreadView};
+use crate::council::talk::conversation::ToolUse;
+use crate::council::work::plan::PlanTask;
+use crate::council::work::task_header::TaskHeader;
 use crate::council::{
     Conversation, Face, Faces, Item, Look, SharedItem, Spacing, TalkCell, TypingCell, When,
 };
-use crate::format::WallClock;
-use crate::history::CellId;
-use crate::state::RunState;
+use crate::frame::state::RunState;
 use crate::views::waiting::{self, RunEntry};
 
 /// Every council the runs on this screen hold, by its talk step.
@@ -238,7 +238,7 @@ impl CouncilBridge {
 
     /// Approve with edits for the plan `run`'s council asks you to approve: the plan's tasks
     /// with a way, the ways the engine offers, and the seats a task can go to.
-    /// [`crate::council::edits::note`] turns what you set into the approval's edit lines.
+    /// [`crate::council::screens::edits::note`] turns what you set into the approval's edit lines.
     pub fn edit_sheet(
         &self,
         run: &RunId,

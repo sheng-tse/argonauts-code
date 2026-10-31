@@ -1,8 +1,8 @@
 use argonauts_core::TaskId;
-use argonauts_core::events::task::TaskEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::sanitize::sanitize_for_terminal;
-use argonauts_core::views::CheckpointRow;
+use argonauts_core::app::views::CheckpointRow;
+use argonauts_core::runs::events::task::TaskEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
+use argonauts_core::safety::sanitize::sanitize_for_terminal;
 
 /// `/rewind`: each fallback checkpoint of `task`, or of every task, oldest first.
 pub(crate) fn checkpoint_rows(events: &[RunEvent], task: Option<&TaskId>) -> Vec<CheckpointRow> {
@@ -50,7 +50,7 @@ pub(crate) fn checkpoint_rows(events: &[RunEvent], task: Option<&TaskId>) -> Vec
 mod tests {
     use super::*;
     use crate::client::test_support::task_event;
-    use argonauts_core::names::ModelRef;
+    use argonauts_core::base::names::ModelRef;
 
     fn tagged(seq: u64, task: &TaskId, n: u32, to: &str) -> RunEvent {
         task_event(

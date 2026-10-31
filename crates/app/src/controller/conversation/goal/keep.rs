@@ -13,27 +13,27 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use argonauts_core::events::goal::{CriterionState, GoalChecked};
-use argonauts_core::events::session::{InputPart, InputPartKind};
-use argonauts_core::events::task::CheckOutcome;
-use argonauts_core::goal::keep::{self, Limits, Next};
-use argonauts_core::goal::{GoalSpec, KeptBy, RoleGoal};
-use argonauts_core::limits::{CheckRequest, CheckRunner};
-use argonauts_core::names::{ConversationId, ModelRef, RoleName};
-use argonauts_core::paths::create_private_dir_all;
-use argonauts_core::session_runner::{Access, SessionRunner, SessionSpec};
+use argonauts_core::agents::session_runner::{Access, SessionRunner, SessionSpec};
+use argonauts_core::base::names::{ConversationId, ModelRef, RoleName};
+use argonauts_core::base::paths::create_private_dir_all;
+use argonauts_core::models::limits::{CheckRequest, CheckRunner};
+use argonauts_core::runs::events::goal::{CriterionState, GoalChecked};
+use argonauts_core::runs::events::session::{InputPart, InputPartKind};
+use argonauts_core::runs::events::task::CheckOutcome;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::protocol::CheckCommand;
-use argonauts_core::steps::pursue::{CheckGoal, CheckGoalInput, GoalCheck};
-use argonauts_core::steps::{StepName, StepRequest, StepRunner, output_schema};
+use argonauts_core::workflows::goal::keep::{self, Limits, Next};
+use argonauts_core::workflows::goal::{GoalSpec, KeptBy, RoleGoal};
+use argonauts_core::workflows::steps::pursue::{CheckGoal, CheckGoalInput, GoalCheck};
+use argonauts_core::workflows::steps::{StepName, StepRequest, StepRunner, output_schema};
 use argonauts_core::{NoteLevel, RunId, TaskId};
-use argonauts_crew::error::{EngineError, EngineResult};
+use argonauts_crew::engine::error::{EngineError, EngineResult};
 use argonauts_crew::goal::check::{self, Means, Place};
 use argonauts_crew::goal::cli::{self, Says};
 use argonauts_crew::prompts::goal::CHECK;
 
 use super::super::{ConversationState, Turn, direct, side};
-use crate::controller::turn::{self, DirectWords, Launch, TurnStep};
+use crate::controller::turns::turn::{self, DirectWords, Launch, TurnStep};
 use crate::controller::{Ctx, Effect, Internal};
 use crate::telemetry::{self, Use};
 
@@ -448,7 +448,7 @@ fn judge(ctx: &Ctx, conversation: &mut ConversationState, folder: &Path) -> Opti
     conversation.sides += 1;
     let turn = side::side_turn_id(conversation.sides);
     let key_text = format!("{}-{turn}", conversation.id);
-    let key = argonauts_core::names::SessionKey::parse(&key_text)?;
+    let key = argonauts_core::base::names::SessionKey::parse(&key_text)?;
     let session_dir = ctx
         .env
         .conversation_dir()
@@ -524,7 +524,7 @@ impl Means for InConversation {
             name: command.name.clone(),
             command: command.command.clone(),
             workdir: self.folder.clone(),
-            sandbox: argonauts_crew::spec::sandbox(
+            sandbox: argonauts_crew::sessions::spec::sandbox(
                 &self.settings,
                 Access::Build,
                 &self.folder,

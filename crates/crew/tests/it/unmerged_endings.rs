@@ -3,13 +3,13 @@
 //! alone, a pull request counts only once one is open, and the words match what git holds.
 
 use crate::support;
-use argonauts_core::engine::{EngineCommand, EngineExit};
-use argonauts_core::events::approval::{
+use argonauts_core::runs::engine::{EngineCommand, EngineExit};
+use argonauts_core::runs::events::approval::{
     AnswerAction, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket,
 };
-use argonauts_core::events::run::{RunLifecycle, RunMode, RunOutcome};
-use argonauts_core::events::task::MergeEvent;
-use argonauts_core::events::{RunEvent, RunEventKind};
+use argonauts_core::runs::events::run::{RunLifecycle, RunMode, RunOutcome};
+use argonauts_core::runs::events::task::MergeEvent;
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 
 use support::{Crew, Gh, Outcome, answer, names, recommended};
 

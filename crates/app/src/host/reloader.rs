@@ -4,16 +4,16 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
-use argonauts_core::engine::EventSink;
-use argonauts_core::events::RunEventKind;
+use argonauts_core::runs::engine::EventSink;
+use argonauts_core::runs::events::RunEventKind;
 use argonauts_core::{Note, NoteLevel};
 use argonauts_policy::SettingsReloader;
 use argonauts_registry::resolve;
 
-use crate::app_settings::sources;
-use crate::env::AppEnv;
-use crate::run_files::StartRecord;
-use crate::trust::TrustStore;
+use crate::host::run_files::StartRecord;
+use crate::startup::app_settings::sources;
+use crate::startup::env::AppEnv;
+use crate::startup::trust::TrustStore;
 
 /// A reload that fails returns `None`, and the policy keeps its earlier values. The run's log
 /// says so once for each distinct failure.
@@ -69,11 +69,11 @@ fn note_failure(sink: &dyn EventSink, failure: &str) {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::api::StartRun;
-    use argonauts_core::events::run::RunMode;
+    use argonauts_core::runs::api::StartRun;
+    use argonauts_core::runs::events::run::RunMode;
     use argonauts_core::{Paths, RunId};
     use argonauts_testkit::TempRepo;
-    use argonauts_testkit::services::MemorySink;
+    use argonauts_testkit::engine::services::MemorySink;
     use time::OffsetDateTime;
 
     use super::*;

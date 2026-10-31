@@ -5,11 +5,11 @@
 
 use std::collections::BTreeSet;
 
-use argonauts_core::events::goal::{Assumption, ChoiceOption, Decider, GoalQuestion};
+use argonauts_core::runs::events::goal::{Assumption, ChoiceOption, Decider, GoalQuestion};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::Answerer;
 use argonauts_core::settings::protocol::UnderstandSettings;
-use argonauts_core::steps::understand::{
+use argonauts_core::workflows::steps::understand::{
     CompareOutput, DiffTag, Difference, McQuestion, TopicReading,
 };
 

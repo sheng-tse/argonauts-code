@@ -4,11 +4,11 @@
 use std::collections::HashMap;
 use std::f64::consts::{PI, TAU};
 
-use argonauts_core::logos::Logo;
+use argonauts_core::look::logos::Logo;
 
 use super::model::{Star, StarKind};
-use crate::kit::logo::{LogoSize, logo_png};
-use crate::theme::Brightness;
+use crate::base::kit::logo::{LogoSize, logo_png};
+use crate::base::theme::Brightness;
 use crate::world::Image;
 use crate::world::raster::noise::{fbm3_shifted, smooth};
 use crate::world::raster::{Blend, Brush, Canvas, Colour, Gradient, Path, Pen, Transform};

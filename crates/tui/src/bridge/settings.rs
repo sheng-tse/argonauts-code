@@ -5,9 +5,9 @@ use argonauts_core::app::{AppEvent, NOT_CHANGED};
 use argonauts_core::settings::ui::ColorChoice;
 use argonauts_core::settings::ui::UiSettings;
 
-use crate::model::{ScreenHabits, ViewModel};
-use crate::text::set_ambiguous_width;
-use crate::theme::{Brightness, ColorEnv, ColorLevel, Glyphs, Theme};
+use crate::app::model::{ScreenHabits, ViewModel};
+use crate::base::text::set_ambiguous_width;
+use crate::base::theme::{Brightness, ColorEnv, ColorLevel, Glyphs, Theme};
 
 use super::Cx;
 use super::status::{apply_keys, verb_style};
@@ -46,8 +46,8 @@ pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>) {
     let mut theme = theme_for(ui, &env, terminal.background_is_light);
     // Logos turned on in a terminal that can take them, which was sent none while they were
     // off: they go out before the next frame, and that frame draws them.
-    if crate::kit::logo::draws_once_sent(ui.logos, &theme, ui.ambiguous_width)
-        && crate::kit::logo::send_held()
+    if crate::base::kit::logo::draws_once_sent(ui.logos, &theme, ui.ambiguous_width)
+        && crate::base::kit::logo::send_held()
     {
         theme.logo_pictures = true;
     }
@@ -65,7 +65,7 @@ pub fn on_event(event: &AppEvent, cx: &mut Cx<'_>) {
 /// are written in, the progress bar, copy on select, following new output, the example prompt,
 /// and the pull request on the bottom line.
 pub fn habits(ui: &UiSettings, model: &mut ViewModel) {
-    crate::format::set_clock(ui.format.clock);
+    crate::base::format::set_clock(ui.format.clock);
     model.screen = ScreenHabits::from_settings(ui);
     model.bottom.composer.examples_off = !ui.suggestions;
     model.bottom.mode.pr_footer = ui.pr_footer;
@@ -98,7 +98,8 @@ pub fn theme_for(ui: &UiSettings, env: &ColorEnv, background_is_light: Option<bo
     theme.skips_frames = ui.motion.skips_frames();
     theme.glyphs = Glyphs::for_settings(ui.glyphs, ui.ambiguous_width);
     theme.mascot = ui.mascot;
-    theme.logo_pictures = crate::kit::logo::draws_pictures(ui.logos, &theme, ui.ambiguous_width);
+    theme.logo_pictures =
+        crate::base::kit::logo::draws_pictures(ui.logos, &theme, ui.ambiguous_width);
     theme
 }
 
@@ -142,11 +143,11 @@ mod tests {
     use ratatui::style::Color;
 
     use super::*;
+    use crate::app::model::ViewModel;
+    use crate::app::options::UiOptions;
+    use crate::base::text::{ambiguous_width, str_width};
+    use crate::base::theme::Role;
     use crate::bridge::Bridge;
-    use crate::model::ViewModel;
-    use crate::options::UiOptions;
-    use crate::text::{ambiguous_width, str_width};
-    use crate::theme::Role;
 
     fn env(term: &str) -> ColorEnv {
         ColorEnv {
@@ -162,7 +163,7 @@ mod tests {
         use argonauts_core::settings::ui::Logos;
         let terminal = env("xterm-ghostty");
         assert!(!theme_for(&UiSettings::default(), &terminal, Some(false)).logo_pictures);
-        crate::kit::logo::set_takes_logos(true);
+        crate::base::kit::logo::set_takes_logos(true);
         assert!(theme_for(&UiSettings::default(), &terminal, Some(false)).logo_pictures);
         let off = UiSettings {
             logos: Logos::Off,
@@ -174,7 +175,7 @@ mod tests {
             ..UiSettings::default()
         };
         assert!(!theme_for(&wide, &terminal, Some(false)).logo_pictures);
-        crate::kit::logo::set_takes_logos(false);
+        crate::base::kit::logo::set_takes_logos(false);
     }
 
     #[test]
@@ -334,13 +335,13 @@ mod tests {
             let out = bridge.on_event(&mut model, &event, Instant::now());
             out.theme.expect("the settings give a theme").logo_pictures
         };
-        crate::kit::logo::set_takes_logos(false);
+        crate::base::kit::logo::set_takes_logos(false);
         assert!(!turn(Logos::Auto), "nothing held, nothing to send");
-        crate::kit::logo::hold_for_later();
+        crate::base::kit::logo::hold_for_later();
         assert!(!turn(Logos::Off), "still off");
         assert!(turn(Logos::Auto));
-        assert!(crate::kit::logo::held_pictures(None).is_some());
-        crate::kit::logo::set_takes_logos(false);
+        assert!(crate::base::kit::logo::held_pictures(None).is_some());
+        crate::base::kit::logo::set_takes_logos(false);
     }
 
     #[test]

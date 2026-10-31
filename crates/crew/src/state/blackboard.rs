@@ -5,13 +5,13 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use argonauts_core::TaskId;
-use argonauts_core::events::RunEvent;
-use argonauts_core::events::run::Party;
-use argonauts_core::events::shared::{
+use argonauts_core::base::names::{MessageId, ModelRef, RoleName, SessionKey};
+use argonauts_core::runs::events::RunEvent;
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::runs::events::shared::{
     BlackboardEvent, BlackboardKind, BlackboardMessage, Recipient,
 };
-use argonauts_core::names::{MessageId, ModelRef, RoleName, SessionKey};
-use argonauts_core::steps::StepName;
+use argonauts_core::workflows::steps::StepName;
 
 /// In a take-back's `refs`. Until the event model has its own event for it, taking a message
 /// back is recorded as your empty reply to it carrying this mark, addressed to you.
@@ -175,7 +175,7 @@ mod tests {
     use time::OffsetDateTime;
 
     use argonauts_core::RunId;
-    use argonauts_core::events::RunEventKind;
+    use argonauts_core::runs::events::RunEventKind;
 
     use super::*;
 

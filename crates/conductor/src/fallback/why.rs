@@ -1,7 +1,7 @@
 //! One line on why a session stopped, for the fallback question and the note.
 
-use argonauts_core::events::session::{EndReason, loaded_words, stuck_words};
-use argonauts_core::sanitize::sanitize_for_terminal;
+use argonauts_core::runs::events::session::{EndReason, loaded_words, stuck_words};
+use argonauts_core::safety::sanitize::sanitize_for_terminal;
 use argonauts_core::{ErrorCategory, LimitDimension};
 use time::OffsetDateTime;
 use time::macros::format_description;

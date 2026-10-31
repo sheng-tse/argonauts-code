@@ -4,12 +4,12 @@
 
 use std::collections::HashMap;
 
-use argonauts_core::behavior_map::BehaviorMap;
-use argonauts_core::behavior_world::{ModelFacts, WorldFacts};
-use argonauts_core::display_names::DisplayNames;
+use argonauts_core::behaviors::behavior_map::BehaviorMap;
+use argonauts_core::behaviors::behavior_world::{ModelFacts, WorldFacts};
+use argonauts_core::look::display_names::DisplayNames;
 
 use super::model::StarAction;
-use crate::format::WallClock;
+use crate::base::format::WallClock;
 
 /// The map's actions that belong to one of the world's models, placed in days and seconds back
 /// from the end of the period. An action of a model the facts don't know is left out.

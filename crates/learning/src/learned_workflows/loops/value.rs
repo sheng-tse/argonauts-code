@@ -8,7 +8,7 @@ use std::rc::Rc;
 use starlark_syntax::codemap::Span;
 use starlark_syntax::syntax::ast::{AstExpr, AstStmt, BinOp};
 
-use argonauts_core::workflow::StepKind;
+use argonauts_core::workflows::workflow::StepKind;
 
 use super::{Eval, MAX_LEN, fail};
 

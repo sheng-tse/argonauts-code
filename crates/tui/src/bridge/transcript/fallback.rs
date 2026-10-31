@@ -2,18 +2,18 @@
 //! rotations to a fresh session, cleared review debt, and an agent coming back.
 
 use argonauts_core::RunId;
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::agent_status::FallbackPlan;
-use argonauts_core::events::run::Party;
-use argonauts_core::events::task::TaskState;
-use argonauts_core::limits::{AgentHealth, ModelHealth, ModelState, Trouble};
-use argonauts_core::names::{AgentId, ModelRef, RoleName};
+use argonauts_core::base::names::{AgentId, ModelRef, RoleName};
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::models::limits::{AgentHealth, ModelHealth, ModelState, Trouble};
+use argonauts_core::runs::events::agent_status::FallbackPlan;
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::runs::events::task::TaskState;
 use argonauts_core::settings::fallback::{FallbackContext, FallbackMode};
 use time::OffsetDateTime;
 
-use crate::cell::{Notice, Tone, ToolState};
-use crate::format::WallClock;
-use crate::state::SessionStatus;
+use crate::base::format::WallClock;
+use crate::cells::cell::{Notice, Tone, ToolState};
+use crate::frame::state::SessionStatus;
 
 use super::steps::{party_words, plural, step};
 use super::{Cx, emit};

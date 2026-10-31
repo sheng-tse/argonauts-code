@@ -7,13 +7,13 @@ use std::sync::{Arc, OnceLock};
 
 use anyhow::anyhow;
 use argonauts_core::Paths;
-use argonauts_core::deep_map::{
+use argonauts_core::agents::session_runner::RunnerDirectory;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::behaviors::deep_map::{
     DeepDone, DeepOffer, DeepProgress, DeepScope, DeepStart, EmbedderNote, MadeBy, ScopeOffer,
 };
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::names::ModelRef;
-use argonauts_core::registry::ModelRegistry;
-use argonauts_core::session_runner::RunnerDirectory;
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::models::registry::ModelRegistry;
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::behaviors::WORD_VECTORS;
 use time::OffsetDateTime;
@@ -345,7 +345,7 @@ impl DeepMaps {
         let runner = workers
             .get(&chosen.model)
             .map_err(|err| anyhow!("{} can't summarize: {err}", chosen.name))?;
-        let effort = crate::adapters::builtin_adapters()
+        let effort = crate::agents::adapters::builtin_adapters()
             .iter()
             .find(|adapter| adapter.id() == chosen.model.agent)
             .and_then(|adapter| cheapest_effort(self.registry.as_ref(), adapter.as_ref()));
@@ -475,7 +475,7 @@ mod tests {
 
     use argonauts_core::settings::agents::EndpointSettings;
     use argonauts_core::settings::behaviors::BehaviorUpdate;
-    use argonauts_testkit::services::StaticRegistry;
+    use argonauts_testkit::engine::services::StaticRegistry;
     use argonauts_testkit::{FakeKind, FakeModelServer, FakeOpenAi};
     use serde_json::json;
 

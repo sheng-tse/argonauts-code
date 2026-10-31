@@ -6,8 +6,8 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use argonauts_core::names::MessageId;
-use argonauts_core::steps::task::TaskReport;
+use argonauts_core::base::names::MessageId;
+use argonauts_core::workflows::steps::task::TaskReport;
 
 static REPLY: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -80,7 +80,7 @@ fn about(reply: &Reply) -> &MessageId {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::steps::task::ReportStatus;
+    use argonauts_core::workflows::steps::task::ReportStatus;
 
     use super::*;
 

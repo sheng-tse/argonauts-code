@@ -44,7 +44,7 @@ mod tests {
     use argonauts_core::{CommandSpec, SessionRequest, StopPlan, StreamParser, TweakEffect};
 
     use super::*;
-    use crate::testutil::ScriptAdapter;
+    use crate::testing::ScriptAdapter;
 
     #[test]
     fn untrusted_repo_policy() {

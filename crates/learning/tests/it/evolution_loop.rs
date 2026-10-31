@@ -9,12 +9,12 @@ use rand::rngs::StdRng;
 use time::{Duration, OffsetDateTime};
 
 use argonauts_core::RunId;
-use argonauts_core::events::run::{Party, RunOutcome};
+use argonauts_core::runs::events::run::{Party, RunOutcome};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::settings::evolution::EvolutionStage;
-use argonauts_core::steps::task::ProcessChange;
-use argonauts_core::workflow::{Step, StepKind, Workflow};
+use argonauts_core::workflows::steps::task::ProcessChange;
+use argonauts_core::workflows::workflow::{Step, StepKind, Workflow};
 use argonauts_learning::evolution::{
     Action, CandidateState, Evolution, Stage, Thresholds, Tripwire, check_evolvable,
     check_mutation, compare, holdout_ok, stage, tripwires,
@@ -23,7 +23,7 @@ use argonauts_learning::learned_workflows::{
     self, ChangeClass, LearnedWorkflow, LoadedLearnedWorkflow,
 };
 use argonauts_learning::outcomes::{self, LogLine, Reversal};
-use argonauts_learning::{LearnedWorkflowRef, ReplayResult, RunRecord, Store, git};
+use argonauts_learning::{LearnedWorkflowRef, ReplayResult, RunRecord, Store, store::git};
 
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/learned")
@@ -390,7 +390,7 @@ fn mutation_rules_table() {
             "replaces a reviewer",
             edit(|r, f| {
                 with_workflow(r, f, |steps| {
-                    steps[2].role = Some(argonauts_core::names::RoleName::Worker)
+                    steps[2].role = Some(argonauts_core::base::names::RoleName::Worker)
                 })
             }),
             Err("replaces who does it"),

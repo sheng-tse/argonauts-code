@@ -6,10 +6,10 @@ use argonauts_core::app::SettingRow;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 
-use super::words::{layer_words, row_value_words};
-use crate::text::{sanitize_line, str_width};
-use crate::theme::{Role, Theme};
-use crate::views::layout::{cut, left};
+use crate::base::draw::layout::{cut, left};
+use crate::base::text::words::{layer_words, row_value_words};
+use crate::base::text::{sanitize_line, str_width};
+use crate::base::theme::{Role, Theme};
 
 const GAP: usize = 2;
 /// The pointer, two cells, and the safety mark when a list has one, two more.

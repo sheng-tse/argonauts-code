@@ -5,17 +5,19 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use argonauts_adapter_claude_code::ClaudeCodeAdapter;
-use argonauts_core::events::context::ContextDetail;
-use argonauts_core::events::session::{
-    CallCount, Delivery, EndReason, InputPartKind, LimitEvent, PromptVia, SessionEvent,
-    SessionInput, Watchdog, WrapUpVia,
-};
-use argonauts_core::layout::session_files;
-use argonauts_core::names::{ModelRef, RoleName};
-use argonauts_core::registry::{CostModel, CostUnit, ModelAccess, ModelEntry, RegistryKind};
-use argonauts_core::session_runner::{
+use argonauts_core::agents::session_runner::{
     Access, RunnerError, RunnerEvent, SandboxMode, SessionControl, SessionHandle, SessionRunner,
     SessionSpec,
+};
+use argonauts_core::base::layout::session_files;
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::models::registry::{
+    CostModel, CostUnit, ModelAccess, ModelEntry, RegistryKind,
+};
+use argonauts_core::runs::events::context::ContextDetail;
+use argonauts_core::runs::events::session::{
+    CallCount, Delivery, EndReason, InputPartKind, LimitEvent, PromptVia, SessionEvent,
+    SessionInput, Watchdog, WrapUpVia,
 };
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::approvals::{IsolatedLeak, SandboxChoice};
@@ -24,7 +26,7 @@ use argonauts_core::settings::sessions::RotateAt;
 use argonauts_core::{
     Adapter, AgentEvent, ErrorCategory, LimitDimension, MessageStage, WRAP_UP_MESSAGE,
 };
-use argonauts_testkit::services::StaticRegistry;
+use argonauts_testkit::engine::services::StaticRegistry;
 use nix::errno::Errno;
 use nix::sys::signal::kill;
 use nix::unistd::Pid;
@@ -36,9 +38,9 @@ use super::testing::{
     FakeDriver, TestAdapter, TestDriver, agent_events, collect, event_line, names, queued,
     session_events, spec_in,
 };
+use crate::process::watchdogs::REPEAT_NOTE;
 use crate::sandbox::Unsandboxed;
-use crate::testutil::{TestRepo, wait_until_gone};
-use crate::watchdogs::REPEAT_NOTE;
+use crate::testing::{TestRepo, wait_until_gone};
 
 /// A workdir and a session folder in one temp dir.
 struct Dirs {
@@ -119,7 +121,7 @@ async fn finish(
     handle: SessionHandle,
 ) -> (
     Vec<RunnerEvent>,
-    argonauts_core::events::session::SessionEnd,
+    argonauts_core::runs::events::session::SessionEnd,
 ) {
     let (rest, end) = collect(handle).await;
     seen.extend(rest);
@@ -444,8 +446,8 @@ async fn driver_without_sandbox_is_refused() {
         ModelRef::new("fake", None),
         "fake".into(),
         Arc::new(settings),
-        Arc::new(argonauts_testkit::services::MemoryPlanUsageBoard::default()),
-        Arc::new(argonauts_testkit::services::MemoryHealthBoard::default()),
+        Arc::new(argonauts_testkit::engine::services::MemoryPlanUsageBoard::default()),
+        Arc::new(argonauts_testkit::engine::services::MemoryHealthBoard::default()),
     )
     .with_sandbox(Arc::new(Unsandboxed));
     match worker.start(dirs.spec("hi")).await {
@@ -477,8 +479,8 @@ async fn a_roles_own_mode_decides_whether_it_needs_our_sandbox() {
         ModelRef::new("fake", None),
         "fake".into(),
         Arc::new(settings),
-        Arc::new(argonauts_testkit::services::MemoryPlanUsageBoard::default()),
-        Arc::new(argonauts_testkit::services::MemoryHealthBoard::default()),
+        Arc::new(argonauts_testkit::engine::services::MemoryPlanUsageBoard::default()),
+        Arc::new(argonauts_testkit::engine::services::MemoryHealthBoard::default()),
     )
     .with_sandbox(Arc::new(Unsandboxed));
     assert!(model.start(dirs.spec("hi")).await.is_err());
@@ -511,12 +513,13 @@ async fn a_roles_own_mode_decides_whether_it_needs_our_sandbox() {
 async fn disabled_agent_starts_nothing() {
     let dirs = Dirs::new();
     let h = TestDriver::new(TestAdapter::new("true"));
-    use argonauts_core::limits::HealthBoard;
-    h.health
-        .observe(argonauts_core::limits::HealthSignal::AdapterBroken {
+    use argonauts_core::models::limits::HealthBoard;
+    h.health.observe(
+        argonauts_core::models::limits::HealthSignal::AdapterBroken {
             agent_id: h.worker.agent_id(),
             detail: "untested version".into(),
-        });
+        },
+    );
     // A fallback hears it before starting anything.
     let why = h.worker.start_refusal().expect("a refusal");
     match h.worker.start(dirs.spec("hi")).await {
@@ -857,7 +860,7 @@ async fn send_now_from_the_agent_view_hands_over_steering_held_for_the_tool_call
 /// says which.
 struct StoppingParser;
 
-impl argonauts_core::adapter::StreamParser for StoppingParser {
+impl argonauts_core::agents::adapter::StreamParser for StoppingParser {
     fn parse_stdout_line(&mut self, line: &str) -> Vec<AgentEvent> {
         vec![serde_json::from_str(line).unwrap_or_else(|_| AgentEvent::unknown_line(line))]
     }
@@ -1552,7 +1555,7 @@ async fn a_later_try_that_changes_nothing_is_asked_for_the_checks_then_stopped()
         .filter(|part| part.kind == InputPartKind::WrapUp)
         .map(|part| part.text.clone())
         .collect();
-    assert_eq!(wrap_ups, [crate::watchdogs::NO_PROGRESS_WRAP_UP]);
+    assert_eq!(wrap_ups, [crate::process::watchdogs::NO_PROGRESS_WRAP_UP]);
     let got = dirs.read("got-input");
     assert!(
         got.contains("Run the checks once"),
@@ -1765,7 +1768,7 @@ async fn a_watched_session_is_asked_for_its_context_after_a_fill_and_counts_what
 /// count stays in the session's folder.
 #[tokio::test]
 async fn a_crew_agents_session_is_counted_in_short_and_keeps_only_its_rows() {
-    use argonauts_core::events::context::{
+    use argonauts_core::runs::events::context::{
         ContextCategory, ContextCell, ContextKind, ContextUsage, MemoryFile,
     };
 
@@ -1852,7 +1855,7 @@ async fn a_crew_agents_session_is_counted_in_short_and_keeps_only_its_rows() {
 /// input closes as soon as the count comes.
 #[tokio::test]
 async fn a_turn_is_counted_as_it_ends_and_its_input_closes_on_the_count() {
-    use argonauts_core::events::context::ContextUsage;
+    use argonauts_core::runs::events::context::ContextUsage;
 
     let dirs = Dirs::new();
     let counted = AgentEvent::ContextBreakdown {
@@ -1960,13 +1963,13 @@ async fn a_turn_whose_count_never_comes_closes_its_input_after_a_short_wait() {
 #[tokio::test]
 async fn plan_usage_goes_to_the_board_and_out() {
     let dirs = Dirs::new();
-    let reading = argonauts_core::limits::PlanUsageReading {
-        agent_id: argonauts_core::names::AgentId("fake".into()),
-        status: argonauts_core::limits::PlanUsageStatus::Rejected,
+    let reading = argonauts_core::models::limits::PlanUsageReading {
+        agent_id: argonauts_core::base::names::AgentId("fake".into()),
+        status: argonauts_core::models::limits::PlanUsageStatus::Rejected,
         used: Some(1.0),
         resets_at: None,
         window: Some("five_hour".into()),
-        source: argonauts_core::limits::PlanUsageSource::RateLimitEvent,
+        source: argonauts_core::models::limits::PlanUsageSource::RateLimitEvent,
         observed_at: time::OffsetDateTime::UNIX_EPOCH,
         detail: None,
         wrap_up: false,
@@ -1979,22 +1982,22 @@ async fn plan_usage_goes_to_the_board_and_out() {
     );
     let h = TestDriver::new(TestAdapter::new(&script));
     let (events, end) = collect(h.worker.start(dirs.spec("hi")).await.unwrap()).await;
-    use argonauts_core::limits::PlanUsageBoard;
+    use argonauts_core::models::limits::PlanUsageBoard;
     assert_eq!(h.plan_usage.get(&reading.agent_id), Some(reading.clone()));
     assert!(events.contains(&RunnerEvent::AgentStatus(
-        argonauts_core::events::AgentStatusEvent::PlanUsage(reading)
+        argonauts_core::runs::events::AgentStatusEvent::PlanUsage(reading)
     )));
     assert_eq!(end.reason, EndReason::UsageLimit { resets_at: None });
 }
 
-fn wrap_up_reading(wrap_up: bool) -> argonauts_core::limits::PlanUsageReading {
-    argonauts_core::limits::PlanUsageReading {
-        agent_id: argonauts_core::names::AgentId("fake".into()),
-        status: argonauts_core::limits::PlanUsageStatus::Rejected,
+fn wrap_up_reading(wrap_up: bool) -> argonauts_core::models::limits::PlanUsageReading {
+    argonauts_core::models::limits::PlanUsageReading {
+        agent_id: argonauts_core::base::names::AgentId("fake".into()),
+        status: argonauts_core::models::limits::PlanUsageStatus::Rejected,
         used: Some(1.0),
         resets_at: None,
         window: Some("five_hour".into()),
-        source: argonauts_core::limits::PlanUsageSource::RateLimitEvent,
+        source: argonauts_core::models::limits::PlanUsageSource::RateLimitEvent,
         observed_at: time::OffsetDateTime::UNIX_EPOCH,
         detail: None,
         wrap_up,
@@ -2023,10 +2026,10 @@ async fn a_session_on_its_wrap_up_allowance_finishes() {
     let h = TestDriver::new(TestAdapter::new(&script));
     let (_, end) = collect(h.worker.start(dirs.spec("hi")).await.unwrap()).await;
     assert_eq!(end.reason, EndReason::Completed);
-    use argonauts_core::limits::PlanUsageBoard;
+    use argonauts_core::models::limits::PlanUsageBoard;
     let out = h
         .plan_usage
-        .get(&argonauts_core::names::AgentId("fake".into()));
+        .get(&argonauts_core::base::names::AgentId("fake".into()));
     assert_eq!(out, Some(wrap_up_reading(false)));
 }
 
@@ -2056,8 +2059,8 @@ async fn fallback_on_wrap_up_stops_at_the_first_sign() {
 async fn your_plan_limit_ends_the_session_as_when_reached_says() {
     use argonauts_core::settings::limit::OnHit;
 
-    let reading = argonauts_core::limits::PlanUsageReading {
-        status: argonauts_core::limits::PlanUsageStatus::Allowed,
+    let reading = argonauts_core::models::limits::PlanUsageReading {
+        status: argonauts_core::models::limits::PlanUsageStatus::Allowed,
         used: Some(0.82),
         ..wrap_up_reading(false)
     };
@@ -2129,7 +2132,7 @@ async fn a_session_says_nothing_of_a_newer_cli_and_keeps_its_unread_kinds() {
     );
 
     let path = argonauts_core::Paths::new(h.home.path()).cli_versions();
-    let kept = crate::cli_versions::CliVersions::load(&path);
+    let kept = crate::boards::cli_versions::CliVersions::load(&path);
     assert_eq!(
         kept.unread("fake", "1.0.3"),
         [("system/turn_summary".to_owned(), 1)]
@@ -2185,13 +2188,15 @@ async fn unknown_lines_piling_up_disable_the_agent() {
     let script = "i=0; while [ $i -lt 30 ]; do echo \"what is this $i\"; i=$((i+1)); done";
     let h = TestDriver::new(TestAdapter::new(script));
     let (events, _) = collect(h.worker.start(dirs.spec("hi")).await.unwrap()).await;
-    use argonauts_core::limits::HealthBoard;
+    use argonauts_core::models::limits::HealthBoard;
     let disabled = h.health.state(&h.worker.agent_id()).disabled;
     assert!(disabled.unwrap().contains("Pin a tested version: 1.0.0"));
     let told = events.iter().any(|event| {
         matches!(
             event,
-            RunnerEvent::AgentStatus(argonauts_core::events::AgentStatusEvent::Disabled { .. })
+            RunnerEvent::AgentStatus(
+                argonauts_core::runs::events::AgentStatusEvent::Disabled { .. }
+            )
         )
     });
     assert!(told, "{:?}", names(&events));
@@ -2364,10 +2369,10 @@ fn ends_its_turn_then_waits() -> String {
 async fn deliver_after_the_last_result(
     adapter: TestAdapter,
     dirs: &Dirs,
-    late: &argonauts_core::events::session::QueuedMessage,
+    late: &argonauts_core::runs::events::session::QueuedMessage,
 ) -> (
     Vec<RunnerEvent>,
-    argonauts_core::events::session::SessionEnd,
+    argonauts_core::runs::events::session::SessionEnd,
 ) {
     let h = TestDriver::new(adapter);
     let mut handle = h.worker.start(dirs.spec("start")).await.unwrap();
@@ -2466,7 +2471,7 @@ fn plan_usage_prober_runs_the_binary_doctor_finds() {
     use argonauts_core::Adapter;
     use argonauts_core::settings::agents::AgentSettings;
 
-    use crate::plan_usage::registered_prober;
+    use crate::boards::plan_usage::registered_prober;
 
     let adapter: Arc<dyn Adapter> = Arc::new(TestAdapter::new("true"));
     let worker = ModelRef::new("prober-on-path", None);
@@ -2493,7 +2498,7 @@ fn a_cli_that_bills_an_api_key_gets_no_plan_usage_prober() {
     use argonauts_core::Adapter;
     use argonauts_core::settings::agents::AgentSettings;
 
-    use crate::plan_usage::registered_prober;
+    use crate::boards::plan_usage::registered_prober;
 
     let adapter: Arc<dyn Adapter> = Arc::new(TestAdapter::new("true"));
     let worker = ModelRef::new("prober-api-key", None);
@@ -2514,7 +2519,7 @@ fn plan_usage_prober_names_only_the_configured_model() {
     use argonauts_core::Adapter;
     use argonauts_core::settings::agents::AgentSettings;
 
-    use crate::plan_usage::registered_prober;
+    use crate::boards::plan_usage::registered_prober;
 
     let adapter: Arc<dyn Adapter> = Arc::new(TestAdapter::new("true"));
     let worker = ModelRef::new("prober-model-from-agent", None);
@@ -2617,7 +2622,7 @@ async fn a_builtin_argonauts_doesnt_know_is_learned_and_turned_off_next_time() {
     assert_eq!(said.len(), 1, "{:?}", notices(&events));
     assert!(said[0].contains("cc-plugin-new-thing"), "{said:?}");
     let path = argonauts_core::Paths::new(h.home.path()).cli_versions();
-    let kept = crate::cli_versions::CliVersions::load(&path);
+    let kept = crate::boards::cli_versions::CliVersions::load(&path);
     assert_eq!(kept.builtins("fake"), ["cc-plugin-new-thing"]);
 
     let (events, _) = collect(h.worker.start(spec).await.unwrap()).await;
@@ -2793,7 +2798,7 @@ fn started_workflow_lines() -> String {
 async fn stop_while_its_workflow_runs(
     control: SessionControl,
     own_workflow: bool,
-) -> argonauts_core::events::session::SessionEnd {
+) -> argonauts_core::runs::events::session::SessionEnd {
     let dirs = Dirs::new();
     let script = format!(
         "IFS= read -r first; {}; while IFS= read -r line; do :; done",
@@ -3081,7 +3086,7 @@ async fn a_request_billed_past_the_limit_stops_the_session_at_that_request() {
 /// left out.
 struct AfterEndParser;
 
-impl argonauts_core::adapter::StreamParser for AfterEndParser {
+impl argonauts_core::agents::adapter::StreamParser for AfterEndParser {
     fn parse_stdout_line(&mut self, line: &str) -> Vec<AgentEvent> {
         vec![serde_json::from_str(line).unwrap_or_else(|_| AgentEvent::unknown_line(line))]
     }

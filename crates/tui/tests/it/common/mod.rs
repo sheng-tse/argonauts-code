@@ -5,9 +5,9 @@ use std::fmt::Write as _;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use argonauts_tui::render::{Clock, RenderCtx};
-use argonauts_tui::text::str_width;
-use argonauts_tui::theme::{ColorLevel, Glyphs, Role, Theme};
+use argonauts_tui::base::draw::render::{Clock, RenderCtx};
+use argonauts_tui::base::text::str_width;
+use argonauts_tui::base::theme::{ColorLevel, Glyphs, Role, Theme};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 
@@ -44,7 +44,7 @@ pub fn still(theme: &Theme, width: u16) -> RenderCtx<'_> {
 }
 
 pub fn text(lines: &[Line<'_>]) -> String {
-    argonauts_tui::text::plain_text(lines)
+    argonauts_tui::base::text::plain_text(lines)
 }
 
 pub fn row_text(line: &Line<'_>) -> String {

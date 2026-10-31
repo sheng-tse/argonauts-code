@@ -5,13 +5,13 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use argonauts_core::RunId;
-use argonauts_core::limits::{TrackRecord, TrackRecords};
+use argonauts_core::models::limits::{TrackRecord, TrackRecords};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::protocol::{PriorRates, RoutingSettings};
 use argonauts_learning::Store;
 use argonauts_learning::outcomes::{self, LogLine, Outcome};
 use argonauts_learning::records::{Beta, Book, LiveRecords, POOLED_ALL_TYPES, POOLED_CREW};
-use argonauts_learning::types::Assignment;
+use argonauts_learning::store::types::Assignment;
 use time::{Duration, OffsetDateTime};
 
 use records_support::{AS_OF, close, days_ago, lines, outcome, tasks, worker};

@@ -13,11 +13,11 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::base::text::sanitize_line;
+use crate::base::theme::AgentColor;
 use crate::bottom::composer::{Composer, ComposerEvent};
-use crate::council::edits::SheetKey;
-use crate::text::sanitize_line;
-use crate::theme::AgentColor;
-use crate::views::list;
+use crate::council::screens::edits::SheetKey;
+use crate::frame::view::list;
 
 pub use render::QuestionView;
 
@@ -120,7 +120,7 @@ pub struct QuestionPrompt {
     pub enter_hint: Option<String>,
     /// A sheet one option opens in the question's own place, such as Approve with edits on a
     /// council's plan. It takes the keys until it answers or goes back.
-    pub sheet: Option<Box<crate::council::edits::InQuestion>>,
+    pub sheet: Option<Box<crate::council::screens::edits::InQuestion>>,
 }
 
 /// One question's chip on a question that asks several.
@@ -241,7 +241,7 @@ impl Countdown {
         if secs == 0 {
             return format!("{} a moment", self.words);
         }
-        let time = crate::format::duration_slot(Duration::from_secs(secs));
+        let time = crate::base::format::duration_slot(Duration::from_secs(secs));
         format!("{} {time}", self.words)
     }
 
@@ -969,6 +969,7 @@ impl QuestionPrompt {
     }
 }
 
+pub(crate) mod answered;
 /// Drops the last grapheme, so an accent or a flag goes whole.
 #[cfg(test)]
 mod tests;

@@ -20,7 +20,7 @@ pub fn check(goal_changes: GoalChanges) -> RuleVerdict {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::policy::Verdict;
+    use argonauts_core::safety::policy::Verdict;
 
     #[test]
     fn goal_changes_follow_the_setting() {

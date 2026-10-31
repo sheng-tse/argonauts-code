@@ -6,9 +6,9 @@
 
 use std::time::Duration;
 
-use argonauts_core::events::council::TalkStop;
+use argonauts_core::look::window_size::tokens_by;
+use argonauts_core::runs::events::council::TalkStop;
 use argonauts_core::settings::council::TalkStop as StopAfter;
-use argonauts_core::window_size::tokens_by;
 
 /// Messages in a row that move nobody after which a talk stops even with every limit off, so
 /// it can't go round in circles forever.

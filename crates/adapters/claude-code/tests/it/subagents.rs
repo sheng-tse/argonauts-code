@@ -6,8 +6,8 @@
 
 use argonauts_adapter_claude_code::ClaudeCodeAdapter;
 use argonauts_core::AgentEvent;
-use argonauts_core::adapter::{Adapter, StreamParser};
-use argonauts_core::events::session::{SubagentStatus, SubagentUpdate};
+use argonauts_core::agents::adapter::{Adapter, StreamParser};
+use argonauts_core::runs::events::session::{SubagentStatus, SubagentUpdate};
 
 const RECORDING: &str = include_str!("../data/subagents.stdout.jsonl");
 

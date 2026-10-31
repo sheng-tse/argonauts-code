@@ -16,15 +16,15 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 
 use super::bottom_line::{self, LinePage};
-use super::draw;
 use super::page::ModPage;
-use super::rows::{PageGlyphs, breadcrumb};
-use crate::kit::legend::BETWEEN_WORDS;
-use crate::kit::{Kit, fit};
-use crate::text::{At, cut_spans, sanitize_line, str_width, wrap_text};
-use crate::theme::Role;
-use crate::views::panes::{self, Footer, Side};
-use crate::views::{View, ViewCtx, ViewOutcome};
+use crate::base::draw::panes::{self, Footer, Side};
+use crate::base::kit::legend::BETWEEN_WORDS;
+use crate::base::kit::{Kit, fit};
+use crate::base::text::{At, cut_spans, sanitize_line, str_width, wrap_text};
+use crate::base::theme::Role;
+use crate::frame::view::{View, ViewCtx, ViewOutcome};
+use crate::panels::mods::draw;
+use crate::panels::mods::rows::{PageGlyphs, breadcrumb};
 
 /// The list's share of the screen, in cells.
 const LIST_CELLS: u16 = 52;
@@ -588,8 +588,8 @@ mod tests {
     use crossterm::event::KeyModifiers;
 
     use super::*;
-    use crate::state::AppState;
-    use crate::theme::{ColorLevel, Theme};
+    use crate::base::theme::{ColorLevel, Theme};
+    use crate::frame::state::AppState;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -689,7 +689,7 @@ mod tests {
     #[test]
     fn the_list_keeps_the_screen_laws_with_each_mod_chosen() {
         use argonauts_testkit::screen::{Look, REAL_SIZES, laws};
-        let theme = crate::overview::golden::theme();
+        let theme = crate::testing::pictures::golden::theme();
         let state = AppState::default();
         let ctx = ViewCtx {
             theme: &theme,
@@ -703,7 +703,7 @@ mod tests {
                 let area = Rect::new(0, 0, size.cols, size.rows);
                 let mut buf = Buffer::empty(area);
                 screen.render(area, &mut buf, &ctx);
-                let grid = crate::stability::grid::grid(&buf);
+                let grid = crate::base::stability::grid::grid(&buf);
                 laws::assert_kept(
                     &grid,
                     &Look::new(),
@@ -972,7 +972,7 @@ mod tests {
     #[test]
     fn the_ascii_set_draws_none_of_the_screens_own_unicode_marks() {
         let mut theme = Theme::dark();
-        theme.glyphs = crate::theme::Glyphs::ASCII;
+        theme.glyphs = crate::base::theme::Glyphs::ASCII;
         let state = AppState::default();
         let ctx = ViewCtx {
             theme: &theme,

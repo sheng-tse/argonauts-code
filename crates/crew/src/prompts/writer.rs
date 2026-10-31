@@ -3,18 +3,18 @@
 //! and what it writes takes that text's place. Agents of one role at one step of one task
 //! read the same text.
 
-use argonauts_core::events::session::{InputPart, InputPartKind};
-use argonauts_core::future::BoxFuture;
-use argonauts_core::names::RoleName;
-use argonauts_core::prompt_parts as parts;
-use argonauts_core::session_runner::Access;
+use argonauts_core::agents::session_runner::Access;
+use argonauts_core::base::future::BoxFuture;
+use argonauts_core::base::names::RoleName;
+use argonauts_core::prompts::prompt_parts as parts;
+use argonauts_core::runs::events::session::{InputPart, InputPartKind};
 use argonauts_core::settings::crew::CrewRole;
 use argonauts_core::settings::prompts::Writer;
-use argonauts_core::steps::StepName;
-use argonauts_core::steps::instructions::{WriteInstructions, WriteInstructionsInput};
+use argonauts_core::workflows::steps::StepName;
+use argonauts_core::workflows::steps::instructions::{WriteInstructions, WriteInstructionsInput};
 
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::{Ask, Host};
-use crate::error::{EngineError, EngineResult};
 use crate::roles;
 
 use super::assemble;

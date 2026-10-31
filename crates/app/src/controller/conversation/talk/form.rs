@@ -2,10 +2,10 @@
 //! it: every setting the way a settings file is checked, each role, prompt and mod by a name
 //! Argonauts Code knows, and a place to keep it only when your own words named one.
 
-use argonauts_core::names::ModelRef;
-use argonauts_core::prompt_files::{RoleFileMode, Template};
-use argonauts_core::prompt_parts::Readers;
-use argonauts_core::required::{RequiredStep, role_named, same_name, when_problem};
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::prompts::prompt_files::{RoleFileMode, Template};
+use argonauts_core::prompts::prompt_parts::Readers;
+use argonauts_core::workflows::required::{RequiredStep, role_named, same_name, when_problem};
 use argonauts_registry::SettingsError;
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -470,7 +470,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::controller::test_support::{CliOptions, TestCtx};
+    use crate::controller::base::test_support::{CliOptions, TestCtx};
 
     fn ctx() -> TestCtx {
         TestCtx::new(CliOptions::default()).0

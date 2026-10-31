@@ -7,18 +7,18 @@
 use crate::common;
 use std::path::PathBuf;
 
-use argonauts_core::events::approval::{
+use argonauts_core::base::names::ApprovalId;
+use argonauts_core::runs::events::approval::{
     AnswerAction, AnswerOption, ApprovalKind, ApprovalOpened, ApprovalPacket, BothChanged,
     FreeText, MergePacket, MergeRow,
 };
-use argonauts_core::events::task::TaskKind;
-use argonauts_core::names::ApprovalId;
+use argonauts_core::runs::events::task::TaskKind;
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 use argonauts_core::settings::asking::WhenDeclined;
-use argonauts_core::steps::judgment::ReviewVerdict;
+use argonauts_core::workflows::steps::judgment::ReviewVerdict;
 use argonauts_core::{DiffStat, Spend, TaskId};
 use argonauts_tui::HistoryCell;
-use argonauts_tui::cell::{Notice, Tone};
+use argonauts_tui::cells::cell::{Notice, Tone};
 use argonauts_tui::questions::approval_question;
 use common::{row_text, still, theme};
 use ratatui::text::Line;
@@ -93,7 +93,7 @@ fn packet() -> MergePacket {
         questions: Vec::new(),
     };
     MergePacket {
-        target: Some(argonauts_core::hidden_git::BRANCH.into()),
+        target: Some(argonauts_core::runs::hidden_git::BRANCH.into()),
         branch: "argonauts/run-20261010-091503-3fa2/merged".into(),
         rows: vec![row(1, "Parse --due"), row(2, "Show due dates")],
         suite_passed_on_latest_main: true,
@@ -279,9 +279,9 @@ fn a_file_both_changed_asks_which_version_goes_in() {
 /// print the merge's evidence a second time.
 #[test]
 fn the_conversation_says_the_run_is_written_into_your_folder() {
-    use argonauts_core::display_names::DisplayNames;
-    use argonauts_core::events::approval::ApprovalDecided;
-    use argonauts_core::events::run::Party;
+    use argonauts_core::look::display_names::DisplayNames;
+    use argonauts_core::runs::events::approval::ApprovalDecided;
+    use argonauts_core::runs::events::run::Party;
     use argonauts_tui::questions::{about_item, record_cell};
     use time::UtcOffset;
 
@@ -333,9 +333,9 @@ fn the_conversation_says_the_run_is_written_into_your_folder() {
 /// answer say "the run", and the question asking for the branch prints no evidence again.
 #[test]
 fn a_run_with_no_branch_yet_names_none() {
-    use argonauts_core::display_names::DisplayNames;
-    use argonauts_core::events::approval::ApprovalDecided;
-    use argonauts_core::events::run::Party;
+    use argonauts_core::look::display_names::DisplayNames;
+    use argonauts_core::runs::events::approval::ApprovalDecided;
+    use argonauts_core::runs::events::run::Party;
     use argonauts_tui::questions::{about_item, record_cell};
     use time::UtcOffset;
 

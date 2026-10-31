@@ -12,20 +12,20 @@
 //! · the same error`, its items kept for the transcript overlay. The record doesn't say what
 //! woke a try, so the line doesn't either.
 
-use argonauts_core::events::run::WaitReason;
-use argonauts_core::events::session::{EndReason, SessionEnd};
-use argonauts_core::log::{GAVE_NO_ANSWER, NOBODY_TO_FALL_BACK_TO};
-use argonauts_core::names::SessionKey;
+use argonauts_core::base::log::{GAVE_NO_ANSWER, NOBODY_TO_FALL_BACK_TO};
+use argonauts_core::base::names::SessionKey;
+use argonauts_core::runs::events::run::WaitReason;
+use argonauts_core::runs::events::session::{EndReason, SessionEnd};
 use argonauts_core::{Note, RunId};
 use ratatui::text::{Line, Span};
 use time::OffsetDateTime;
 
+use crate::base::draw::render::RenderCtx;
+use crate::base::format::WallClock;
+use crate::base::text::{marks, wrap_spans};
+use crate::base::theme::Role;
 use crate::bridge::agents::reason_words;
-use crate::cell::{Cell, HistoryCell, Notice, Tone};
-use crate::format::WallClock;
-use crate::render::RenderCtx;
-use crate::text::{marks, wrap_spans};
-use crate::theme::Role;
+use crate::cells::cell::{Cell, HistoryCell, Notice, Tone};
 
 use super::{Cx, emit};
 
@@ -204,7 +204,7 @@ impl Tries {
             cut.sort();
             notice = notice.with_detail(format!(
                 "{} stopped, their work so far kept",
-                argonauts_core::text::and_list(&cut)
+                argonauts_core::base::text::and_list(&cut)
             ));
         }
         notice

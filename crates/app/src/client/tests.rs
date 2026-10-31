@@ -2,16 +2,15 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::sync::Arc;
 use std::time::Duration;
 
-use argonauts_core::api::{ApiError, ConductorApi, RunState, StartRun};
-use argonauts_core::control::{ClientKind, ControlRequest};
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::run::{
+use argonauts_core::base::layout::run_files as names;
+use argonauts_core::runs::api::{ApiError, ConductorApi, RunState, StartRun};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::run::{
     Party, PhaseChange, ResumeCause, RunLifecycle, RunMode, RunOutcome, RunPhase, RunResumed,
     WaitReason,
 };
-use argonauts_core::events::session::SessionEvent;
-use argonauts_core::journal::RunLock;
-use argonauts_core::layout::run_files as names;
+use argonauts_core::runs::events::session::SessionEvent;
+use argonauts_core::runs::journal::RunLock;
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::{PhaseStatus, RunId};
 use time::OffsetDateTime;
@@ -21,7 +20,8 @@ use super::test_support::{
     FakeRunHost, Script, TestHome, event, event_at, queued, run_started, serve, write_journal,
 };
 use super::*;
-use crate::run_files;
+use crate::control::{ClientKind, ControlRequest};
+use crate::host::run_files;
 
 fn request(text: &str) -> StartRun {
     StartRun {
@@ -48,7 +48,7 @@ fn app_client(home: &TestHome, launcher: Arc<FakeRunHost>) -> Client {
     Client::new(home.env(true), launcher, true)
 }
 
-fn waiting_event(seq: u64, at: OffsetDateTime) -> argonauts_core::events::RunEvent {
+fn waiting_event(seq: u64, at: OffsetDateTime) -> argonauts_core::runs::events::RunEvent {
     event_at(
         seq,
         at,
@@ -59,7 +59,7 @@ fn waiting_event(seq: u64, at: OffsetDateTime) -> argonauts_core::events::RunEve
     )
 }
 
-fn finished(seq: u64, outcome: RunOutcome) -> argonauts_core::events::RunEvent {
+fn finished(seq: u64, outcome: RunOutcome) -> argonauts_core::runs::events::RunEvent {
     event(
         seq,
         RunEventKind::Run(RunLifecycle::Finished {
@@ -69,7 +69,7 @@ fn finished(seq: u64, outcome: RunOutcome) -> argonauts_core::events::RunEvent {
     )
 }
 
-fn resumed(seq: u64) -> argonauts_core::events::RunEvent {
+fn resumed(seq: u64) -> argonauts_core::runs::events::RunEvent {
     event(
         seq,
         RunEventKind::Run(RunLifecycle::Resumed(RunResumed {
@@ -350,8 +350,8 @@ async fn waiting_guidance_lands_in_pending_answers_and_launches() {
 /// to it is kept for the run host /resume starts, and none starts for it now.
 #[tokio::test]
 async fn a_run_that_stopped_fully_keeps_what_you_send_it_for_resume() {
-    use argonauts_core::events::run::WaitReason;
     use argonauts_core::input::MentionTarget;
+    use argonauts_core::runs::events::run::WaitReason;
 
     let home = TestHome::new();
     let launcher = Arc::new(FakeRunHost::default());
@@ -639,7 +639,7 @@ async fn a_spot_check_goes_to_the_live_engine_or_waits_for_the_next() {
     let home = TestHome::new();
     let launcher = Arc::new(FakeRunHost::default());
     let client = app_client(&home, Arc::clone(&launcher));
-    let id = argonauts_core::names::ApprovalId::numbered(4);
+    let id = argonauts_core::base::names::ApprovalId::numbered(4);
     let check = ControlRequest::SpotCheck {
         id: id.clone(),
         correct: false,
@@ -668,12 +668,12 @@ async fn a_spot_check_goes_to_the_live_engine_or_waits_for_the_next() {
 
 #[tokio::test]
 async fn a_finished_runs_spot_check_goes_to_the_repos_policy() {
-    use argonauts_core::events::approval::ApprovalEvent;
+    use argonauts_core::runs::events::approval::ApprovalEvent;
 
     let home = TestHome::new();
     let launcher = Arc::new(FakeRunHost::default());
     let client = app_client(&home, Arc::clone(&launcher));
-    let id = argonauts_core::names::ApprovalId::numbered(4);
+    let id = argonauts_core::base::names::ApprovalId::numbered(4);
     let run = other_run("0605");
     home.run_with(
         &client.env,
@@ -696,14 +696,14 @@ async fn a_finished_runs_spot_check_goes_to_the_repos_policy() {
     let records = client
         .env
         .state_dir
-        .join(argonauts_core::layout::repo_state::APPROVALS);
+        .join(argonauts_core::base::layout::repo_state::APPROVALS);
     let records = std::fs::read_to_string(&records).unwrap();
     assert!(
         records.contains(run.as_str()) && records.contains(id.as_str()),
         "{records}"
     );
 
-    let unqueued = argonauts_core::names::ApprovalId::numbered(1);
+    let unqueued = argonauts_core::base::names::ApprovalId::numbered(1);
     let refused = client.spot_check(&run, &unqueued, true).await;
     assert!(matches!(refused, Err(ApiError::Refused(_))), "{refused:?}");
 
@@ -813,7 +813,7 @@ async fn status_comes_from_the_run_host_or_else_the_journal() {
     let steer = client
         .steer(
             &other_run("0502"),
-            &argonauts_core::names::SessionKey::numbered(1),
+            &argonauts_core::base::names::SessionKey::numbered(1),
             "x".to_owned(),
             false,
         )
@@ -821,7 +821,7 @@ async fn status_comes_from_the_run_host_or_else_the_journal() {
     assert!(matches!(steer, Err(ApiError::NoRun(_))));
 }
 
-async fn collect(stream: &mut argonauts_core::api::EventStream) -> Vec<u64> {
+async fn collect(stream: &mut argonauts_core::runs::api::EventStream) -> Vec<u64> {
     let mut seqs = Vec::new();
     while let Ok(Some(event)) =
         tokio::time::timeout(Duration::from_secs(5), stream.events.recv()).await
@@ -831,7 +831,7 @@ async fn collect(stream: &mut argonauts_core::api::EventStream) -> Vec<u64> {
     seqs
 }
 
-fn numbered(range: std::ops::RangeInclusive<u64>) -> Vec<argonauts_core::events::RunEvent> {
+fn numbered(range: std::ops::RangeInclusive<u64>) -> Vec<argonauts_core::runs::events::RunEvent> {
     range
         .map(|seq| event(seq, RunEventKind::Run(RunLifecycle::PauseCancelled)))
         .collect()
@@ -984,7 +984,7 @@ fn a_run_crashed_only_when_nothing_holds_it_and_its_log_is_unsettled() {
 
 #[tokio::test]
 async fn a_reattach_without_a_run_host_starts_at_the_latest_snapshot() {
-    use argonauts_core::events::run::RunSnapshot;
+    use argonauts_core::runs::events::run::RunSnapshot;
     let home = TestHome::new();
     let client = app_client(&home, Arc::new(FakeRunHost::default()));
     let run = other_run("0801");

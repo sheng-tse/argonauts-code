@@ -119,7 +119,7 @@ impl Git {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::{TestRepo, git_test_env};
+    use crate::testing::{TestRepo, git_test_env};
 
     #[tokio::test]
     async fn a_runs_branches_are_listed_by_its_prefix_and_deleted() {

@@ -7,8 +7,8 @@ use std::path::Path;
 use argonauts_conductor::gh::RepoName;
 use argonauts_core::NoteLevel;
 use argonauts_core::app::{AppChoice, AppEvent, ChoiceKind};
-use argonauts_core::events::approval::{AnswerAction, AnswerOption, FreeText};
-use argonauts_core::names::ChoiceId;
+use argonauts_core::base::names::ChoiceId;
+use argonauts_core::runs::events::approval::{AnswerAction, AnswerOption, FreeText};
 
 use super::gh_here;
 use crate::controller::Ctx;

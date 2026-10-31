@@ -7,12 +7,12 @@ use time::macros::format_description;
 use time::{Date, OffsetDateTime, Time};
 
 use argonauts_core::RunId;
-use argonauts_core::limits::TrackRecord;
-use argonauts_core::names::ModelRef;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::models::limits::TrackRecord;
 use argonauts_core::settings::protocol::RoutingSettings;
 
 use crate::outcomes::{LogLine, Outcome};
-use crate::types::Assignment;
+use crate::store::types::Assignment;
 
 use super::{Beta, POOLED_ALL_TYPES, POOLED_CREW};
 

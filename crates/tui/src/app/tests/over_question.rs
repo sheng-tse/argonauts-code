@@ -2,8 +2,8 @@
 //! where its keys were, and takes every key until it is answered or passed on.
 
 use super::*;
-use crate::state::AppState;
-use crate::views::{View, ViewCtx, ViewOutcome};
+use crate::frame::state::AppState;
+use crate::frame::view::{View, ViewCtx, ViewOutcome};
 
 /// A docked view that stays over a question. It names each of its rows, its keys' row last,
 /// and closes on any key it is given, so a key that reaches it shows.

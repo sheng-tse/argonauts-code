@@ -7,22 +7,22 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-use argonauts_core::events::task::CheckKind;
-use argonauts_core::events::{MergeEvent, ReviewEvent, RunLifecycle, SpendEvent};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::layout::{repo_state, run_files};
-use argonauts_core::limits::{CheckRequest, CheckRunner};
-use argonauts_core::session_runner::{SandboxMode, SandboxProfile};
+use argonauts_core::agents::session_runner::{SandboxMode, SandboxProfile};
+use argonauts_core::base::layout::{repo_state, run_files};
+use argonauts_core::models::limits::{CheckRequest, CheckRunner};
+use argonauts_core::runs::events::task::CheckKind;
+use argonauts_core::runs::events::{MergeEvent, ReviewEvent, RunLifecycle, SpendEvent};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
 use argonauts_core::settings::Settings;
 use argonauts_core::settings::evolution::EntryAcceptance;
-use argonauts_core::{RunId, TaskId, journal};
+use argonauts_core::{RunId, TaskId, runs::journal};
 
 use super::files::{
     Scratch, nonce, place, read_regular, remove_if_present, safe_relative, write_json,
 };
 use super::isolated::isolated_repo;
 use super::{Check, Entry, Proposal, ReplaySet, names};
-use crate::error::{LearningError, Result};
+use crate::store::error::{LearningError, Result};
 
 /// A check with no timeout of its own gets the default `checks.timeout`.
 const DEFAULT_TIMEOUT_SECS: u64 = 30 * 60;
@@ -347,7 +347,7 @@ pub(super) fn hidden_root(entry: &Entry) -> Result<PathBuf> {
 }
 
 fn git_commit(repo: &Path, rev: &str) -> Result<String> {
-    crate::git::run(
+    crate::store::git::run(
         repo,
         &[
             "rev-parse",

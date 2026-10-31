@@ -10,8 +10,8 @@ use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::error::Result;
-use crate::git;
+use crate::store::error::Result;
+use crate::store::git;
 
 /// Larger files are data, not code a test could take a name from.
 const MAX_FILE_BYTES: u64 = 1 << 20;

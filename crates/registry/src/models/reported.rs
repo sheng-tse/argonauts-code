@@ -9,9 +9,9 @@ use std::io;
 use std::path::Path;
 
 use argonauts_core::ReportedModel;
-use argonauts_core::model_catalog::{CatalogEntry, ModelCatalog};
-use argonauts_core::names::ModelRef;
-use argonauts_core::registry::ModelEntry;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::models::model_catalog::{CatalogEntry, ModelCatalog};
+use argonauts_core::models::registry::ModelEntry;
 use argonauts_core::settings::Settings;
 use argonauts_core::{create_private_dir_all, write_private_file};
 use serde::{Deserialize, Serialize};

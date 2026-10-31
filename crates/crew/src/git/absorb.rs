@@ -208,7 +208,7 @@ fn same_mode(mode: &str, meta: &std::fs::Metadata) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::{TestRepo, git_test_env};
+    use crate::testing::{TestRepo, git_test_env};
 
     fn git() -> Git {
         Git::with_env(git_test_env())

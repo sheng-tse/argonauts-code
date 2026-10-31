@@ -3,8 +3,8 @@
 //! and `/approvals` still lists it.
 
 use argonauts_core::RunId;
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::approval::{
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::events::approval::{
     AnswerAction, AnswerOption, ApprovalDecided, ApprovalOpened,
 };
 

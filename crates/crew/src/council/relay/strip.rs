@@ -4,8 +4,8 @@
 
 use regex::Regex;
 
-use argonauts_core::events::council::{HiddenName, TextPart};
-use argonauts_core::names::SeatId;
+use argonauts_core::base::names::SeatId;
+use argonauts_core::runs::events::council::{HiddenName, TextPart};
 
 use super::HIDDEN;
 use crate::council::lexicon::Lexicon;

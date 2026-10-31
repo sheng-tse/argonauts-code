@@ -7,7 +7,7 @@ use std::fmt;
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
 
-use crate::names::{ModelRef, RoleName};
+use crate::base::names::{ModelRef, RoleName};
 use crate::settings::crew::CrewRole;
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]

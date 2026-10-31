@@ -1,34 +1,36 @@
 use crate::common;
 use std::path::PathBuf;
 
-use argonauts_core::agent_panel::{AgentPanelRows, CrewTab};
-use argonauts_core::api::{DiffView, RawView};
+use argonauts_core::agents::cli_sessions::CliSession;
+use argonauts_core::app::agent_panel::{AgentPanelRows, CrewTab};
+use argonauts_core::app::views::ContextUse;
 use argonauts_core::app::{
     AgentReady, AnswerTarget, ConversationSummary, HeaderAndBottomLine, UiCommand, ViewRequest,
 };
-use argonauts_core::cli_sessions::CliSession;
-use argonauts_core::events::approval::ApprovalOpened;
-use argonauts_core::events::run::Party;
-use argonauts_core::events::session::{
-    Delivery, FileDiff, QueuedMessage, SessionInput, SubagentKind, SubagentStatus, SubagentUpdate,
+use argonauts_core::base::names::{
+    AgentId, ConversationId, MessageId, ModelRef, RoleName, SessionKey,
 };
 use argonauts_core::input::{MentionTarget, ResumeTarget, SlashCommand};
-use argonauts_core::names::{AgentId, ConversationId, MessageId, ModelRef, RoleName, SessionKey};
-use argonauts_core::views::ContextUse;
+use argonauts_core::runs::api::{DiffView, RawView};
+use argonauts_core::runs::events::approval::ApprovalOpened;
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::runs::events::session::{
+    Delivery, FileDiff, QueuedMessage, SessionInput, SubagentKind, SubagentStatus, SubagentUpdate,
+};
 use argonauts_core::{DiffStat, RunId, TaskId};
-use argonauts_tui::format::WallClock;
-use argonauts_tui::keymap::Keymap;
-use argonauts_tui::stability::{WIDTHS, assert_frames, buffer_text, samples};
-use argonauts_tui::state::{
+use argonauts_tui::base::format::WallClock;
+use argonauts_tui::base::input::keymap::Keymap;
+use argonauts_tui::base::stability::{WIDTHS, assert_frames, buffer_text, samples};
+use argonauts_tui::base::theme::{Role, Theme};
+use argonauts_tui::frame::state::{
     AppState, OpenApproval, RunState, SessionState, SessionStatus, TaskRow, ToolRecord, Welcome,
 };
-use argonauts_tui::theme::{Role, Theme};
+use argonauts_tui::frame::view::pager::Pager;
+use argonauts_tui::frame::view::{View, ViewCtx, ViewOutcome};
 use argonauts_tui::views::crew::AgentPanelView;
 use argonauts_tui::views::help::HelpView;
-use argonauts_tui::views::pager::Pager;
 use argonauts_tui::views::resume::ResumePicker;
 use argonauts_tui::views::session::SessionView;
-use argonauts_tui::views::{View, ViewCtx, ViewOutcome};
 use common::{t0, theme};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
@@ -826,7 +828,7 @@ fn session_view_output() {
 fn the_agent_panel_opens_a_finished_agents_transcript() {
     let mut state = session_state("The JSON writer goes beside the CSV one.");
     let run = state.runs.get_mut(&run_id()).unwrap();
-    run.finished = Some(argonauts_core::events::run::RunOutcome::Merged);
+    run.finished = Some(argonauts_core::runs::events::run::RunOutcome::Merged);
     // A merged run asks nothing more.
     run.approvals.clear();
     for session in run.sessions.values_mut() {
@@ -1247,8 +1249,8 @@ fn help_view() {
     }
     let mut keymap = Keymap::default();
     keymap.rebind(
-        argonauts_tui::keymap::Action::Transcript,
-        vec![argonauts_tui::keymap::KeySpec::parse("ctrl+y").unwrap()],
+        argonauts_tui::base::input::keymap::Action::Transcript,
+        vec![argonauts_tui::base::input::keymap::KeySpec::parse("ctrl+y").unwrap()],
     );
     let mut view = HelpView::new(keymap);
     let mut seen = String::new();
@@ -1363,7 +1365,7 @@ fn overlays_hold_their_frames_at_every_width() {
 
 #[test]
 fn rewind_picker() {
-    use argonauts_core::views::CheckpointRow;
+    use argonauts_core::app::views::CheckpointRow;
     use argonauts_tui::views::rewind::RewindPicker;
     let row = |task: &str, n, to: &str, rewound_here| CheckpointRow {
         task: TaskId::new(task).unwrap(),

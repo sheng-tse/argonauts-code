@@ -19,10 +19,10 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use crate::error::{LearningError, Result};
-use crate::git::{self, Entry};
+use crate::export::scan::{Finding, scan};
 use crate::learned_workflows::LoadedLearnedWorkflow;
-use crate::scan::{Finding, scan};
+use crate::store::error::{LearningError, Result};
+use crate::store::git::{self, Entry};
 use crate::store::{CLAUDE_SKILLS_DIR, SKILLS_DIR, Store};
 
 pub use document::{MAX_COMPATIBILITY, MAX_DESCRIPTION, MAX_NAME};
@@ -256,7 +256,7 @@ pub fn propose_import(store: &Store, report: &ImportReport, claude_link: bool) -
     let mut per_file = Vec::new();
     for (path, hash) in &report.files {
         let bytes = fs::read(report.staged.join(path))?;
-        if argonauts_core::hash::sha256_hex(&bytes) != *hash {
+        if argonauts_core::base::hash::sha256_hex(&bytes) != *hash {
             return Err(LearningError::Refused(format!(
                 "The staged copy of `{path}` changed after the scan. Import {name} again."
             )));

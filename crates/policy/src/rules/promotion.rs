@@ -2,7 +2,7 @@
 //! workflow within `min_days_between`, whatever `decide_with` says. Replay and holdout checks
 //! always run first.
 
-use argonauts_core::policy::EvidenceFacts;
+use argonauts_core::safety::policy::EvidenceFacts;
 use argonauts_core::settings::approvals::PromotionRules;
 use time::{Duration, OffsetDateTime};
 
@@ -41,7 +41,7 @@ pub fn check(facts: &EvidenceFacts, rules: &PromotionRules, now: OffsetDateTime)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::policy::{PromotionFacts, Verdict};
+    use argonauts_core::safety::policy::{PromotionFacts, Verdict};
 
     fn facts(class: &str, last_promoted: Option<OffsetDateTime>) -> EvidenceFacts {
         EvidenceFacts {

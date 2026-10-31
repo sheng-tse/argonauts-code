@@ -13,15 +13,13 @@ pub mod profile;
 pub mod proxy;
 pub mod scope;
 pub mod seatbelt;
-#[cfg(all(test, target_os = "macos"))]
-mod seatbelt_outside_tests;
 pub mod selftest;
 pub mod view;
 
 use std::sync::Arc;
 
 use argonauts_core::CommandSpec;
-use argonauts_core::session_runner::{SandboxMode, SandboxProfile};
+use argonauts_core::agents::session_runner::{SandboxMode, SandboxProfile};
 use argonauts_core::settings::approvals::{SandboxChoice, SandboxSettings};
 
 pub use profile::{ProfileInput, can_read, can_write, session_profile};
@@ -131,6 +129,9 @@ impl SandboxWrap for Unsandboxed {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    mod seatbelt_outside;
+
     use super::*;
 
     #[test]

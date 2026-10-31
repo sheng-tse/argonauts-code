@@ -6,7 +6,7 @@ use argonauts_core::settings::mods::ModsView;
 use argonauts_core::settings::mods::view::ModRowKind;
 use crossterm::event::KeyEvent;
 
-use crate::keymap::KeySpec;
+use crate::base::input::keymap::KeySpec;
 
 /// A mod's `key` as its two keys. `None` for one that isn't two keys the keymap reads.
 fn chord_of(key: &str) -> Option<(KeySpec, KeySpec)> {

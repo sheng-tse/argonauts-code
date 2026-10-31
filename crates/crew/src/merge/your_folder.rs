@@ -11,19 +11,19 @@
 
 use std::path::PathBuf;
 
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::approval::{
+use argonauts_core::base::names::ApprovalId;
+use argonauts_core::base::paths::{create_private_dir_all, write_private_file};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::approval::{
     AnswerAction, AnswerOption, ApprovalKind, ApprovalPacket, BothChanged, FreeText,
 };
-use argonauts_core::names::ApprovalId;
-use argonauts_core::paths::{create_private_dir_all, write_private_file};
-use argonauts_core::policy::{EvidenceDocument, EvidenceFacts};
+use argonauts_core::safety::policy::{EvidenceDocument, EvidenceFacts};
 use argonauts_core::settings::protocol::MergeMode;
-use argonauts_core::{Note, NoteLevel, hidden_git};
+use argonauts_core::{Note, NoteLevel, runs::hidden_git};
 
 use crate::approvals::{self, ApprovalRequest};
+use crate::engine::error::EngineResult;
 use crate::engine::host::Host;
-use crate::error::EngineResult;
 use crate::git::FolderMerge;
 use crate::merge::deliver;
 use crate::merge::in_the_way::{self, MERGE_LATER};

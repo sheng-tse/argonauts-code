@@ -3,7 +3,7 @@
 //! whoever answers the crew's questions: a plan nobody drafted or judged, such as a workflow
 //! the main agent picked, carries an uncontested plan's facts instead.
 
-use argonauts_core::policy::EvidenceFacts;
+use argonauts_core::safety::policy::EvidenceFacts;
 use argonauts_core::settings::approvals::{HardLimitSettings, PlanRules};
 
 use super::{Conditions, RuleVerdict, usd};
@@ -127,7 +127,7 @@ fn fits_limit(estimate: f64, spent: f64, spend_per_run: Option<f64>) -> Result<S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::policy::Verdict;
+    use argonauts_core::safety::policy::Verdict;
 
     fn passing() -> EvidenceFacts {
         EvidenceFacts {

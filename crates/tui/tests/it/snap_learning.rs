@@ -4,14 +4,14 @@
 
 use crate::common;
 use argonauts_core::app::SettingRow;
-use argonauts_core::settings::SettingScope;
-use argonauts_core::views::{
+use argonauts_core::app::views::{
     LearningAction, LearningArea, LearningCommand, LearningRow, LearningTab, LearningView,
 };
-use argonauts_tui::stability::{WIDTHS, assert_frames, buffer_text};
-use argonauts_tui::state::AppState;
+use argonauts_core::settings::SettingScope;
+use argonauts_tui::base::stability::{WIDTHS, assert_frames, buffer_text};
+use argonauts_tui::frame::state::AppState;
+use argonauts_tui::frame::view::{View, ViewCtx};
 use argonauts_tui::views::learning::LearningPicker;
-use argonauts_tui::views::{View, ViewCtx};
 use common::{t0, theme};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;

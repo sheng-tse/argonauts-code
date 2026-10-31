@@ -4,11 +4,11 @@
 //! agent's tasks go to whichever valid candidate holds the fewest tasks.
 
 use argonauts_core::TaskId;
-use argonauts_core::events::approval::{AnswerAction, ApprovalKind};
-use argonauts_core::events::run::Party;
-use argonauts_core::events::task::TaskState;
-use argonauts_core::limits::{Candidate, CandidateQuery};
-use argonauts_core::names::{ModelRef, RoleName};
+use argonauts_core::base::names::{ModelRef, RoleName};
+use argonauts_core::models::limits::{Candidate, CandidateQuery};
+use argonauts_core::runs::events::approval::{AnswerAction, ApprovalKind};
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::runs::events::task::TaskState;
 use argonauts_core::settings::fallback::FallbackStrategy;
 
 use crate::engine::host::Host;
@@ -128,7 +128,7 @@ pub fn spread(candidates: &[Candidate], loads: &[usize], proposed: &ModelRef) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use argonauts_core::limits::CostEstimate;
+    use argonauts_core::models::limits::CostEstimate;
 
     fn candidate(worker: &str) -> Candidate {
         Candidate {

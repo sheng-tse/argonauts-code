@@ -6,9 +6,9 @@ use std::f64::consts::{FRAC_PI_2, PI};
 
 use super::standing::{self, Standing};
 use super::{Planet, Side, Sun};
-use crate::world::geo::{LonLat, Plate, View};
+use crate::base::draw::geo::{LonLat, Plate, View};
+use crate::base::draw::scene::{HitMap, Mark, Pointed, Shape, Under};
 use crate::world::planet_fx::GlobeGround;
-use crate::world::scene::{HitMap, Mark, Pointed, Shape, Under};
 
 /// How near a dot the pointer must be to find it, in the scene's pixels.
 const DOT_REACH: f32 = 6.0;

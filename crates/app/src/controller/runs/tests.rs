@@ -1,12 +1,12 @@
 use std::time::Duration;
 
 use argonauts_core::Paths;
-use argonauts_core::api::{RunState, RunSummary};
 use argonauts_core::app::{AppEvent, AppMode, ConversationEvent, UiCommand};
-use argonauts_core::events::run::{Party, RunMode, RunOutcome, WaitReason};
+use argonauts_core::base::names::{ApprovalId, ConversationId, TurnId};
 use argonauts_core::input::{ResumeTarget, SlashCommand};
-use argonauts_core::names::{ApprovalId, ConversationId, TurnId};
-use argonauts_core::policy::{NarratorLine, NarratorLineKind};
+use argonauts_core::runs::api::{RunState, RunSummary};
+use argonauts_core::runs::events::run::{Party, RunMode, RunOutcome, WaitReason};
+use argonauts_core::safety::policy::{NarratorLine, NarratorLineKind};
 use argonauts_core::settings::approvals::ApprovalMode;
 use argonauts_core::{NoteLevel, Spend};
 use argonauts_testkit::FakeSession;
@@ -17,11 +17,11 @@ use super::rig::{Rig, finished, question, resumed, run_id, waiting};
 use super::{RunNews, RunUpdate, attached, focus, on_update, open, status_parts};
 use crate::FirstView;
 use crate::client::test_support as log;
+use crate::controller::base::test_support::{ApprovalCall, Call, CliOptions, TestDriver, max_wait};
 use crate::controller::header_and_bottom_line::header_and_bottom_line;
-use crate::controller::test_support::{ApprovalCall, Call, CliOptions, TestDriver, max_wait};
 use crate::controller::{Effect, Opening, run_commands};
-use crate::conversation_store::{ConversationRun, ConversationStore};
-use crate::env::AppEnv;
+use crate::conversation::store::{ConversationRun, ConversationStore};
+use crate::startup::env::AppEnv;
 
 fn is_mode(mode: AppMode) -> impl Fn(&AppEvent) -> bool {
     move |event| matches!(event, AppEvent::Mode { mode: seen } if *seen == mode)
@@ -1274,7 +1274,7 @@ async fn narrator_lines_reach_the_screen_and_its_journal() {
         run: Some(run.clone()),
         kind: NarratorLineKind::Update,
         text: "One worker is writing tests.".to_owned(),
-        model: argonauts_core::names::ModelRef::new("claude-code", None),
+        model: argonauts_core::base::names::ModelRef::new("claude-code", None),
         spend: Spend::default(),
     };
     let update = RunUpdate::Narrator {
@@ -1310,9 +1310,9 @@ async fn narrator_lines_reach_the_screen_and_its_journal() {
 /// names it: by its title, never by its number.
 #[tokio::test]
 async fn a_run_that_wakes_is_named_as_its_row_names_it() {
-    use argonauts_core::api::ApiError;
+    use argonauts_core::runs::api::ApiError;
 
-    use crate::wake::WakeCause;
+    use crate::host::wake::WakeCause;
 
     let mut rig = Rig::new();
     rig.conductor
@@ -1399,7 +1399,7 @@ async fn a_resumed_runs_history_is_only_replayed() {
 /// A run that won't resume says why in plain words, without its id or the error's own prefix.
 #[test]
 fn a_run_that_wont_resume_says_why_without_its_id() {
-    use argonauts_core::api::ApiError;
+    use argonauts_core::runs::api::ApiError;
 
     let run = argonauts_core::RunId::new("run-20261004-043029-d8bb").unwrap();
     let merged = super::resume_error(ApiError::Merged(run.clone())).to_string();

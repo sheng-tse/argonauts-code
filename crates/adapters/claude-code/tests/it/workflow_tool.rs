@@ -6,7 +6,7 @@ use std::fs;
 use std::path::Path;
 
 use argonauts_adapter_claude_code::ClaudeCodeAdapter;
-use argonauts_core::events::session::{CliWorkflowRun, SubagentStatus};
+use argonauts_core::runs::events::session::{CliWorkflowRun, SubagentStatus};
 use argonauts_core::{Adapter, AgentEvent};
 
 const CALL: &str = "toolu_01WfAddDueDates0000000001";

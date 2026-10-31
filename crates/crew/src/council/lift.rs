@@ -5,16 +5,16 @@
 
 use serde::{Deserialize, Serialize};
 
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::council::{Backed, CouncilEventKind, SeatLift, Seating};
-use argonauts_core::log::{Note, NoteLevel};
-use argonauts_core::names::{ModelRef, SeatId};
+use argonauts_core::base::log::{Note, NoteLevel};
+use argonauts_core::base::names::{ModelRef, SeatId};
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::council::{Backed, CouncilEventKind, SeatLift, Seating};
 
 use super::seats;
 use super::talk::{self, Council};
+use crate::engine::error::EngineResult;
 use crate::engine::host::Host;
-use crate::error::EngineResult;
 use crate::roles;
 
 /// A position the council took up: the seat that raised it, and every seat that backed it in
@@ -191,11 +191,11 @@ fn hidden_line(hidden: u32, guesses: u32) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::council::{
+    use argonauts_core::base::names::WorkflowId;
+    use argonauts_core::runs::events::council::{
         CouncilEvent, Point, PointStance, PointState, Seat, SeatRole, Stance,
     };
-    use argonauts_core::names::WorkflowId;
-    use argonauts_core::workflow::StepRef;
+    use argonauts_core::workflows::workflow::StepRef;
 
     use super::*;
     use crate::council::talk::Councils;

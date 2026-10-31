@@ -3,7 +3,7 @@
 //! its running tool call.
 
 use crate::limits_support;
-use argonauts_core::events::approval::ApprovalKind;
+use argonauts_core::runs::events::approval::ApprovalKind;
 use argonauts_scenarios::WAIT;
 use limits_support::*;
 use serde_json::Value;

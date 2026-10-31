@@ -2,12 +2,12 @@
 //! committed, and the role's fallback mode decides what happens next.
 
 use crate::limits_support;
-use argonauts_core::events::approval::{AnswerAction, ApprovalEvent, ApprovalKind, FreeText};
-use argonauts_core::events::run::Party;
-use argonauts_core::events::session::{EndReason, SessionEvent};
-use argonauts_core::events::shared::{BlackboardEvent, BlackboardKind, Recipient};
-use argonauts_core::events::{AgentStatusEvent, FallbackEvent, RunEvent, RunEventKind};
-use argonauts_core::limits::{HealthState, ModelState};
+use argonauts_core::models::limits::{HealthState, ModelState};
+use argonauts_core::runs::events::approval::{AnswerAction, ApprovalEvent, ApprovalKind, FreeText};
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::runs::events::session::{EndReason, SessionEvent};
+use argonauts_core::runs::events::shared::{BlackboardEvent, BlackboardKind, Recipient};
+use argonauts_core::runs::events::{AgentStatusEvent, FallbackEvent, RunEvent, RunEventKind};
 use argonauts_core::settings::fallback::FallbackMode;
 use argonauts_scenarios::WAIT;
 use argonauts_testkit::Key;

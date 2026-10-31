@@ -8,25 +8,25 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use argonauts_core::engine::{EngineCommand, EngineExit};
-use argonauts_core::events::approval::{
+use argonauts_core::agents::session_runner::{Access, SessionSpec};
+use argonauts_core::base::log::{Note, NoteLevel, RUN_REVIEW_FAILED};
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::runs::engine::{EngineCommand, EngineExit};
+use argonauts_core::runs::events::approval::{
     AnswerAction, ApprovalEvent, ApprovalKind, ApprovalPacket, MergePacket,
 };
-use argonauts_core::events::goal::{GoalEvent, GoalFile, GoalSource};
-use argonauts_core::events::run::{
+use argonauts_core::runs::events::goal::{GoalEvent, GoalFile, GoalSource};
+use argonauts_core::runs::events::run::{
     Party, PhaseChange, ResumeCause, RunLifecycle, RunMode, RunOutcome, RunPhase, WaitReason,
 };
-use argonauts_core::events::session::{EndReason, SessionEvent};
-use argonauts_core::events::task::{TaskEvent, TaskKind, TaskSpec, TryCause};
-use argonauts_core::events::{RunEvent, RunEventKind};
-use argonauts_core::log::{Note, NoteLevel, RUN_REVIEW_FAILED};
-use argonauts_core::names::ModelRef;
-use argonauts_core::session_runner::{Access, SessionSpec};
-use argonauts_core::steps::StepName;
+use argonauts_core::runs::events::session::{EndReason, SessionEvent};
+use argonauts_core::runs::events::task::{TaskEvent, TaskKind, TaskSpec, TryCause};
+use argonauts_core::runs::events::{RunEvent, RunEventKind};
+use argonauts_core::workflows::steps::StepName;
 use argonauts_core::{PhaseStatus, RunId};
 use argonauts_crew::understand::file;
-use argonauts_testkit::deadline;
-use argonauts_testkit::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::engine::runner::{FakeRunner, FakeSession};
+use argonauts_testkit::pty::deadline;
 
 use support::{Crew, Outcome, answer, names};
 
@@ -274,8 +274,8 @@ async fn captain_lifecycle() -> anyhow::Result<()> {
 /// tells it what already fails, as a planner is told in a crew run.
 #[tokio::test]
 async fn the_captains_worker_is_told_what_already_fails() -> anyhow::Result<()> {
-    use argonauts_core::events::CheckOutcome;
-    use argonauts_core::events::task::CheckKind;
+    use argonauts_core::runs::events::CheckOutcome;
+    use argonauts_core::runs::events::task::CheckKind;
     use argonauts_core::settings::protocol::CheckCommand;
 
     let (mut crew, worker) = captain_crew()?;

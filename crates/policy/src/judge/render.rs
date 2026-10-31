@@ -6,14 +6,16 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use argonauts_core::events::goal::GoalFile;
-use argonauts_core::policy::{DecisionPoint, EvidenceDocument, EvidenceFacts, EvidencePacket};
+use argonauts_core::runs::events::goal::GoalFile;
+use argonauts_core::safety::policy::{
+    DecisionPoint, EvidenceDocument, EvidenceFacts, EvidencePacket,
+};
 use argonauts_core::settings::Settings;
 use argonauts_core::sha256_hex;
-use argonauts_core::steps::judgment::ModelJudgeInput;
+use argonauts_core::workflows::steps::judgment::ModelJudgeInput;
 use serde::Serialize;
 
-use crate::session::clean_text;
+use crate::sessions::session::clean_text;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RenderError {
@@ -525,8 +527,8 @@ fn usd(value: f64) -> String {
 #[cfg(test)]
 mod tests {
     use argonauts_core::RunId;
-    use argonauts_core::events::approval::ApprovalKind;
-    use argonauts_core::names::ApprovalId;
+    use argonauts_core::base::names::ApprovalId;
+    use argonauts_core::runs::events::approval::ApprovalKind;
 
     use super::*;
 

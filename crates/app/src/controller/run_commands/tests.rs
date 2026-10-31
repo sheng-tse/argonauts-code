@@ -1,27 +1,27 @@
 use std::path::Path;
 use std::process::{Child, Command};
 
-use argonauts_core::api::{ApprovalAnswer, DiffScope, RunState, RunSummary};
+use argonauts_core::app::views::{ContextRow, ContextView};
 use argonauts_core::app::{
     AnswerTarget, AppEvent, ChoiceKind, RepoRuns, UiCommand, ViewData, ViewRequest,
 };
-use argonauts_core::events::agent_status::FallbackPlan;
-use argonauts_core::events::approval::{
+use argonauts_core::base::ids::RepoId;
+use argonauts_core::base::layout::run_files;
+use argonauts_core::base::names::{ApprovalId, MessageId, ModelRef, RoleName, SessionKey};
+use argonauts_core::input::SlashCommand;
+use argonauts_core::runs::api::{ApprovalAnswer, DiffScope, RunState, RunSummary};
+use argonauts_core::runs::events::agent_status::FallbackPlan;
+use argonauts_core::runs::events::approval::{
     AnswerAction, ApprovalDecided, ApprovalEvent, ApprovalKind, ApprovalOpened, ApprovalPacket,
     FreeText,
 };
-use argonauts_core::events::run::{Party, RunMode, RunOutcome};
-use argonauts_core::events::session::SessionStarted;
-use argonauts_core::events::task::{TaskEvent, TryCause};
-use argonauts_core::events::{RunEvent, RunEventKind, SessionEvent};
-use argonauts_core::ids::RepoId;
-use argonauts_core::input::SlashCommand;
-use argonauts_core::layout::run_files;
-use argonauts_core::names::{ApprovalId, MessageId, ModelRef, RoleName, SessionKey};
+use argonauts_core::runs::events::run::{Party, RunMode, RunOutcome};
+use argonauts_core::runs::events::session::SessionStarted;
+use argonauts_core::runs::events::task::{TaskEvent, TryCause};
+use argonauts_core::runs::events::{RunEvent, RunEventKind, SessionEvent};
 use argonauts_core::settings::approvals::{ApprovalMode, DecideWith};
 use argonauts_core::settings::asking::WhenDeclined;
 use argonauts_core::settings::fallback::FallbackMode;
-use argonauts_core::views::{ContextRow, ContextView};
 use argonauts_core::{AgentEvent, NoteLevel, RunId, Spend, TaskId};
 use time::OffsetDateTime;
 
@@ -29,12 +29,12 @@ use super::tasks::{fallback_rule, reassign};
 use super::views::asks_for_status;
 use super::{guidance, mention, take_back};
 use crate::FirstView;
-use crate::ancestry::Processes;
 use crate::client::test_support::{agent, run_started, session_started, usage, write_journal};
 use crate::controller::Opening;
+use crate::controller::base::test_support::{ApprovalCall, Call, CliOptions, TestDriver};
 use crate::controller::runs::rig::{Rig, event, finished, question, run_id, waiting};
-use crate::controller::test_support::{ApprovalCall, Call, CliOptions, TestDriver};
-use crate::live_registry::{LiveRunHost, register};
+use crate::host::live_registry::{LiveRunHost, register};
+use crate::startup::ancestry::Processes;
 
 fn attach_to(run: &str, interactive: bool) -> CliOptions {
     CliOptions {
@@ -425,7 +425,7 @@ async fn a_spot_check_goes_to_the_run_and_needs_you_at_the_terminal() {
 /// run beside the try and decide nothing.
 #[tokio::test]
 async fn running_a_goals_checks_now_goes_to_the_run() {
-    use argonauts_core::events::goal::GoalAction;
+    use argonauts_core::runs::events::goal::GoalAction;
 
     let check_now = GoalAction::CheckNow {
         task: Some(TaskId::new("task-002").unwrap()),
@@ -461,8 +461,8 @@ async fn running_a_goals_checks_now_goes_to_the_run() {
 /// the message it replies to and the seats it names.
 #[tokio::test]
 async fn what_you_write_to_the_council_goes_to_the_run_on_screen() {
-    use argonauts_core::events::council::CouncilAction;
-    use argonauts_core::names::{MessageId, SeatId};
+    use argonauts_core::base::names::{MessageId, SeatId};
+    use argonauts_core::runs::events::council::CouncilAction;
 
     let write = CouncilAction::Write {
         text: "Seat 2, why a bucket?".to_owned(),
@@ -484,7 +484,7 @@ async fn what_you_write_to_the_council_goes_to_the_run_on_screen() {
         run: run_id("run-001"),
         action: write,
     };
-    let deadline = tokio::time::Instant::now() + crate::controller::test_support::max_wait();
+    let deadline = tokio::time::Instant::now() + crate::controller::base::test_support::max_wait();
     while !driver.conductor.calls().contains(&sent) {
         assert!(
             tokio::time::Instant::now() < deadline,
@@ -1004,12 +1004,12 @@ async fn a_carried_on_conversation_lists_the_run_it_ended_with() {
 /// folder keeps. A session never counted has none.
 #[tokio::test]
 async fn a_run_sessions_whole_count_comes_from_its_folder() {
-    use argonauts_core::events::context::{ContextCell, ContextUsage};
+    use argonauts_core::runs::events::context::{ContextCell, ContextUsage};
 
     let mut rig = Rig::new();
     let run = run_id("run-001");
     let (counted, never) = (SessionKey::numbered(3), SessionKey::numbered(4));
-    let dir = argonauts_core::layout::session_dir(&rig.ctx.env.run_dir(&run), &counted);
+    let dir = argonauts_core::base::layout::session_dir(&rig.ctx.env.run_dir(&run), &counted);
     std::fs::create_dir_all(&dir).expect("the session's folder");
     let usage = ContextUsage {
         total_tokens: 24_924,
@@ -1025,7 +1025,7 @@ async fn a_run_sessions_whole_count_comes_from_its_folder() {
         ..ContextUsage::default()
     };
     std::fs::write(
-        dir.join(argonauts_core::layout::session_files::CONTEXT),
+        dir.join(argonauts_core::base::layout::session_files::CONTEXT),
         serde_json::to_vec(&usage).expect("a count"),
     )
     .expect("the count");
@@ -1179,7 +1179,7 @@ async fn all_repos_lists_this_repo_then_live_ones_newest_first() {
 
 #[tokio::test]
 async fn rewind_lists_a_tasks_checkpoints_for_the_picker() {
-    use argonauts_core::events::task::TaskEvent;
+    use argonauts_core::runs::events::task::TaskEvent;
     let mut rig = Rig::new();
     let run = rig.start("Rename the flag").await;
     let (export, docs) = (
@@ -1437,7 +1437,7 @@ async fn a_steer_that_isnt_sent_says_so_in_the_transcript() {
 /// never as an internal error line.
 #[test]
 fn refusals_from_an_ended_run_read_in_plain_words() {
-    use argonauts_core::api::ApiError;
+    use argonauts_core::runs::api::ApiError;
 
     let run = RunId::new("run-20261004-043029-d8bb").unwrap();
     let merged = super::plain_refusal(&ApiError::Merged(run.clone())).unwrap();
@@ -1486,7 +1486,7 @@ async fn stopping_a_merged_run_says_so_plainly() {
 /// run's id, and a run that won't resume says why the same way.
 #[test]
 fn failures_read_as_one_plain_line() {
-    use argonauts_core::api::ApiError;
+    use argonauts_core::runs::api::ApiError;
 
     let refused = ApiError::Refused("task-001 has no session to steer".into());
     assert_eq!(

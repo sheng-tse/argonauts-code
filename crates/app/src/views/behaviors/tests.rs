@@ -1,7 +1,7 @@
-use argonauts_core::behavior_map::{Grouping, MapRequest};
 use argonauts_core::behaviors::LABELS;
-use argonauts_core::crew_stats::{CrewStats, TaskRecord};
-use argonauts_core::display_names::DisplayNames;
+use argonauts_core::behaviors::behavior_map::{Grouping, MapRequest};
+use argonauts_core::behaviors::crew_stats::{CrewStats, TaskRecord};
+use argonauts_core::look::display_names::DisplayNames;
 use serde_json::{Value, json};
 use time::macros::datetime;
 
@@ -208,7 +208,7 @@ fn the_summaries_list_is_in_farthest_point_order_each_row_lighting_its_neighbour
         request(Grouping::Model),
         &DisplayNames::default(),
     );
-    map.placing = argonauts_core::behavior_map::Placing::Summaries {
+    map.placing = argonauts_core::behaviors::behavior_map::Placing::Summaries {
         by: "Qwen3 Coder 30B on Ollama".to_owned(),
     };
     map.comparisons = super::compare_all(&map);
@@ -234,7 +234,7 @@ fn the_summaries_list_is_in_farthest_point_order_each_row_lighting_its_neighbour
 /// and never as a model called Codex.
 #[test]
 fn an_action_that_names_no_model_counts_as_its_clis_default() {
-    use argonauts_tui::format::WallClock;
+    use argonauts_tui::base::format::WallClock;
 
     let names = DisplayNames {
         defaults: [("codex".to_owned(), "gpt-6-luna".to_owned())].into(),
@@ -288,7 +288,7 @@ fn an_action_that_names_no_model_counts_as_its_clis_default() {
         }],
         ..CrewStats::default()
     };
-    crate::work_ledger::name_unnamed_models(&mut stats, &names.defaults);
+    crate::usage::work_ledger::name_unnamed_models(&mut stats, &names.defaults);
     assert_eq!(stats.tasks[0].model.as_deref(), Some("gpt-6-luna"));
 }
 
@@ -341,7 +341,7 @@ fn the_groups_follow_the_grouping() {
 /// A dot keeps whether its call failed and what became of its work, which the world reads.
 #[test]
 fn a_dot_says_whether_it_failed_and_how_its_work_ended() {
-    use argonauts_core::behavior_map::ActionOutcome;
+    use argonauts_core::behaviors::behavior_map::ActionOutcome;
 
     let mut records = records();
     records.actions[0].failed = true;
@@ -430,7 +430,7 @@ fn an_actions_input_reads_as_one_line() {
 mod records {
     use std::collections::BTreeMap;
 
-    use argonauts_core::events::RunEvent;
+    use argonauts_core::runs::events::RunEvent;
     use serde_json::json;
 
     use super::super::read::{Outcome, Records, of_actions};
@@ -690,7 +690,7 @@ fn summaries_place_each_summarized_action_by_its_summary_and_marks_what_labels_o
     );
     assert_eq!(
         map.placing,
-        argonauts_core::behavior_map::Placing::Summaries {
+        argonauts_core::behaviors::behavior_map::Placing::Summaries {
             by: "Qwen3 Coder 30B on Ollama".to_owned()
         }
     );
@@ -726,10 +726,10 @@ fn summaries_place_each_summarized_action_by_its_summary_and_marks_what_labels_o
 
 mod setting {
     use argonauts_core::app::{AppEvent, UiCommand, ViewData, ViewRequest};
-    use argonauts_core::behavior_map::MapRequest;
+    use argonauts_core::behaviors::behavior_map::MapRequest;
     use argonauts_core::settings::behaviors::BehaviorView;
 
-    use crate::controller::test_support::{CliOptions, TestDriver};
+    use crate::controller::base::test_support::{CliOptions, TestDriver};
 
     #[tokio::test]
     async fn the_map_carries_the_view_the_settings_ask_for() {

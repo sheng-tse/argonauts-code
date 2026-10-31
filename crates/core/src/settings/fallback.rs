@@ -11,7 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use super::Span;
 use super::crew::CrewRole;
-use crate::names::{AgentId, ModelRef, RoleName};
+use crate::base::names::{AgentId, ModelRef, RoleName};
 
 /// `[fallback.<role>]` is written for the crew's five roles. Each finer role reads the table
 /// of one of them, which isn't always the role whose models it takes.

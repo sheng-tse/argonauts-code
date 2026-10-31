@@ -16,11 +16,11 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use argonauts_core::layout::project_files::LEARNED_WORKFLOWS;
+use argonauts_core::base::layout::project_files::LEARNED_WORKFLOWS;
 
-use crate::error::{LearningError, Result};
 use crate::store::Store;
-use crate::types::LearnedWorkflowRef;
+use crate::store::error::{LearningError, Result};
+use crate::store::types::LearnedWorkflowRef;
 
 pub use diff::{diff, load_workflow};
 pub use graph::{PROTECTED_KINDS, protected_counts};

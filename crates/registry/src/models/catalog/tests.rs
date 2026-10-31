@@ -2,8 +2,8 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::mpsc;
 
-use argonauts_core::names::ModelRef;
-use argonauts_core::registry::ModelRegistry;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::models::registry::ModelRegistry;
 use argonauts_core::settings::Settings;
 use time::macros::datetime;
 
@@ -570,7 +570,8 @@ fn the_shipped_catalog_prices_the_newest_sol() {
         .iter()
         .find(|price| price.model == "gpt-6.1-sol")
         .expect("a price for gpt-6.1-sol");
-    let builtin = argonauts_core::pricing::builtin_price("gpt-6.1-sol").expect("a built-in price");
+    let builtin =
+        argonauts_core::models::pricing::builtin_price("gpt-6.1-sol").expect("a built-in price");
     assert_eq!(price.input.0, builtin.input_per_mtok);
     assert_eq!(price.output.0, builtin.output_per_mtok);
     assert_eq!(

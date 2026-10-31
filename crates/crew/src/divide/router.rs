@@ -14,8 +14,8 @@ use rand::RngExt;
 use rand::rngs::StdRng;
 
 use argonauts_core::TaskId;
-use argonauts_core::limits::{CostEstimate, HealthState, TrackRecord};
-use argonauts_core::names::ModelRef;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::models::limits::{CostEstimate, HealthState, TrackRecord};
 use argonauts_core::settings::protocol::{RoutingAlgorithm, RoutingSettings};
 use argonauts_learning::Assignment;
 use argonauts_learning::records::Record;

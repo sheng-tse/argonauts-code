@@ -6,14 +6,14 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context as _, anyhow};
-use argonauts_core::control::{ClientKind, ControlReply, ControlRequest, Frame};
-use argonauts_core::events::RunEvent;
+use argonauts_core::runs::events::RunEvent;
 use tokio::io::BufReader;
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
-use crate::run_files;
-use crate::wire::{read_frame, write_frame};
+use crate::control::wire::{read_frame, write_frame};
+use crate::control::{ClientKind, ControlReply, ControlRequest, Frame};
+use crate::host::run_files;
 
 /// A run host that accepts but never greets is stuck; don't wait on it forever.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);

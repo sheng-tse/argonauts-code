@@ -1,9 +1,9 @@
 //! Where a question goes: the worker of the piece it concerns, the consultant when addressed, or
 //! you as a `Question` approval.
 
-use argonauts_core::events::shared::Recipient;
-use argonauts_core::events::task::TaskState;
-use argonauts_core::names::RoleName;
+use argonauts_core::base::names::RoleName;
+use argonauts_core::runs::events::shared::Recipient;
+use argonauts_core::runs::events::task::TaskState;
 
 use crate::blackboard::refs;
 use crate::state::RunState;

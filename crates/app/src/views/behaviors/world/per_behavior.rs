@@ -5,7 +5,7 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 
-use argonauts_core::behavior_world::{BehaviorFacts, Burst, Crash, Move};
+use argonauts_core::behaviors::behavior_world::{BehaviorFacts, Burst, Crash, Move};
 use time::{Duration, OffsetDateTime};
 
 use super::super::read::{Outcome, Recorded, SessionEnded};

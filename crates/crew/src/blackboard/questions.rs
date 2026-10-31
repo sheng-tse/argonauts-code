@@ -3,27 +3,27 @@
 //! question that stops the work gets the main agent's answer, and one in a report that finished
 //! stands as what its agent decided. Either way one line says so, and the task carries on.
 
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::approval::{
+use argonauts_core::base::names::{MessageId, ModelRef, RoleName, SessionKey};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::approval::{
     ApprovalKind, ApprovalPacket, FreeText, MergeQuestion, QuestionPacket,
 };
-use argonauts_core::events::run::Party;
-use argonauts_core::events::shared::{
+use argonauts_core::runs::events::run::Party;
+use argonauts_core::runs::events::shared::{
     AnsweredForYou, BlackboardEvent, BlackboardKind, BlackboardMessage, Recipient,
 };
-use argonauts_core::events::task::TaskState;
-use argonauts_core::names::{MessageId, ModelRef, RoleName, SessionKey};
-use argonauts_core::policy::EvidenceFacts;
+use argonauts_core::runs::events::task::TaskState;
+use argonauts_core::safety::policy::EvidenceFacts;
 use argonauts_core::{Note, NoteLevel, TaskId};
 
 use crate::approvals::autopilot::{self, OWN_ANSWER, OWN_CALL};
 use crate::approvals::{self, ApprovalRequest};
 use crate::blackboard::requests::move_if;
 use crate::blackboard::{Post, delivery, post_once, records, refs, reply_to, route};
-use crate::consultant;
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::Host;
-use crate::error::{EngineError, EngineResult};
 use crate::roles;
+use crate::roles::consultant;
 use crate::state::RunState;
 use crate::status::folder::words;
 use crate::task::machine::Trigger;
@@ -280,7 +280,7 @@ fn pass_on(
     host: &Host,
     task: &TaskId,
     question: &BlackboardMessage,
-    decided: &argonauts_core::events::approval::ApprovalDecided,
+    decided: &argonauts_core::runs::events::approval::ApprovalDecided,
     blocked: bool,
 ) -> EngineResult<()> {
     let id = &question.id;
@@ -506,7 +506,8 @@ fn answerer_role(host: &Host, answerer: &ModelRef) -> Option<RoleName> {
     if *answerer == host.settings().crew.main {
         return Some(RoleName::Main);
     }
-    let tie_breaker = host.read(|state| crate::tie_breaker::tie_breaker(state, host.settings()));
+    let tie_breaker =
+        host.read(|state| crate::roles::tie_breaker::tie_breaker(state, host.settings()));
     (tie_breaker.as_ref() == Some(answerer)).then_some(RoleName::TieBreaker)
 }
 
@@ -531,7 +532,7 @@ fn answerer_for(host: &Host, asker: &ModelRef) -> ModelRef {
 fn tie_breaker_answerer(host: &Host, asker: &ModelRef) -> ModelRef {
     let provider = |worker: &ModelRef| roles::provider(host, worker);
     let tie_breaker = host.read(|state| {
-        crate::tie_breaker::tie_breaker(state, host.settings())
+        crate::roles::tie_breaker::tie_breaker(state, host.settings())
             .unwrap_or_else(|| host.settings().crew.main.clone())
     });
     let theirs = provider(asker);
@@ -551,7 +552,7 @@ fn tie_breaker_answerer(host: &Host, asker: &ModelRef) -> ModelRef {
 /// What the tasks that ask about `task` call it, its worker's label such as `build:flag`, never
 /// its id.
 fn task_label(host: &Host, task: &TaskId) -> String {
-    host.read(|state| crate::labels::task_label(state, task))
+    host.read(|state| crate::sessions::labels::task_label(state, task))
 }
 
 /// A question approval, titled by the asking task's label `from`.

@@ -5,9 +5,9 @@ use ratatui::style::Modifier;
 use ratatui::text::Line;
 
 use super::*;
-use crate::render::{Clock, RenderCtx};
-use crate::text::plain_text;
-use crate::theme::{Glyphs, Role, Theme};
+use crate::base::draw::render::{Clock, RenderCtx};
+use crate::base::text::plain_text;
+use crate::base::theme::{Glyphs, Role, Theme};
 
 /// Ages count back from here.
 const NOW: u64 = 1_800_000_000;

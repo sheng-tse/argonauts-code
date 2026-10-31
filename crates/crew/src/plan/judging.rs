@@ -11,10 +11,10 @@
 
 use std::collections::BTreeMap;
 
-use argonauts_core::events::plan::{JudgingResult, PlanTally};
-use argonauts_core::names::{ModelRef, PlanLabel};
+use argonauts_core::base::names::{ModelRef, PlanLabel};
+use argonauts_core::runs::events::plan::{JudgingResult, PlanTally};
 use argonauts_core::settings::protocol::JudgingSettings;
-use argonauts_core::steps::plan::RubricCriterion;
+use argonauts_core::workflows::steps::plan::RubricCriterion;
 
 use crate::prompts::plan::RUBRIC;
 

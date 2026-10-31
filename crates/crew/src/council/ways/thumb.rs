@@ -1,8 +1,8 @@
 //! The note keeper's rule of thumb for each task's way, with its short reason. Code applies the
 //! same rule to a task the plan gave no way, so every task is done some way the setup allows.
 
-use argonauts_core::events::task::{TaskSpec, TaskWay, Way};
-use argonauts_core::workflow::WorkflowRef;
+use argonauts_core::runs::events::task::{TaskSpec, TaskWay, Way};
+use argonauts_core::workflows::workflow::WorkflowRef;
 
 use super::{MAKER_CHECKER, Offer, done_by};
 use crate::divide::paths;
@@ -237,7 +237,7 @@ fn risk_of(task: &TaskSpec) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use argonauts_core::TaskId;
-    use argonauts_core::events::task::{TaskKind, TaskLimit};
+    use argonauts_core::runs::events::task::{TaskKind, TaskLimit};
     use argonauts_core::settings::ways::{MostAgents, Ways, WorkflowsAllowed};
 
     use super::*;

@@ -9,15 +9,15 @@ use futures::future::join_all;
 use serde_json::{Map, Value, json};
 
 use argonauts_core::RunId;
-use argonauts_core::events::RunEventKind;
-use argonauts_core::events::plan::{MappedTopic, PlanEvent};
-use argonauts_core::names::{ModelRef, PlanLabel, RoleName};
-use argonauts_core::session_runner::Access;
-use argonauts_core::steps::plan::{Critique, CritiqueInput, LabeledPlan};
-use argonauts_core::workflow::StandardPhase;
+use argonauts_core::agents::session_runner::Access;
+use argonauts_core::base::names::{ModelRef, PlanLabel, RoleName};
+use argonauts_core::runs::events::RunEventKind;
+use argonauts_core::runs::events::plan::{MappedTopic, PlanEvent};
+use argonauts_core::workflows::steps::plan::{Critique, CritiqueInput, LabeledPlan};
+use argonauts_core::workflows::workflow::StandardPhase;
 
+use crate::engine::error::{EngineError, EngineResult};
 use crate::engine::host::{Ask, Host};
-use crate::error::{EngineError, EngineResult};
 use crate::plan::context::{self, warn, workers_for};
 use crate::plan::{drafts, map};
 use crate::prompts::plan::CRITIQUE;
@@ -317,7 +317,7 @@ async fn critique_claim(host: &Host, call: &StepCall) -> EngineResult<StepDone> 
 
 #[cfg(test)]
 mod tests {
-    use argonauts_core::events::plan::MappedPosition;
+    use argonauts_core::runs::events::plan::MappedPosition;
 
     use super::*;
 

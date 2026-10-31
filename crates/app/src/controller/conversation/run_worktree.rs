@@ -12,7 +12,7 @@ use argonauts_core::NoteLevel;
 
 use super::ConversationState;
 use crate::controller::Ctx;
-use crate::conversation_store::{ConversationPlace, ConversationStore};
+use crate::conversation::store::{ConversationPlace, ConversationStore};
 use crate::git;
 
 /// Makes the run's worktree at `folder` again from `branch` when it's gone. True when it did.

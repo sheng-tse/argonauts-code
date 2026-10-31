@@ -9,11 +9,11 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use argonauts_core::Adapter;
-use argonauts_core::app::{ReplayTurn, TurnReply};
-use argonauts_core::cli_sessions::{
+use argonauts_core::agents::cli_sessions::{
     CliScan, CliSession, CliSessionRef, CliTurn, ResumeLaunch, Speaker,
 };
-use argonauts_core::names::ModelRef;
+use argonauts_core::app::{ReplayTurn, TurnReply};
+use argonauts_core::base::names::ModelRef;
 
 use super::excerpt::Exchange;
 use crate::commands::adapters_here;
@@ -209,7 +209,7 @@ fn unlisted(
     reference: &CliSessionRef,
 ) -> anyhow::Result<CliSession> {
     anyhow::ensure!(
-        argonauts_core::cli_sessions::is_session_id(&reference.id),
+        argonauts_core::agents::cli_sessions::is_session_id(&reference.id),
         "{reference} isn't a session id {} takes.",
         adapter.display_name()
     );

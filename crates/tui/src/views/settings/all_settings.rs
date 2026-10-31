@@ -14,13 +14,13 @@ use ratatui::text::{Line, Span};
 use super::flow;
 use super::panel::{draw_editor, edit_key, edit_paste};
 use super::table::{Widths, heading_line, setting_line};
-use super::words::{layer_words, reset_scope, row_value_words};
+use crate::base::draw::panes::{self, Footer, Header, Side};
+use crate::base::text::words::{layer_words, reset_scope, row_value_words};
+use crate::base::theme::Role;
 use crate::bottom::Picker;
 use crate::bottom::picker::one_line;
-use crate::theme::Role;
-use crate::views::list::{self, FilterKey};
-use crate::views::panes::{self, Footer, Header, Side};
-use crate::views::{View, ViewCtx, ViewOutcome};
+use crate::frame::view::list::{self, FilterKey};
+use crate::frame::view::{View, ViewCtx, ViewOutcome};
 
 #[derive(Debug)]
 pub struct AllSettingsView {
@@ -206,7 +206,7 @@ impl View for AllSettingsView {
         let search = if self.filter.is_empty() && !self.filtering {
             String::new()
         } else {
-            format!("Search: {}", crate::text::sanitize_line(&self.filter))
+            format!("Search: {}", crate::base::text::sanitize_line(&self.filter))
         };
         panes::draw_box(buf, &panes, ["", &search], Side::Right, theme);
 

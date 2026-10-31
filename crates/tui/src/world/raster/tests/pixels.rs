@@ -1,5 +1,5 @@
 use super::*;
-use crate::world::scene::Image;
+use crate::base::draw::scene::Image;
 
 #[test]
 fn straight_pixels_come_back_as_they_went_in() {

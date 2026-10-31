@@ -6,16 +6,16 @@ use std::path::Path;
 use std::sync::Arc;
 
 use argonauts_core::Adapter;
-use argonauts_core::cheapest::cheapest_listed;
-use argonauts_core::display_names::DisplayNames;
-use argonauts_core::names::ModelRef;
-use argonauts_core::registry::ModelRegistry;
-use argonauts_core::registry::provider::provider_name;
+use argonauts_core::base::names::ModelRef;
+use argonauts_core::look::display_names::DisplayNames;
+use argonauts_core::models::cheapest::cheapest_listed;
+use argonauts_core::models::registry::ModelRegistry;
+use argonauts_core::models::registry::provider::provider_name;
 use argonauts_core::settings::Settings;
 
 use super::choose::{HostedModel, LocalModel, embeds, fit};
 use super::embed::{KeyedEndpoint, NOMIC};
-use crate::adapters::builtin_adapters;
+use crate::agents::adapters::builtin_adapters;
 use crate::host::memory::{ask_ollama, machine};
 use crate::setup::probe::local_servers;
 
@@ -144,7 +144,7 @@ pub(crate) fn plan_and_provider(
         other => other,
     };
     let provider = registry.provider(worker);
-    let provider = if argonauts_core::registry::provider::is_known(&provider) {
+    let provider = if argonauts_core::models::registry::provider::is_known(&provider) {
         provider_name(&provider)
     } else {
         plan.to_owned()
