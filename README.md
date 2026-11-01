@@ -16,8 +16,6 @@
 
 https://github.com/user-attachments/assets/8a638b80-df9e-4802-bc25-85a1ab3973c7
 
-<p align="center"><i>A scripted tour with stand-in agents and sample data. The panels are the app's own screens; the run in the window and the universe are drawn as they'll look in the next version. <a href="assets/demo.gif">See a real 31-minute run, unscripted and sped up.</a></i></p>
-
 Argonauts Code is a terminal app that runs the coding agents you already use, Claude Code, Codex, agy and OpenCode, as one crew on your repository. You talk to one of them as you always do. When the work calls for it, the others plan, build in their own git worktrees and review each other's work, and nothing merges without you or the rules you set. Each CLI runs with its own sign-in and its own plan, and open-weight models join through OpenCode or straight from a server on your machine.
 
 ## Status
