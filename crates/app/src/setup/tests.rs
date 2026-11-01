@@ -214,6 +214,20 @@ fn enter(choice: &AppChoice) -> AnswerAction {
     choice.options[0].action.clone()
 }
 
+/// The recommended answer, but Council at the workflow step, for the crew's own questions,
+/// which Captain doesn't ask.
+fn enter_on_council(choice: &AppChoice) -> AnswerAction {
+    if choice.title != "How the crew works" {
+        return enter(choice);
+    }
+    let council = choice
+        .options
+        .iter()
+        .find(|option| questions::value_of(&option.action).as_deref() == Some(steps::COUNCIL))
+        .expect("Council is offered");
+    council.action.clone()
+}
+
 /// Each `key = value` line's key, with its table, in file order.
 fn written_keys(text: &str) -> Vec<String> {
     let mut table = String::new();
@@ -268,7 +282,6 @@ async fn guided_setup_enter_through_writes_exactly_the_recommended_keys_each_com
             "Your agents",
             "Who you talk to",
             "How the crew works",
-            "Who does what",
             "Approvals",
         ]
     );
@@ -301,7 +314,7 @@ async fn guided_setup_enter_through_writes_exactly_the_recommended_keys_each_com
         "{text}"
     );
     assert!(text.contains(r#"main = "claude-code""#), "{text}");
-    assert!(text.contains(r#"workflow = "council""#), "{text}");
+    assert!(text.contains(r#"workflow = "captain""#), "{text}");
 
     let closing = notices(&seen)
         .into_iter()
@@ -386,7 +399,7 @@ async fn guided_setup_rerun_preselects_your_values() {
         )
         .unwrap();
     });
-    // Your file says council, and the workflow step recommends Council every time.
+    // Your file says council, but the workflow step recommends Captain every time.
     let logins = vec![("claude-code".to_owned(), LoginState::LoggedOut)];
     let (mut setup, effects) = start(&mut fixture, two_ready(), logins, Vec::new()).await;
     let (asked, _) = answer_all(&mut fixture, &mut setup, effects, enter).await;
@@ -400,7 +413,7 @@ async fn guided_setup_rerun_preselects_your_values() {
     let text = fixture.global();
     let settings: argonauts_core::settings::Settings = toml::from_str(&text).unwrap();
     assert_eq!(settings.crew.main.to_string(), "codex/gpt-5.6-luna");
-    assert_eq!(settings.workflow, "council");
+    assert_eq!(settings.workflow, "captain");
     assert_eq!(
         settings.approvals.understand.mode,
         ApprovalMode::Auto,
@@ -481,7 +494,7 @@ async fn guided_setup_esc_takes_the_recommendations_for_the_rest() {
     let effects = setup.set_aside(&mut fixture.ctx, &agents.id).await.unwrap();
     assert!(finished(&effects));
     let text = fixture.global();
-    assert!(text.contains(r#"workflow = "council""#), "{text}");
+    assert!(text.contains(r#"workflow = "captain""#), "{text}");
     assert!(text.contains(r#"mode = "auto""#), "{text}");
     let outcome = fixture.drain().into_iter().find_map(|event| match event {
         AppEvent::ChoiceClosed { id, outcome } if id == agents.id => Some(outcome),
@@ -557,7 +570,7 @@ async fn guided_setup_leaves_a_logged_out_agent_out_of_the_crew() {
     );
     let text = fixture.global();
     assert!(text.contains(r#"worker = ["claude-code"]"#), "{text}");
-    assert!(text.contains(r#"workflow = "council""#), "{text}");
+    assert!(text.contains(r#"workflow = "captain""#), "{text}");
 }
 
 #[tokio::test]
@@ -576,7 +589,7 @@ async fn guided_setup_offers_a_local_servers_models_as_reviewers() {
             assert_eq!(keys, vec!['n', 'a', 'b']);
             choice.options[1].action.clone()
         } else {
-            enter(choice)
+            enter_on_council(choice)
         }
     })
     .await;
@@ -693,10 +706,11 @@ async fn a_reviewer_chosen_by_role_skips_the_local_server() {
         match choice.title.as_str() {
             "Who does what" if !chose_reviewer.replace(true) => chosen(roles::REVIEWER_KEY),
             "Who is the reviewer" => chosen("codex"),
-            _ => choice.options[0].action.clone(),
+            _ => enter_on_council(choice),
         }
     };
     let (asked, _) = answer_all(&mut fixture, &mut setup, effects, pick).await;
+    assert!(chose_reviewer.get(), "Who does what wasn't asked");
     assert!(
         asked
             .iter()
@@ -758,7 +772,7 @@ async fn who_does_what_sets_a_role_and_comes_back_until_you_keep_them_all() {
         match choice.title.as_str() {
             "Who does what" if !changed.replace(true) => chosen("roles.reviewer.models"),
             "Who is the reviewer" => chosen("codex"),
-            _ => enter(choice),
+            _ => enter_on_council(choice),
         }
     };
     let (asked, _) = answer_all(&mut fixture, &mut setup, effects, pick).await;
@@ -828,7 +842,7 @@ async fn guided_setup_with_no_agent_ready_still_finishes_and_says_what_to_instal
     let text = fixture.global();
     assert!(!text.contains("crew ="), "{text}");
     assert!(!text.contains("crew.main"), "{text}");
-    assert!(text.contains(r#"workflow = "council""#), "{text}");
+    assert!(text.contains(r#"workflow = "captain""#), "{text}");
     let warned = notices(&seen)
         .into_iter()
         .any(|line| line.contains("install claude-code"));
@@ -883,7 +897,7 @@ async fn guided_setup_waits_for_the_login_checks_before_listing_agents() {
     loop {
         asked.push(open.title.clone());
         setup
-            .answer(&mut fixture.ctx, &open.id, enter(&open), None)
+            .answer(&mut fixture.ctx, &open.id, enter_on_council(&open), None)
             .await
             .unwrap();
         match open_choice(&fixture.drain()) {
