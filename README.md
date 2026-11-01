@@ -89,7 +89,7 @@ The first start walks you through setup: which CLIs to use, who you talk to, how
 ❯ Fix the failing tests in tests/test_money.py without changing the tests.
 ```
 
-If you've picked a crew workflow, in setup, with its command such as `/council` or in a settings file, every change goes to it, small ones too, and the agent you talk to still answers your questions itself. In Captain it does the work itself. With no workflow picked, it decides: small requests it answers or does itself, and bigger ones it turns into a workflow and tells you. You can also say how to run it, in the same sentence: see [Say what you want](#say-what-you-want-and-skip-the-settings).
+Setup recommends Captain: the agent you talk to does the work itself, as its CLI would, and hands a request to a crew when you ask for one. If you've picked a crew workflow, in setup, with its command such as `/council` or in a settings file, every change goes to it, small ones too, and the agent you talk to still answers your questions itself. With no workflow picked at all, it decides: small requests it answers or does itself, and bigger ones it turns into a workflow and tells you. You can also say how to run it, in the same sentence: see [Say what you want](#say-what-you-want-and-skip-the-settings).
 
 For scripts and CI:
 
@@ -111,7 +111,7 @@ Three words explain most of it:
 
 ### Say what you want, and skip the settings
 
-You never have to set up a workflow or assign models to roles. The main agent answers your questions itself. For bigger work it shapes the run: it picks a workflow or writes one for the task, then fills each role with the model it judges best for that role and that task, from the CLIs and models you have. You can steer any part of it in the same sentence as your request:
+You never have to set up a workflow or assign models to roles. The main agent answers your questions itself. When work goes to a crew, it shapes the run: it picks a workflow or writes one for the task, then fills each role with the model it judges best for that role and that task, from the CLIs and models you have. You can steer any part of it in the same sentence as your request:
 
 ```text
 ❯ Add rate limiting to the API. Use GPT 6.1 Sol as the reviewer and Opus as the judge, and choose
@@ -129,7 +129,7 @@ Your words apply to that one request. Say "from now on", and they're saved as yo
 
 ## Workflows
 
-### Captain: one agent, like the CLI you know
+### Captain (recommended): one agent, like the CLI you know
 
 The main agent does the work itself, in your folder, exactly as if you ran its CLI on its own. Along the way it can use its CLI's own subagents, ask another model for a quick review or a second opinion, or hand a big request to one of the workflows below, with the models and roles you named in your request, as described above.
 
@@ -147,9 +147,9 @@ One agent plans: it splits your request into tasks. Workers build those tasks at
 
 *Good for: features that split into parts, such as a new command, its storage and its tests.*
 
-### Council (the default): decide first, then build
+### Council: decide first, then build
 
-Several agents, ideally from different providers, each answer your request alone, without knowing which model or CLI the others run on. Then they talk one at a time until every seat agrees on a plan, and that plan is the first thing you approve. Each task is built in its own worktree, passes its checks and is reviewed by another provider, and a final check runs before the merge. Once you pick Council, in setup, with `/council` or in a settings file, it takes every change, small ones too, and the main agent still answers your questions. Left as the built-in default, it takes only the requests big enough for a crew, and the main agent does smaller ones itself, as Captain.
+Several agents, ideally from different providers, each answer your request alone, without knowing which model or CLI the others run on. Then they talk one at a time until every seat agrees on a plan, and that plan is the first thing you approve. Each task is built in its own worktree, passes its checks and is reviewed by another provider, and a final check runs before the merge. Once you pick Council, in setup, with `/council` or in a settings file, it takes every change, small ones too, and the main agent still answers your questions. Left as the built-in default, with no workflow picked at all, it takes only the requests big enough for a crew, and the main agent does smaller ones itself, as Captain.
 
 *Good for: decisions with no obvious answer, such as which library to use or how to restructure something.*
 

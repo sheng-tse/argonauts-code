@@ -2,10 +2,10 @@
  How the crew works
  Change it any time with /workflow.
 
- ❯ 1. Council (recommended)    Each seat answers alone, then they talk until every seat agrees and split the work.
-   2. Orchestrator             One orchestrator you pick plans and delegates.
-   3. Captain                  The CLI you talk to does the work itself; ask in your own words for a reviewer or a
+ ❯ 1. Captain (recommended)    The CLI you talk to does the work itself; ask in your own words for a reviewer or a
                                workflow.
+   2. Council                  Each seat answers alone, then they talk until every seat agrees and split the work.
+   3. Orchestrator             One orchestrator you pick plans and delegates.
 
  Enter to choose
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────

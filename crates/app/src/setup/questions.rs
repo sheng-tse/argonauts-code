@@ -441,11 +441,16 @@ pub(super) fn kept_or_new(current: Option<ModelRef>, picked: &str) -> ModelRef {
         .unwrap_or_else(|| ModelRef::new(picked, None))
 }
 
-/// Council first and recommended, whatever is ready, as it is the workflow that runs when none
-/// is named: with one CLI, its model takes more than one seat. A workflow of your own that the
-/// file names comes after the built-in three.
+/// Captain first and recommended, whatever is ready, as it is the workflow that runs when none
+/// is named. With one CLI, a Council's model takes more than one seat. A workflow of your own
+/// that the file names comes after the built-in three.
 fn workflow_question(view: &SetupView) -> Question {
     let mut answers = vec![
+        described(
+            CAPTAIN,
+            "Captain",
+            "The CLI you talk to does the work itself; ask in your own words for a reviewer or a workflow.",
+        ),
         described(
             COUNCIL,
             "Council",
@@ -455,11 +460,6 @@ fn workflow_question(view: &SetupView) -> Question {
             ORCHESTRATOR,
             "Orchestrator",
             "One orchestrator you pick plans and delegates.",
-        ),
-        described(
-            CAPTAIN,
-            "Captain",
-            "The CLI you talk to does the work itself; ask in your own words for a reviewer or a workflow.",
         ),
     ];
     // A name no workflow has, such as one an older file kept, runs the default, so it isn't
@@ -763,7 +763,7 @@ mod tests {
     }
 
     #[test]
-    fn council_comes_first_and_is_recommended_whatever_is_ready() {
+    fn captain_comes_first_and_is_recommended_whatever_is_ready() {
         let none = view(Vec::new());
         let one = view(vec![agent("codex", "Codex", AgentStatus::Tested)]);
         let two = view(vec![
@@ -772,7 +772,7 @@ mod tests {
         ]);
         for view in [none, one, two] {
             let question = workflow_question(&view);
-            assert_eq!(values(&question), [COUNCIL, ORCHESTRATOR, CAPTAIN]);
+            assert_eq!(values(&question), [CAPTAIN, COUNCIL, ORCHESTRATOR]);
             assert!(question.options[0].recommended);
         }
     }
@@ -799,7 +799,7 @@ mod tests {
         let mut one = view(vec![agent("codex", "Codex", AgentStatus::Tested)]);
         one.current = toml::from_str("workflow = \"retired-mode\"\n").unwrap();
         let question = workflow_question(&one);
-        assert_eq!(values(&question), [COUNCIL, ORCHESTRATOR, CAPTAIN]);
+        assert_eq!(values(&question), [CAPTAIN, COUNCIL, ORCHESTRATOR]);
         assert!(question.options[0].recommended);
         assert!(
             question.options[1..]
@@ -814,7 +814,7 @@ mod tests {
         two.current = one.current.clone();
         assert_eq!(
             values(&workflow_question(&two)),
-            [COUNCIL, ORCHESTRATOR, CAPTAIN]
+            [CAPTAIN, COUNCIL, ORCHESTRATOR]
         );
     }
 
@@ -865,9 +865,9 @@ mod tests {
         }
         view.current = toml::from_str(&file).unwrap();
         assert_eq!(values(&main_agent_question(&view).unwrap())[0], "codex");
-        // The workflow step recommends Council every time, and keeps yours on offer.
+        // The workflow step recommends Captain every time, and keeps yours on offer.
         let workflows = values(&workflow_question(&view));
-        assert_eq!(workflows, [COUNCIL, ORCHESTRATOR, CAPTAIN, "best-of-n"]);
+        assert_eq!(workflows, [CAPTAIN, COUNCIL, ORCHESTRATOR, "best-of-n"]);
         assert_eq!(
             values(&approvals_question(&view)),
             vec!["auto_preview", "auto", "autopilot", "supervised"]
