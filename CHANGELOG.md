@@ -4,6 +4,12 @@ Notable changes to Argonauts Code, newest first. The format follows [Keep a Chan
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-01
+
+### Changed
+
+- The guided setup lists Captain first and recommends it, so pressing Enter or Esc through your first start gives you Captain: the CLI you talk to does the work itself, and a crew starts only when you ask for one. Council and Orchestrator come after it. Upgrading leaves the workflow your settings name as it is, and a settings file that names none still runs Council.
+
 ## [0.2.1] - 2026-11-01
 
 ### Added
@@ -129,7 +135,8 @@ The first public release.
 - `argonauts run` for scripts and CI, `argonauts resume`, `argonauts doctor`, and an MCP server (`argonauts mcp`).
 - One anonymous usage report a day, announced on first start and stopped with `argonauts telemetry off` or `DO_NOT_TRACK=1` (see [PRIVACY.md](PRIVACY.md)).
 
-[Unreleased]: https://github.com/sheng-tse/argonauts-code/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/sheng-tse/argonauts-code/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/sheng-tse/argonauts-code/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/sheng-tse/argonauts-code/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/sheng-tse/argonauts-code/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/sheng-tse/argonauts-code/releases/tag/v0.1.0

@@ -205,7 +205,7 @@ dependencies = [
 
 [[package]]
 name = "argonauts-adapter-acp"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -222,7 +222,7 @@ dependencies = [
 
 [[package]]
 name = "argonauts-adapter-antigravity-cli"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "argonauts-core",
@@ -235,7 +235,7 @@ dependencies = [
 
 [[package]]
 name = "argonauts-adapter-claude-code"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "argonauts-core",
@@ -248,7 +248,7 @@ dependencies = [
 
 [[package]]
 name = "argonauts-adapter-codex"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "argonauts-core",
@@ -262,7 +262,7 @@ dependencies = [
 
 [[package]]
 name = "argonauts-adapter-manifest"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "argonauts-core",
@@ -274,7 +274,7 @@ dependencies = [
 
 [[package]]
 name = "argonauts-adapter-opencode"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "argonauts-core",
@@ -288,7 +288,7 @@ dependencies = [
 
 [[package]]
 name = "argonauts-app"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "argonauts-adapter-acp",
@@ -341,7 +341,7 @@ dependencies = [
 
 [[package]]
 name = "argonauts-code"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "argonauts-app",
@@ -363,7 +363,7 @@ dependencies = [
 
 [[package]]
 name = "argonauts-conductor"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "argonauts-adapter-antigravity-cli",
@@ -393,7 +393,7 @@ dependencies = [
 
 [[package]]
 name = "argonauts-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -418,7 +418,7 @@ dependencies = [
 
 [[package]]
 name = "argonauts-crew"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "argonauts-conductor",
@@ -447,7 +447,7 @@ dependencies = [
 
 [[package]]
 name = "argonauts-endpoints"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "argonauts-core",
  "argonauts-testkit",
@@ -464,7 +464,7 @@ dependencies = [
 
 [[package]]
 name = "argonauts-learning"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "argonauts-core",
  "argonauts-testkit",
@@ -485,7 +485,7 @@ dependencies = [
 
 [[package]]
 name = "argonauts-mcp"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "argonauts-core",
@@ -504,7 +504,7 @@ dependencies = [
 
 [[package]]
 name = "argonauts-policy"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "argonauts-core",
  "argonauts-testkit",
@@ -520,7 +520,7 @@ dependencies = [
 
 [[package]]
 name = "argonauts-registry"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "argonauts-adapter-opencode",
  "argonauts-core",
@@ -543,7 +543,7 @@ dependencies = [
 
 [[package]]
 name = "argonauts-runner"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "argonauts-core",
  "futures",
@@ -559,7 +559,7 @@ dependencies = [
 
 [[package]]
 name = "argonauts-scenarios"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "argonauts-conductor",
@@ -576,7 +576,7 @@ dependencies = [
 
 [[package]]
 name = "argonauts-testkit"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "argonauts-conductor",
@@ -599,7 +599,7 @@ dependencies = [
 
 [[package]]
 name = "argonauts-tui"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "argonauts-adapter-claude-code",
