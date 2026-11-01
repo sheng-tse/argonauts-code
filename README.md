@@ -14,10 +14,9 @@
 
 </div>
 
-<p align="center">
-  <img src="assets/demo.gif" alt="Argonauts Code in Ghostty: Ultracode turns the mascot purple, one request goes to Orchestrator, Opus 5.5 plans, Qwen3 Coder 30B on OpenCode, GPT 6.1 Sol on Codex and Haiku 5.5 on Claude Code build, GPT 6 Astra and Haiku review, GPT 6.1 Sol signs off, you approve and the run merges, then Stats and the Behaviors map" width="100%">
-</p>
-<p align="center"><i>One request in Orchestrator: Opus 5.5 plans, a local Qwen3 Coder, Codex and Claude Code build, another model reviews, and it merges once you say so. The 31-minute run is sped up.</i></p>
+https://github.com/user-attachments/assets/8a638b80-df9e-4802-bc25-85a1ab3973c7
+
+<p align="center"><i>A scripted tour with stand-in agents and sample data. The panels are the app's own screens; the run in the window and the universe are drawn as they'll look in the next version. <a href="assets/demo.gif">See a real 31-minute run, unscripted and sped up.</a></i></p>
 
 Argonauts Code is a terminal app that runs the coding agents you already use, Claude Code, Codex, agy and OpenCode, as one crew on your repository. You talk to one of them as you always do. When the work calls for it, the others plan, build in their own git worktrees and review each other's work, and nothing merges without you or the rules you set. Each CLI runs with its own sign-in and its own plan, and open-weight models join through OpenCode or straight from a server on your machine.
 
@@ -37,18 +36,6 @@ One agent checking its own work brings the same blind spots it had when it wrote
 - **Work keeps going when a CLI stops.** When one agent is signed out, at its plan's limit or down, its task falls back to another, in an order you can see and change.
 - **You watch it happen.** Every agent's work streams live in one workflow view, whichever CLI and model each one is.
 - **It uses what you pay for.** Your Claude, ChatGPT and Google plans, your API keys, or a model running locally for free, with limits you set.
-
-## A closer look
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/closer-look-dark.gif">
-  <img src="assets/closer-look-light.gif" width="100%" alt="Four Argonauts Code windows stacked at an angle, each playing: the /model picker going from the CLIs to Claude Code's and Codex's models, OpenCode's local models with the cursor going from one that fits now to one too big for this machine, the Captain, Orchestrator and Council mascots turning purple with Ultracode, and in front the Behaviors map comparing Haiku 5.5, then GPT 6 Luna, with the other models">
-</picture>
-
-- **Every CLI's models in one picker.** `/model` lists Claude Code, Codex, agy and OpenCode, with each subscription's usage, then each one's models and effort.
-- **Local models that fit.** The models your machine serves, with context, RAM and tools, and whether each one fits in memory now.
-- **A mascot for each workflow.** The argonaut for Captain, the medusa for Orchestrator, the hydra for Council. Ultracode turns them purple. Ghostty, kitty, WezTerm and iTerm2 draw them as pictures; other terminals draw them in blocks.
-- **What each model does differently.** Every action your agents took is a dot on the Behaviors map. Pick a model to see what it does more, in red, and less, in blue.
 
 ## Install
 
@@ -221,9 +208,11 @@ Each CLI runs as its own program, signed in your way: your Claude or ChatGPT pla
 It follows the look and keys of Claude Code's terminal app, whichever agent you talk to:
 
 - **The workflow view** (`/workflows`, Ctrl+T): phases, agents, tokens and time.
-- **A mascot in the header** that changes with the mode, drawn as a picture in terminals that show images.
+- **Every CLI's models in one picker.** `/model` lists Claude Code, Codex, agy and OpenCode, with each subscription's usage, then each one's models and effort, and the models your machine serves, with context, RAM and tools, and whether each one fits in memory now.
+- **A mascot for each workflow** in the header: the argonaut for Captain, the medusa for Orchestrator, the hydra for Council. Ultracode turns them purple. Ghostty, kitty, WezTerm and iTerm2 draw them as pictures; other terminals draw them in blocks.
 - **The agent panel and bottom line:** every agent at a glance, and your plans' usage as it goes.
 - **Overview** (`/usage`, `/stats`, `/context`): usage and limits, stats from your history, and what fills each session's context.
+- **What each model does differently.** Every action your agents took is a dot on the Behaviors map. Pick a model to see what it does more, in red, and less, in blue.
 - **`/config`:** every setting, searchable, with `/config key=value` for one at a time.
 - **`/resume` and `argonauts -c`:** carry on a conversation, a run or an agent's own session.
 
