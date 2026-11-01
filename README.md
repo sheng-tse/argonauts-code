@@ -6,7 +6,7 @@
 
 ### Orchestrate any mix of coding agents and models, from Claude Code and Codex to open-weight models on your own machine.
 
-**Ask once. The orchestrator plans, your agents build in parallel, another reviews, and you decide what merges.**
+**Ask once. Your agents plan, build in parallel and review each other's work, and you or the rules you set decide what merges.**
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-4b6fff?style=flat-square)](LICENSE) [![macOS and Linux](https://img.shields.io/badge/runs_on-macOS_·_Linux-2f6f4f?style=flat-square)](#install) [![Release](https://img.shields.io/badge/release-v0.2.1-f0a441?style=flat-square)](https://github.com/sheng-tse/argonauts-code/releases) [![CI](https://img.shields.io/github/actions/workflow/status/sheng-tse/argonauts-code/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/sheng-tse/argonauts-code/actions/workflows/ci.yml)
 
@@ -20,7 +20,7 @@ Argonauts Code is a terminal app that runs the coding agents you already use, Cl
 
 ## Status
 
-Alpha. 0.1.0 is the first public release: every workflow and every supported CLI below works, and more than 8,400 tests and 400 screen snapshots cover it. None of those tests calls a model; each CLI's output is recorded once and replayed. Expect rough edges, and please [report them](https://github.com/sheng-tse/argonauts-code/issues). What's missing or may change:
+Alpha. Every workflow and every supported CLI below works, and more than 10,000 tests and 400 screen snapshots cover it. None of those tests calls a model; each CLI's output is recorded once and replayed. Expect rough edges, and please [report them](https://github.com/sheng-tse/argonauts-code/issues). What's missing or may change:
 
 - Windows isn't supported yet.
 - Settings and commands may change before 1.0. The [changelog](CHANGELOG.md) says how to move over.
@@ -30,7 +30,7 @@ Alpha. 0.1.0 is the first public release: every workflow and every supported CLI
 One agent checking its own work brings the same blind spots it had when it wrote it. A crew splits the work from the checking:
 
 - **A different model reviews.** Reviewers are whoever you ask for. When you ask for none, a reviewer comes from another provider than the builder where the crew has one, so Claude's work is read by GPT or Gemini, and the other way round. A workflow the main agent writes may pick its own.
-- **Your checks come before the merge.** Where your settings set checks (`checks.run`, such as in a repository's `.argonauts/config.toml` once you trust it), each task must pass them before review, they run again on the exact commit you'll get, and nothing merges without you or the rules you set.
+- **Your checks come before the merge.** Where your settings set checks (`checks.run`, such as in a repository's `.argonauts/config.toml` once you trust it), or, when they set none, where the main agent names some for that run, each task must pass them before review, they run again on the exact commit you'll get, and nothing merges without you or the rules you set.
 - **Work keeps going when a CLI stops.** When one agent is signed out, at its plan's limit or down, its task falls back to another, in an order you can see and change.
 - **You watch it happen.** Every agent's work streams live in one workflow view, whichever CLI and model each one is.
 - **It uses what you pay for.** Your Claude, ChatGPT and Google plans, your API keys, or a model running locally for free, with limits you set.
@@ -59,7 +59,7 @@ npm install -g argonauts-code
 cargo install argonauts-code --locked
 ```
 
-Debian and Ubuntu (`.deb`) and Fedora (`.rpm`) packages are on each [release](https://github.com/sheng-tse/argonauts-code/releases). On Linux, the npm package unpacks the program with `xz`, so install it first if your system lacks it.
+Debian and Ubuntu (`.deb`) and Fedora (`.rpm`) packages are on each [release](https://github.com/sheng-tse/argonauts-code/releases). On Linux, the npm package unpacks the program with `xz`, and says how to install it if your system lacks it.
 
 On Linux, the sandbox needs Landlock ABI 3 (kernel 6.2 or newer) and unprivileged user namespaces, and without them every agent session is refused with the reason. Ubuntu 24.04 restricts those namespaces with AppArmor: give `argonauts` an AppArmor profile, or allow them with `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`. On an older kernel, `sandbox.mode = "tool"` uses each CLI's own sandbox instead.
 
@@ -69,7 +69,7 @@ The command is `argonauts`. You also need git and at least one agent CLI install
 argonauts doctor
 ```
 
-`doctor` lists the agent CLIs it finds and their versions, checks git, and calls no model. `/doctor` in the app also says whether each CLI is signed in.
+`doctor` names the version running and what the last update check found, lists the agent CLIs it finds and their versions, checks git, and calls no model. `/doctor` in the app also says whether each CLI is signed in, and sets each CLI's token count beside a second count made by plainer rules.
 
 A copy from the installer updates itself: it looks for a new release once a day and starts it at your next start (`updates.auto = false` only tells you), and `argonauts self-update` updates now, with `--rollback` to go back. A Homebrew, npm or crates.io copy updates with `brew upgrade argonauts-code`, `npm update -g argonauts-code` or `cargo install argonauts-code --locked`. To uninstall, delete `~/.local/bin/argonauts` and `~/.local/share/argonauts` (the installer's), or run `brew uninstall argonauts-code`, `npm uninstall -g argonauts-code` or `cargo uninstall argonauts-code`, and delete `~/.argonauts` if you want your settings gone too.
 
@@ -89,7 +89,7 @@ The first start walks you through setup: which CLIs to use, who you talk to, how
 ❯ Fix the failing tests in tests/test_money.py without changing the tests.
 ```
 
-The agent you talk to decides: small requests it answers or does itself, and bigger ones it turns into a workflow and tells you. You can also say how to run it, in the same sentence: see [Say what you want](#say-what-you-want-and-skip-the-settings).
+If you've picked a crew workflow, in setup, with its command such as `/council` or in a settings file, every change goes to it, small ones too, and the agent you talk to still answers your questions itself. In Captain it does the work itself. With no workflow picked, it decides: small requests it answers or does itself, and bigger ones it turns into a workflow and tells you. You can also say how to run it, in the same sentence: see [Say what you want](#say-what-you-want-and-skip-the-settings).
 
 For scripts and CI:
 
@@ -111,7 +111,7 @@ Three words explain most of it:
 
 ### Say what you want, and skip the settings
 
-You never have to set up a workflow or assign models to roles. The main agent answers small things itself. For bigger work it shapes the run: it picks a workflow or writes one for the task, then fills each role with the model it judges best for that role and that task, from the CLIs and models you have. You can steer any part of it in the same sentence as your request:
+You never have to set up a workflow or assign models to roles. The main agent answers your questions itself. For bigger work it shapes the run: it picks a workflow or writes one for the task, then fills each role with the model it judges best for that role and that task, from the CLIs and models you have. You can steer any part of it in the same sentence as your request:
 
 ```text
 ❯ Add rate limiting to the API. Use GPT 6.1 Sol as the reviewer and Opus as the judge, and choose
@@ -125,7 +125,7 @@ Every review in that run is GPT 6.1 Sol's and Opus is the judge, as asked. The m
 - **How far it goes:** an effort level, a spend or time limit, or a goal such as "keep going until the tests pass".
 - **What matters most:** "keep it cheap" or "best quality you can". The main agent weighs that when it fills the roles: lighter models for a cheap run, stronger ones and more reviewers for a careful one.
 
-Your words apply to that one request. Say "from now on", and it offers to save them as your settings. Words can tighten safety but never loosen it, so a request can't switch off the sandbox or skip an approval you've set. `/workflow` sets your default workflow, and `/workflow try <name> <request>` previews a plan without running anything.
+Your words apply to that one request. Say "from now on", and they're saved as your settings at once, though a change to safety still asks you to confirm. Words can tighten safety but never loosen it, so a request can't switch off the sandbox or skip an approval you've set. `/captain`, `/orchestrator`, `/council` or `/workflow <name>` switch your workflow, words after the command run just that request with it, and `/workflow try <name> <request>` previews a plan without running anything.
 
 ## Workflows
 
@@ -149,7 +149,7 @@ One agent plans: it splits your request into tasks. Workers build those tasks at
 
 ### Council (the default): decide first, then build
 
-Several agents, ideally from different providers, each propose an approach without seeing the others' proposals. Then they challenge each other and decide. The chosen plan is built, reviewed and signed off. As the default, Council takes the requests big enough for a crew, and the main agent does smaller ones itself, as Captain.
+Several agents, ideally from different providers, each answer your request alone, without knowing which model or CLI the others run on. Then they talk one at a time until every seat agrees on a plan, and that plan is the first thing you approve. Each task is built in its own worktree, passes its checks and is reviewed by another provider, and a final check runs before the merge. Once you pick Council, in setup, with `/council` or in a settings file, it takes every change, small ones too, and the main agent still answers your questions. Left as the built-in default, it takes only the requests big enough for a crew, and the main agent does smaller ones itself, as Captain.
 
 *Good for: decisions with no obvious answer, such as which library to use or how to restructure something.*
 
@@ -190,7 +190,7 @@ Every step of every run goes to an append-only log, so a run can be resumed, rep
   <img src="assets/agents-light.png" width="100%" alt="Agent CLIs: Claude Code, Codex, agy and OpenCode. Model servers: Ollama, LM Studio, llama.cpp, vLLM, OpenRouter and any OpenAI-compatible API. Coming soon: Gemini CLI, Grok Build, Copilot CLI, Cursor CLI, Muse Code, Kimi CLI, Qwen Code, Kiro CLI, Droid, Crush, Mistral Vibe, Cline, Auggie, OpenHands, Kilo Code, Goose, Amp and Aider.">
 </picture>
 
-Each CLI runs as its own program, signed in your way: your Claude or ChatGPT plan, your Google account, or an API key. Argonauts Code reads each one's structured output rather than its screen. The model servers review, judge and summarize, on your machine or by API. The CLIs coming soon arrive one at a time: [tell us which you want first](https://github.com/sheng-tse/argonauts-code/issues).
+Each CLI runs as its own program, signed in your way: your Claude or ChatGPT plan, your Google account, or an API key. Argonauts Code reads each one's structured output rather than its screen. The model servers review, judge and summarize, on your machine or by API. The CLIs coming soon arrive one at a time: [tell us which you want first](https://github.com/sheng-tse/argonauts-code/issues). Any other agent that speaks ACP, or a CLI of your own described in a manifest, joins with `/agents add`.
 
 `/model` picks the model each CLI runs and each role uses, and for local models it shows which ones fit your machine's memory. `argonauts models` lists every model Argonauts Code knows about.
 
@@ -198,7 +198,7 @@ Each CLI runs as its own program, signed in your way: your Claude or ChatGPT pla
 
 - **To write code,** a local model runs through OpenCode, which gives it tools: install [Ollama](https://ollama.com), pull a model with tool support (for example `ollama pull qwen3-coder:30b`), and pick it for OpenCode in `/model`. Agents need a long context window, and Ollama sizes its default from your memory, so set it yourself: `OLLAMA_CONTEXT_LENGTH=65536 ollama serve`, or a Modelfile with `PARAMETER num_ctx 65536`. At 64k, Qwen3 Coder 30B takes about 25 GB. Codex's local mode (`--oss`) is supported as well.
 - **To review, judge and summarize,** Argonauts Code talks to an OpenAI-compatible server directly. Ollama, LM Studio, llama.cpp's `llama-server` and vLLM are found by themselves, and any other server takes a few lines of settings.
-- **When every model in the crew is local,** your code and prompts stay on your machine and the spend is $0. Argonauts Code itself never sends prompts or code. It sends one anonymous report a day (`argonauts telemetry off` stops it), looks once a day for a new release (`updates.check = false` or `ARGONAUTS_DISABLE_UPDATES=1` stops that), and reads the current model lists from this repository and Anthropic's model pages; OpenCode and your model server have network settings of their own.
+- **When every model in the crew is local,** your code and prompts stay on your machine and the spend is $0. Argonauts Code itself never sends prompts or code. It sends one anonymous report a day (`argonauts telemetry off` stops it), looks once a day for a new release (`updates.check = false` or `ARGONAUTS_DISABLE_UPDATES=1` stops that), and reads the current model lists from a signed catalog published beside its updates and from Anthropic's model pages; OpenCode and your model server have network settings of their own.
 - **Tested with** Qwen3 Coder 30B at a 64k window writing the code and Gemma 3 12B at 32k reviewing it, on a 64 GB laptop.
 
 ## Your screen
@@ -207,12 +207,12 @@ It follows the look and keys of Claude Code's terminal app, whichever agent you 
 
 - **The workflow view** (`/workflows`, Ctrl+T): phases, agents, tokens and time.
 - **Every CLI's models in one picker.** `/model` lists Claude Code, Codex, agy and OpenCode, with each subscription's usage, then each one's models and effort, and the models your machine serves, with context, RAM and tools, and whether each one fits in memory now.
-- **A mascot for each workflow** in the header: the argonaut for Captain, the medusa for Orchestrator, the hydra for Council. Ultracode turns them purple. Ghostty, kitty, WezTerm and iTerm2 draw them as pictures; other terminals draw them in blocks.
+- **A mascot in the header** for the workflow in use: the hydra for Council, the medusa for Orchestrator, and the argonaut for Captain and the rest. Ultracode turns them purple. Ghostty, kitty, WezTerm and iTerm2 draw them as pictures; other terminals draw them in blocks.
 - **The agent panel and bottom line:** every agent at a glance, and your plans' usage as it goes.
 - **Overview** (`/usage`, `/stats`, `/context`): usage and limits, stats from your history, and what fills each session's context.
 - **What each model does differently.** Every action your agents took is a dot on the Behaviors map. Pick a model to see what it does more, in red, and less, in blue.
 - **`/config`:** every setting, searchable, with `/config key=value` for one at a time.
-- **`/resume` and `argonauts -c`:** carry on a conversation, a run or an agent's own session.
+- **`/resume` and `argonauts resume`:** carry on a conversation, a run or any CLI's own session, found by its id. `argonauts -c` carries on the newest conversation in this repo.
 
 ## Commands
 
@@ -228,6 +228,8 @@ It follows the look and keys of Claude Code's terminal app, whichever agent you 
 | `argonauts records`, `learned`, `skills` | Who is good at what, workflows learned from your runs, and skills to share |
 | `argonauts sync` | Render AGENTS.md and CLAUDE.md from `.argonauts/conventions.md` |
 | `argonauts setup`, `doctor`, `update` | Set up again, check your agent CLIs, and update them (not Argonauts Code itself) |
+| `argonauts self-update`, `telemetry` | Update Argonauts Code itself, and show or stop the daily report |
+| `argonauts behaviors` | What each model does differently, with `--summaries` to update Summaries |
 | `argonauts config` | Show, explain or change settings |
 | `argonauts mcp serve` | Serve your runs to another agent over MCP |
 
@@ -253,7 +255,7 @@ command = ["cargo", "test"]
 ## Privacy and safety
 
 - **Your CLIs, your sign-ins.** Argonauts Code starts each CLI's own program and never reads its credentials or tokens. It reads a CLI's own session transcripts only to resume, show or count that CLI's sessions, and nothing in them leaves your computer. With `ANTHROPIC_API_KEY` set, it also uses that key to ask Anthropic which models exist.
-- **A sandbox for every agent:** Seatbelt on macOS, Landlock on Linux. In Auto and Autopilot agents read and write outside the project without asking, as Claude Code's and Codex's own agents can when you let them. Folders on your `PATH`, program install folders, tool configs and shell startup files are written like any other file, so an agent can `brew install` a tool or edit your `.zshrc`. In Supervised and Auto preview agents ask before they write outside the project, and a run's agents, which can't stop to ask, write only their worktree. Wherever agents work outside the project, the never-list (`outside.never`, yours to edit) holds: they never read or write your SSH, cloud and GPG keys, `.env` files, browser profiles or other CLIs' logins, and never write `/System`, `/usr` (but `/usr/local`), `/etc`, `/bin`, `/sbin`, `/lib`, `/lib32`, `/lib64` or `/libx32`. `outside.read`, `outside.write` and `outside.ask` set the modes. Agents can reach the network, so they can install packages and read docs; `sandbox.network = false` turns that off.
+- **A sandbox for every agent:** Seatbelt on macOS, Landlock on Linux. In Auto and Autopilot agents read and write outside the project without asking, as Claude Code's and Codex's own agents can when you let them. Folders on your `PATH`, program install folders, tool configs and shell startup files are written like any other file, so an agent can `brew install` a tool or edit your `.zshrc`. In Supervised and Auto preview agents ask before they write outside the project, and a run's agents, which can't stop to ask, write only their worktree. Wherever agents work outside the project, the never-list (`outside.never`, yours to edit) holds: they never read or write your SSH, AWS and GPG keys, `.env` files (but not committed templates such as `.env.example`), browser profiles or other CLIs' logins, and never write `/System`, `/usr` (but `/usr/local`), `/etc`, `/bin`, `/sbin`, `/lib`, `/lib32`, `/lib64` or `/libx32`. `outside.read`, `outside.write` and `outside.ask` set the modes. Agents can reach the network, so they can install packages and read docs; `sandbox.network = false` turns that off.
 - **One anonymous report a day,** with no prompts, code or names in it. The first start tells you, and nothing is sent before then. Optimized builds send it, from the installer, Homebrew, npm, `cargo install` or a clone built with `--release`; a debug build never does. [PRIVACY.md](PRIVACY.md) lists every field, `argonauts telemetry show` prints the next report, and `argonauts telemetry off` or `DO_NOT_TRACK=1` stops it.
 - **Limits you set** on spend, tokens and time, checked before each session starts.
 
@@ -265,7 +267,7 @@ command = ["cargo", "test"]
 
 **Does it cost more?** It uses the plans and keys you already have, and local models for free. Limits stop a run before it goes past what you set.
 
-**Do my MCP servers work in it?** Yes, sessions it starts in Claude Code and Codex load the MCP servers you set up there, except blind sessions (independent proposals and blind reviews), which run with none on purpose.
+**Do my MCP servers work in it?** Yes, sessions it starts in Claude Code and Codex load the MCP servers you set up there. Blind sessions (independent proposals and blind reviews) run with none on purpose, and sessions that only answer, such as the judge, the narrator and the Summaries summarizer, run with every tool off.
 
 **Can I run it on only open-weight models?** Yes, OpenCode on a local model writes the code, and a second local model reviews it.
 
