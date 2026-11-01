@@ -145,7 +145,7 @@ fn assert_recommended_global(scenario: &Scenario) -> anyhow::Result<()> {
     assert!(toml_value(&text, "crew.main").is_some_and(|v| v.contains("claude-code")));
     assert!(same_toml(
         &toml_value(&text, "workflow").unwrap_or_default(),
-        "\"council\""
+        "\"captain\""
     ));
     for key in SETUP_KEYS.iter().filter(|k| k.ends_with(".mode")) {
         assert!(
@@ -312,10 +312,12 @@ fn app_first_run_offers_local_server() -> anyhow::Result<()> {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let mut pty = launch_with(&scenario, &args, &[])?;
 
+    // The server is offered for the crew's reviews, which Captain doesn't ask about.
     let steps = walk_setup(&scenario, &mut pty, |step| {
         step.options
             .iter()
             .find(|o| o.label == "Llama3.2")
+            .or_else(|| step.options.iter().find(|o| value_of(o) == "council"))
             .map(|o| o.key)
     })?;
     let offer = steps
@@ -454,7 +456,7 @@ fn app_second_start_skips_setup() -> anyhow::Result<()> {
 fn app_setup_again_keeps_your_choices_and_workflows() -> anyhow::Result<()> {
     let scenario = first_run_scenario()?;
     let mut pty = launch_setup(&scenario, &[], &[])?;
-    // Not the recommendations: Codex to talk to, Captain, and auto preview approvals.
+    // Not the recommendations: Codex to talk to, Council, and auto preview approvals.
     walk_setup(&scenario, &mut pty, |step| {
         let has = |value: &str| step.options.iter().any(|o| value_of(o) == value);
         let key_of = |value: &str| {
@@ -465,8 +467,8 @@ fn app_setup_again_keeps_your_choices_and_workflows() -> anyhow::Result<()> {
         };
         if has("claude-code") && has("codex") {
             key_of("codex")
-        } else if has("council") {
-            key_of("captain")
+        } else if has("captain") {
+            key_of("council")
         } else if has("auto_preview") {
             key_of("auto_preview")
         } else {
@@ -499,11 +501,11 @@ fn app_setup_again_keeps_your_choices_and_workflows() -> anyhow::Result<()> {
         toml_value(&text, "crew.main").is_some_and(|v| v.contains("codex")),
         "{text}"
     );
-    // The workflow step recommends Council every time, so Enter through it picks that.
+    // The workflow step recommends Captain every time, so Enter through it picks that.
     assert!(
         same_toml(
             &toml_value(&text, "workflow").unwrap_or_default(),
-            "\"council\""
+            "\"captain\""
         ),
         "{text}"
     );
@@ -546,7 +548,7 @@ fn app_setup_shows_terms_note_once() -> anyhow::Result<()> {
 }
 
 #[test]
-fn app_setup_writes_council_and_its_file_sets_no_key() -> anyhow::Result<()> {
+fn app_setup_writes_captain_and_councils_file_sets_no_key() -> anyhow::Result<()> {
     let scenario = first_run_scenario()?;
     let mut pty = launch_setup(&scenario, &["setup"], &[])?;
     enter_through(&scenario, &mut pty)?;
@@ -555,7 +557,7 @@ fn app_setup_writes_council_and_its_file_sets_no_key() -> anyhow::Result<()> {
     assert!(
         same_toml(
             &toml_value(&text, "workflow").unwrap_or_default(),
-            "\"council\""
+            "\"captain\""
         ),
         "{text}"
     );
@@ -577,6 +579,6 @@ fn app_setup_writes_council_and_its_file_sets_no_key() -> anyhow::Result<()> {
         "the council workflow has no steps to adapt:\n{workflow}"
     );
     assert!(workflow.contains("kind  = \"talk\""), "{workflow}");
-    scenario.shot(&pty, "app_setup_writes_council")?;
+    scenario.shot(&pty, "app_setup_writes_captain")?;
     Ok(())
 }
