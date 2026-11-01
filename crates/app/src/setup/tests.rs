@@ -356,6 +356,7 @@ async fn guided_setup_without_a_terminal_writes_no_safety_key_and_finishes_at_on
         ],
         "{text}"
     );
+    assert!(text.contains(r#"workflow = "captain""#), "{text}");
     assert!(!text.contains("approvals"), "{text}");
 }
 
